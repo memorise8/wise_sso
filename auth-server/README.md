@@ -187,6 +187,68 @@ Provider console의 redirect URI와 `.env`의 `GOOGLE_REDIRECT_URI`, `NAVER_REDI
 
 OAuth callback은 raw Access Token이나 Refresh Token을 redirect URL query/fragment에 넣지 않습니다. B서버는 짧게 만료되는 one-time handoff code만 `FRONTEND_REDIRECT_URL?code=<code>`로 전달하고, 프론트엔드는 즉시 `POST /auth/exchange`로 token pair를 교환합니다.
 
+## Google Login Setup
+
+Google 로그인은 Google Cloud Console의 OAuth client로 연동합니다.
+
+Google Cloud Console에서 설정한 항목:
+
+```text
+Google Auth Platform
+-> 클라이언트
+-> 클라이언트 만들기
+```
+
+클라이언트 설정:
+
+```text
+애플리케이션 유형: 웹 애플리케이션
+이름: wise-sso-auth-server
+승인된 JavaScript 원본: 비워둠
+승인된 리디렉션 URI:
+  http://localhost:4000/auth/google/callback
+  https://auth.financenow.kr/auth/google/callback
+```
+
+`승인된 JavaScript 원본`은 프론트엔드가 Google SDK로 직접 token을 받는 구조에서 필요합니다. 이 프로젝트는 B서버가 OAuth callback과 token exchange를 처리하므로 redirect URI만 등록합니다.
+
+Google Cloud Console에서 발급된 값을 `.env`에 넣습니다. secret 원문은 README나 Git에 기록하지 않습니다.
+
+로컬 개발:
+
+```env
+GOOGLE_CLIENT_ID="<google-client-id>"
+GOOGLE_CLIENT_SECRET="<google-client-secret>"
+GOOGLE_REDIRECT_URI="http://localhost:4000/auth/google/callback"
+```
+
+운영 또는 Cloudflare 연결 후:
+
+```env
+GOOGLE_CLIENT_ID="<google-client-id>"
+GOOGLE_CLIENT_SECRET="<google-client-secret>"
+GOOGLE_REDIRECT_URI="https://auth.financenow.kr/auth/google/callback"
+JWT_ISSUER="https://auth.financenow.kr"
+```
+
+테스트 흐름:
+
+```text
+GET /auth/google
+-> Google 로그인/동의 화면
+-> GET /auth/google/callback
+-> FRONTEND_REDIRECT_URL?code=<one-time-code>
+-> POST /auth/exchange
+-> Access Token / Refresh Token 발급
+```
+
+문제가 발생하면 먼저 아래를 확인합니다.
+
+- Google Console의 redirect URI와 `.env`의 `GOOGLE_REDIRECT_URI`가 완전히 같은지 확인합니다.
+- `http`/`https`, host, port, path가 하나라도 다르면 `redirect_uri_mismatch`가 발생합니다.
+- 내부 앱으로 만든 경우 Google Workspace 조직 내부 사용자만 로그인할 수 있습니다.
+- 운영 도메인 적용 직후에는 Google 설정 반영에 시간이 걸릴 수 있습니다.
+
 ## SMTP Setup
 
 개발 환경에서는 `MAIL_PROVIDER=dev`를 사용해 실제 SMTP 발송 없이 verification/reset link를 테스트합니다.
