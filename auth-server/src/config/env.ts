@@ -43,6 +43,10 @@ const durationInSecondsSchema = z.string().min(1).transform((value, context) => 
 });
 
 const mailProviderSchema = z.enum(["dev", "smtp"]).default("dev");
+const optionalNonEmptyStringSchema = z.preprocess(
+  (value) => value === "" ? undefined : value,
+  z.string().min(1).optional()
+);
 
 const localCorsOrigins = ["http://localhost:3000", "http://127.0.0.1:3000"] as const;
 
@@ -106,10 +110,10 @@ const envSchema = z.object({
   KAKAO_REDIRECT_URI: z.string().url(),
   MAIL_PROVIDER: mailProviderSchema,
   MAIL_FROM: z.string().min(1).default("Auth <no-reply@example.com>"),
-  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_HOST: optionalNonEmptyStringSchema,
   SMTP_PORT: z.coerce.number().int().positive().default(587),
-  SMTP_USERNAME: z.string().min(1).optional(),
-  SMTP_PASSWORD: z.string().min(1).optional()
+  SMTP_USERNAME: optionalNonEmptyStringSchema,
+  SMTP_PASSWORD: optionalNonEmptyStringSchema
 }).superRefine((value, context) => {
   if (value.NODE_ENV !== "production") {
     return;
