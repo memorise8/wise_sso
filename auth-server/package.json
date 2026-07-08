@@ -1,0 +1,45 @@
+{
+  "name": "auth-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "test": "vitest run",
+    "qa:auth-flow": "node scripts/qa-auth-flow.mjs",
+    "start": "node dist/src/server.js",
+    "tokens:cleanup": "tsx src/scripts/cleanup-refresh-tokens.ts",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
+    "ops:backup": "bash ops/backup-auth-db.sh",
+    "ops:restore-test": "bash ops/restore-test-auth-db.sh"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.11.1",
+    "argon2": "^0.41.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.19.2",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "ky": "^1.7.5",
+    "nodemailer": "^9.0.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.10.2",
+    "@types/nodemailer": "^8.0.1",
+    "@types/supertest": "^6.0.2",
+    "prisma": "^6.11.1",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.9"
+  }
+}
