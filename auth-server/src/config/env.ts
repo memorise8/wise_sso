@@ -151,19 +151,11 @@ const envSchema = z.object({
     });
   }
 
-  if (!value.SMTP_USERNAME) {
+  if ((value.SMTP_USERNAME && !value.SMTP_PASSWORD) || (!value.SMTP_USERNAME && value.SMTP_PASSWORD)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "SMTP_USERNAME is required when MAIL_PROVIDER=smtp in production",
+      message: "SMTP_USERNAME and SMTP_PASSWORD must be provided together",
       path: ["SMTP_USERNAME"]
-    });
-  }
-
-  if (!value.SMTP_PASSWORD) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "SMTP_PASSWORD is required when MAIL_PROVIDER=smtp in production",
-      path: ["SMTP_PASSWORD"]
     });
   }
 });

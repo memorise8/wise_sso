@@ -136,6 +136,38 @@ describe("mail service", () => {
     });
   });
 
+  it("Given smtp relay without credentials When mail service is created Then SMTP auth is omitted", async () => {
+    Object.assign(process.env, {
+      MAIL_PROVIDER: "smtp",
+      MAIL_FROM: "Auth <auth@example.com>",
+      SMTP_HOST: "smtp-relay.gmail.com",
+      SMTP_PORT: "587",
+      SMTP_USERNAME: "",
+      SMTP_PASSWORD: ""
+    });
+    const sendMail = vi.fn().mockResolvedValue({});
+    nodemailerCreateTransport.mockReturnValue({ sendMail });
+    const { createMailService } = await import("./mail.service.js");
+    const mailer = createMailService();
+
+    await mailer.sendEmailVerification({
+      to: "user@example.com",
+      verificationUrl: "https://auth.example.com/verify?token=verification-token"
+    });
+
+    expect(nodemailerCreateTransport).toHaveBeenCalledWith({
+      host: "smtp-relay.gmail.com",
+      port: 587,
+      secure: false
+    });
+    expect(sendMail).toHaveBeenCalledWith({
+      from: "Auth <auth@example.com>",
+      to: "user@example.com",
+      subject: "Verify your email",
+      text: "Use this link to verify your email: https://auth.example.com/verify?token=verification-token"
+    });
+  });
+
   it("Given mail dev mode When env is parsed Then SMTP secrets are not required", async () => {
     const { parseEnv } = await import("../config/env.js");
     const parsed = parseEnv({
@@ -157,5 +189,22 @@ describe("mail service", () => {
       MAIL_PROVIDER: "smtp",
       MAIL_FROM: "Auth <auth@example.com>"
     })).toThrow(/SMTP_HOST/);
+  });
+
+  it("Given production SMTP relay mode without SMTP auth When env is parsed Then config accepts IP based relay", async () => {
+    const { parseEnv } = await import("../config/env.js");
+    const parsed = parseEnv({
+      ...baseEnv,
+      NODE_ENV: "production",
+      MAIL_PROVIDER: "smtp",
+      MAIL_FROM: "Auth <auth@example.com>",
+      SMTP_HOST: "smtp-relay.gmail.com",
+      SMTP_USERNAME: "",
+      SMTP_PASSWORD: ""
+    });
+
+    expect(parsed.SMTP_HOST).toBe("smtp-relay.gmail.com");
+    expect(parsed.SMTP_USERNAME).toBeUndefined();
+    expect(parsed.SMTP_PASSWORD).toBeUndefined();
   });
 });

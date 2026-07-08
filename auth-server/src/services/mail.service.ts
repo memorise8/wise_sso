@@ -38,8 +38,8 @@ type SmtpMailConfig = {
   readonly from: string;
   readonly host: string;
   readonly port: number;
-  readonly username: string;
-  readonly password: string;
+  readonly username?: string;
+  readonly password?: string;
 };
 
 const toVerificationMessage = (input: SendEmailVerificationInput): MailLinkMessage => ({
@@ -91,28 +91,31 @@ export const createDevMailService = (logger: DevMailLogger = console): MailServi
 
 const smtpMailConfig = (): SmtpMailConfig => {
   const { MAIL_FROM, SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD } = env;
-  if (!SMTP_HOST || !SMTP_USERNAME || !SMTP_PASSWORD) {
-    throw new Error("SMTP_HOST, SMTP_USERNAME, and SMTP_PASSWORD are required when MAIL_PROVIDER=smtp");
+  if (!SMTP_HOST) {
+    throw new Error("SMTP_HOST is required when MAIL_PROVIDER=smtp");
   }
 
   return {
     from: MAIL_FROM,
     host: SMTP_HOST,
     port: SMTP_PORT,
-    username: SMTP_USERNAME,
-    password: SMTP_PASSWORD
+    ...(SMTP_USERNAME && SMTP_PASSWORD ? {
+      username: SMTP_USERNAME,
+      password: SMTP_PASSWORD
+    } : {})
   };
 };
 
 const createSmtpMailService = (config: SmtpMailConfig): MailService => {
+  const auth = config.username && config.password ? {
+    user: config.username,
+    pass: config.password
+  } : undefined;
   const transport = nodemailer.createTransport({
     host: config.host,
     port: config.port,
     secure: config.port === 465,
-    auth: {
-      user: config.username,
-      pass: config.password
-    }
+    ...(auth ? { auth } : {})
   });
 
   return {

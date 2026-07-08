@@ -193,6 +193,8 @@ OAuth callback은 raw Access Token이나 Refresh Token을 redirect URL query/fra
 
 운영 환경에서는 `MAIL_PROVIDER=smtp`와 SMTP 값을 채웁니다. `smtp` mode는 설정된 SMTP transport로 email verification과 password reset 메일을 발송합니다.
 
+SMTP 계정 인증을 사용하는 일반 SMTP 서버:
+
 ```text
 MAIL_PROVIDER=smtp
 MAIL_FROM=Auth <no-reply@example.com>
@@ -202,11 +204,24 @@ SMTP_USERNAME=<smtp-username>
 SMTP_PASSWORD=<smtp-password>
 ```
 
+Google Workspace SMTP Relay처럼 서버 공인 IP 기반 릴레이를 사용하는 경우:
+
+```text
+MAIL_PROVIDER=smtp
+MAIL_FROM=Auth <no-reply@company.com>
+SMTP_HOST=smtp-relay.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+```
+
+이 경우 Google Admin Console의 SMTP relay service에서 SSO 서버 공인 IP를 허용하고, TLS 암호화를 요구하며, SMTP 인증 요구는 끕니다. `MAIL_FROM`은 Google Workspace에 등록된 회사 도메인 주소여야 합니다.
+
 SMTP 운영자가 결정할 것:
 
 - 발송 도메인과 sender 주소
 - SPF/DKIM/DMARC 설정
-- SMTP credential 보관 위치
+- SMTP credential 또는 허용된 서버 공인 IP 관리 방식
 - 이메일 인증 link와 password reset link의 public frontend URL 정책
 - bounce/complaint 처리 방식
 
