@@ -3,7 +3,6 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 process.env["DATABASE_URL"] = "postgresql://user:password@localhost:5432/auth_db";
-process.env["JWT_ACCESS_SECRET"] = "test-access-secret-long";
 process.env["JWT_REFRESH_SECRET"] = "test-refresh-secret-long";
 process.env["JWT_ISSUER"] = "https://auth.temis.co.kr";
 process.env["JWT_AUDIENCE"] = "temis";
@@ -27,6 +26,7 @@ const recordAuthAuditEvent = vi.fn();
 const recordLoginFailureAuditEvent = vi.fn();
 const findAuditUserIdByEmail = vi.fn();
 const findAuditUserIdByPasswordEmail = vi.fn();
+const createAuthHandoff = vi.fn();
 
 vi.mock("../services/email-verification.service.js", () => ({
   requestEmailVerification,
@@ -45,7 +45,10 @@ vi.mock("../services/audit.service.js", () => ({
     passwordResetRequest: "password_reset_request",
     passwordResetConfirm: "password_reset_confirm",
     refresh: "refresh",
-    logout: "logout"
+    logout: "logout",
+    authHandoffExchangeSuccess: "auth_handoff_exchange_success",
+    authHandoffExchangeFailure: "auth_handoff_exchange_failure",
+    rateLimitExceeded: "rate_limit_exceeded"
   },
   recordAuthAuditEvent,
   recordLoginFailureAuditEvent
@@ -59,6 +62,12 @@ vi.mock("../services/audit.store.js", () => ({
   }
 }));
 
+vi.mock("../services/auth-handoff.store.js", () => ({
+  authHandoffStore: {
+    create: createAuthHandoff
+  }
+}));
+
 describe("auth email verification routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -68,6 +77,7 @@ describe("auth email verification routes", () => {
     recordLoginFailureAuditEvent.mockReset();
     findAuditUserIdByEmail.mockReset();
     findAuditUserIdByPasswordEmail.mockReset();
+    createAuthHandoff.mockReset();
   });
 
   it("Given any valid email When POST /auth/email-verification/request is called Then it returns a generic accepted response", async () => {
@@ -85,6 +95,40 @@ describe("auth email verification routes", () => {
     expect(response.body).toEqual({ status: "accepted" });
     expect(requestEmailVerification).toHaveBeenCalledWith(expect.objectContaining({
       input: { email: "person@gmail.com" }
+    }));
+  });
+
+  it("Given TEMIS PKCE metadata When verification email is requested Then the handoff binding is stored with the token request", async () => {
+    const { authRouter } = await import("./auth.routes.js");
+    const app = express();
+    app.use(express.json());
+    app.use("/auth", authRouter);
+    requestEmailVerification.mockResolvedValue({ status: "accepted" });
+
+    const response = await request(app)
+      .post("/auth/email-verification/request")
+      .send({
+        email: "person@gmail.com",
+        clientId: "temis",
+        redirectUri: "https://financenow.kr/auth/callback",
+        state: "caller-state",
+        codeChallenge: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+        codeChallengeMethod: "S256"
+      });
+
+    expect(response.status).toBe(202);
+    expect(requestEmailVerification).toHaveBeenCalledWith(expect.objectContaining({
+      input: {
+        email: "person@gmail.com",
+        handoff: {
+          clientId: "temis",
+          audience: "temis",
+          redirectUri: "https://financenow.kr/auth/callback",
+          state: "caller-state",
+          codeChallenge: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+          codeChallengeMethod: "S256"
+        }
+      }
     }));
   });
 
@@ -132,6 +176,50 @@ describe("auth email verification routes", () => {
       outcome: "success",
       userId: "user-1"
     });
+  });
+
+  it("Given a verified TEMIS signup handoff When POST /auth/email-verification/confirm succeeds Then it returns only callback code and state", async () => {
+    const { authRouter } = await import("./auth.routes.js");
+    const app = express();
+    app.use(express.json());
+    app.use("/auth", authRouter);
+    createAuthHandoff.mockResolvedValue("handoff-code");
+    confirmEmailVerification.mockResolvedValue({
+      status: "verified",
+      userId: "user-1",
+      handoff: {
+        clientId: "temis",
+        audience: "temis",
+        redirectUri: "https://financenow.kr/auth/callback",
+        state: "caller-state",
+        codeChallenge: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+        codeChallengeMethod: "S256"
+      }
+    });
+
+    const response = await request(app)
+      .post("/auth/email-verification/confirm")
+      .send({ token: "raw-verification-token" });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: "verified",
+      redirectUrl: "https://financenow.kr/auth/callback?code=handoff-code&state=caller-state"
+    });
+    expect(createAuthHandoff).toHaveBeenCalledWith({
+      clientId: "temis",
+      audience: "temis",
+      redirectUri: "https://financenow.kr/auth/callback",
+      userId: "user-1",
+      loginMethod: "password",
+      codeChallenge: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+      codeChallengeMethod: "S256",
+      state: "caller-state"
+    });
+    const redirectUrl = new URL(response.body.redirectUrl);
+    expect([...redirectUrl.searchParams.keys()].sort()).toEqual(["code", "state"]);
+    expect(redirectUrl.searchParams.get("accessToken")).toBeNull();
+    expect(redirectUrl.searchParams.get("refreshToken")).toBeNull();
   });
 
   it("Given an invalid verification token When POST /auth/email-verification/confirm fails Then it records a generic failure audit event", async () => {

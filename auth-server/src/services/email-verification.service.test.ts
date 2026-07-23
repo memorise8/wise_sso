@@ -10,10 +10,20 @@ import type {
   EmailVerificationTokenRecord,
   EmailVerificationUser
 } from "./email-verification.service.js";
+import { userStatuses } from "./user-status.service.js";
 
 type StoredVerificationToken = EmailVerificationTokenRecord & {
   readonly tokenHash: string;
 };
+
+const temisHandoff = {
+  clientId: "temis",
+  audience: "temis",
+  redirectUri: "https://financenow.kr/auth/callback",
+  state: "caller-state",
+  codeChallenge: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+  codeChallengeMethod: "S256"
+} as const;
 
 type SentVerificationMessage = {
   readonly kind: "email-verification";
@@ -66,7 +76,8 @@ const createStore = (initialUsers: readonly EmailVerificationUser[] = []): TestS
         tokenHash: input.tokenHash,
         userId: input.userId,
         expiresAt: input.expiresAt,
-        usedAt: null
+        usedAt: null,
+        handoff: input.handoff
       });
     },
     findVerificationTokenByHash: async (tokenHash) =>
@@ -81,9 +92,14 @@ const createStore = (initialUsers: readonly EmailVerificationUser[] = []): TestS
       }
 
       tokens[index] = { ...token, usedAt: input.usedAt };
+      const storedUser = [...users.values()].find((user) => user.id === input.userId);
+      if (storedUser?.status !== userStatuses.pendingEmailVerification) {
+        return false;
+      }
+
       for (const [email, user] of users) {
         if (user.id === input.userId) {
-          users.set(email, { ...user, status: "active" });
+          users.set(email, { ...user, status: userStatuses.active });
         }
       }
 
@@ -94,7 +110,7 @@ const createStore = (initialUsers: readonly EmailVerificationUser[] = []): TestS
 
 describe("email verification service", () => {
   it("Given a known email When verification is requested Then only a token hash is stored and a verification email is sent", async () => {
-    const store = createStore([{ id: "user-1", email: "user@example.com", status: "pending" }]);
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.pendingEmailVerification }]);
     const mailer = createFakeVerificationMailService();
 
     const result = await requestEmailVerification({
@@ -135,7 +151,7 @@ describe("email verification service", () => {
   });
 
   it("Given a fresh token When verification is confirmed Then the token is used and the user becomes active", async () => {
-    const store = createStore([{ id: "user-1", email: "user@example.com", status: "pending" }]);
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.pendingEmailVerification }]);
     const mailer = createFakeVerificationMailService();
     await requestEmailVerification({
       store,
@@ -153,13 +169,56 @@ describe("email verification service", () => {
       now: () => fixedNow
     });
 
-    expect(result).toEqual({ status: "verified", userId: "user-1" });
+    expect(result).toEqual({ status: "verified", userId: "user-1", handoff: null });
     expect(store.tokens[0]?.usedAt).toEqual(fixedNow);
-    expect(store.users.get("user@example.com")?.status).toBe("active");
+    expect(store.users.get("user@example.com")?.status).toBe(userStatuses.active);
+  });
+
+  it("Given a TEMIS signup handoff When verification is requested and confirmed Then handoff metadata is returned without URL tokens", async () => {
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.pendingEmailVerification }]);
+    const mailer = createFakeVerificationMailService();
+    await requestEmailVerification({
+      store,
+      mailer,
+      input: { email: "user@example.com", handoff: temisHandoff },
+      verificationUrlBase: "https://auth.financenow.kr/verify-email",
+      now: () => fixedNow
+    });
+    const token = new URL(mailer.messages[0]?.link ?? "").searchParams.get("token") ?? "";
+
+    const result = await confirmEmailVerification({
+      store,
+      input: { token },
+      now: () => fixedNow
+    });
+
+    expect(result).toEqual({ status: "verified", userId: "user-1", handoff: temisHandoff });
+    expect(mailer.messages[0]?.link).not.toContain("accessToken");
+    expect(mailer.messages[0]?.link).not.toContain("refreshToken");
+  });
+
+  it("Given a token for a suspended user When verification is confirmed Then the account is not reactivated", async () => {
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.suspended }]);
+    const mailer = createFakeVerificationMailService();
+    await requestEmailVerification({
+      store,
+      mailer,
+      input: { email: "user@example.com" },
+      verificationUrlBase: "https://app.example.com/verify-email",
+      now: () => fixedNow
+    });
+    const token = new URL(mailer.messages[0]?.link ?? "").searchParams.get("token") ?? "";
+
+    await expect(confirmEmailVerification({
+      store,
+      input: { token },
+      now: () => fixedNow
+    })).rejects.toMatchObject(new HttpError(400, "INVALID_VERIFICATION_TOKEN", "Invalid or expired verification token"));
+    expect(store.users.get("user@example.com")?.status).toBe(userStatuses.suspended);
   });
 
   it("Given an expired token When verification is confirmed Then confirmation is rejected", async () => {
-    const store = createStore([{ id: "user-1", email: "user@example.com", status: "pending" }]);
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.pendingEmailVerification }]);
     const mailer = createFakeVerificationMailService();
     await requestEmailVerification({
       store,
@@ -179,7 +238,7 @@ describe("email verification service", () => {
   });
 
   it("Given a used token When verification is confirmed again Then confirmation is rejected", async () => {
-    const store = createStore([{ id: "user-1", email: "user@example.com", status: "pending" }]);
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.pendingEmailVerification }]);
     const mailer = createFakeVerificationMailService();
     await requestEmailVerification({
       store,
@@ -204,7 +263,7 @@ describe("email verification service", () => {
   });
 
   it("Given two concurrent confirmations for the same token When both attempt verification Then only one succeeds", async () => {
-    const store = createStore([{ id: "user-1", email: "user@example.com", status: "pending" }]);
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.pendingEmailVerification }]);
     const mailer = createFakeVerificationMailService();
     await requestEmailVerification({
       store,
@@ -231,6 +290,6 @@ describe("email verification service", () => {
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
     expect(store.tokens[0]?.usedAt).toEqual(fixedNow);
-    expect(store.users.get("user@example.com")?.status).toBe("active");
+    expect(store.users.get("user@example.com")?.status).toBe(userStatuses.active);
   });
 });

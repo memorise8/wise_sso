@@ -8,12 +8,32 @@ vi.mock("nodemailer", () => ({
   }
 }));
 
+const authClientsJson = JSON.stringify([{
+  clientId: "temis",
+  audience: "temis",
+  allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+  allowedOrigins: ["https://financenow.kr"],
+  defaultRole: { serviceKey: "temis", name: "pending" }
+}]);
+
+const readRequiredTestEnv = (key: string): string => {
+  const value = process.env[key];
+  if (!value) {
+    throw new Error(`${key} must be provided by the common Vitest setup`);
+  }
+  return value;
+};
+
 const baseEnv = {
   DATABASE_URL: "postgresql://user:password@localhost:5432/auth_db",
-  JWT_ACCESS_SECRET: "test-access-secret-long",
+  JWT_ACCESS_ALGORITHM: readRequiredTestEnv("JWT_ACCESS_ALGORITHM"),
+  JWT_ACCESS_PRIVATE_KEY: readRequiredTestEnv("JWT_ACCESS_PRIVATE_KEY"),
+  JWT_ACCESS_PUBLIC_JWK: readRequiredTestEnv("JWT_ACCESS_PUBLIC_JWK"),
+  JWT_ACCESS_KEY_ID: readRequiredTestEnv("JWT_ACCESS_KEY_ID"),
   JWT_REFRESH_SECRET: "test-refresh-secret-long",
   JWT_ISSUER: "https://auth.temis.co.kr",
   JWT_AUDIENCE: "temis",
+  REDIS_URL: "redis://localhost:6379",
   FRONTEND_REDIRECT_URL: "http://localhost:3000/auth/callback",
   GOOGLE_CLIENT_ID: "google",
   GOOGLE_CLIENT_SECRET: "google-secret",
@@ -23,7 +43,8 @@ const baseEnv = {
   NAVER_REDIRECT_URI: "http://localhost:4000/auth/naver/callback",
   KAKAO_CLIENT_ID: "kakao",
   KAKAO_CLIENT_SECRET: "kakao-secret",
-  KAKAO_REDIRECT_URI: "http://localhost:4000/auth/kakao/callback"
+  KAKAO_REDIRECT_URI: "http://localhost:4000/auth/kakao/callback",
+  AUTH_CLIENTS_JSON: authClientsJson
 } satisfies Record<string, string>;
 
 describe("mail service", () => {

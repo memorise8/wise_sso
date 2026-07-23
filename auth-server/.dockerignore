@@ -1,0 +1,11 @@
+node_modules
+dist
+logs
+.auth-server.pid
+.env
+.env.*
+!.env.example
+.git
+.omo
+coverage
+npm-debug.log*

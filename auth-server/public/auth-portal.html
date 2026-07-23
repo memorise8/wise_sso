@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Wise SSO 로그인 및 회원가입">
+    <title>Wise SSO</title>
+    <link rel="stylesheet" href="/assets/auth.css?v=20260722b">
+    <script defer src="/assets/auth.js?v=20260722b"></script>
+  </head>
+  <body>
+    <main class="auth-shell" data-view="login">
+      <section class="auth-panel" aria-labelledby="auth-title">
+        <a class="brand" href="/login" aria-label="Wise SSO 로그인">
+          <span class="brand-mark" aria-hidden="true">W</span>
+          <span>Wise SSO</span>
+        </a>
+
+        <div class="view" data-page="login">
+          <div class="heading-group">
+            <h1 id="auth-title">로그인</h1>
+            <p>회사 서비스에 사용할 계정으로 로그인합니다.</p>
+          </div>
+
+          <a class="google-button" href="/auth/google">
+            <span class="google-icon" aria-hidden="true">G</span>
+            Google 계정으로 계속
+          </a>
+
+          <div class="divider"><span>또는 이메일로 로그인</span></div>
+
+          <form class="auth-form" data-form="login">
+            <label>
+              <span>이메일</span>
+              <input name="email" type="email" autocomplete="email" required>
+            </label>
+            <label>
+              <span>비밀번호</span>
+              <input name="password" type="password" autocomplete="current-password" required>
+            </label>
+            <button class="primary-button" type="submit">로그인</button>
+          </form>
+
+          <div class="link-row">
+            <a href="/signup">회원가입</a>
+            <a href="/password-reset">비밀번호 재설정</a>
+          </div>
+        </div>
+
+        <div class="view" data-page="signup" hidden>
+          <div class="heading-group">
+            <h1>회원가입</h1>
+            <p>가입 후 이메일 인증을 완료하면 로그인할 수 있습니다.</p>
+          </div>
+
+          <a class="google-button" href="/auth/google">
+            <span class="google-icon" aria-hidden="true">G</span>
+            Google 계정으로 계속
+          </a>
+
+          <div class="divider"><span>또는 이메일로 가입</span></div>
+
+          <form class="auth-form" data-form="signup">
+            <label>
+              <span>이름</span>
+              <input name="name" type="text" autocomplete="name" required>
+            </label>
+            <label>
+              <span>이메일</span>
+              <input name="email" type="email" autocomplete="email" required>
+            </label>
+            <label>
+              <span>비밀번호</span>
+              <input name="password" type="password" autocomplete="new-password" minlength="12" required>
+            </label>
+            <button class="primary-button" type="submit">가입 요청</button>
+          </form>
+
+          <div class="link-row">
+            <a href="/login">이미 계정이 있습니다</a>
+          </div>
+        </div>
+
+        <div class="view" data-page="callback" hidden>
+          <div class="heading-group">
+            <h1>로그인 확인 중</h1>
+            <p>서비스로 돌아갈 준비를 하고 있습니다.</p>
+          </div>
+          <div class="loading-line" aria-hidden="true"></div>
+        </div>
+
+        <div class="view" data-page="password-reset" hidden>
+          <div class="heading-group" data-reset-mode="request">
+            <h1>비밀번호 재설정</h1>
+            <p>가입한 이메일로 재설정 링크를 보냅니다.</p>
+          </div>
+
+          <div class="heading-group" data-reset-mode="confirm" hidden>
+            <h1>새 비밀번호 설정</h1>
+            <p>메일로 받은 재설정 링크를 확인했습니다.</p>
+          </div>
+
+          <form class="auth-form" data-form="password-reset-request" data-reset-mode="request">
+            <label>
+              <span>이메일</span>
+              <input name="email" type="email" autocomplete="email" required>
+            </label>
+            <button class="primary-button" type="submit">재설정 메일 보내기</button>
+          </form>
+
+          <form class="auth-form" data-form="password-reset-confirm" data-reset-mode="confirm" hidden>
+            <label>
+              <span>새 비밀번호</span>
+              <input name="password" type="password" autocomplete="new-password" minlength="12" required>
+            </label>
+            <button class="primary-button" type="submit">비밀번호 변경</button>
+          </form>
+
+          <div class="link-row">
+            <a href="/login">로그인으로 돌아가기</a>
+          </div>
+        </div>
+
+        <div class="view" data-page="verify-email" hidden>
+          <div class="heading-group">
+            <h1>이메일 인증</h1>
+            <p>인증 링크의 토큰을 확인합니다.</p>
+          </div>
+          <div class="loading-line" aria-hidden="true"></div>
+        </div>
+
+        <p class="notice" data-notice hidden></p>
+      </section>
+
+      <aside class="trust-panel" aria-label="SSO 안내">
+        <div>
+          <p class="eyebrow">Unified access</p>
+          <h2>한 번 로그인하고 여러 서비스를 안전하게 사용합니다.</h2>
+          <p>계정 로그인과 서비스 접근을 한 곳에서 관리합니다. 서비스 데이터는 각 서비스 서버에 남습니다.</p>
+        </div>
+
+        <dl class="trust-list">
+          <div>
+            <dt>Issuer</dt>
+            <dd>https://auth.financenow.kr</dd>
+          </div>
+          <div>
+            <dt>Token</dt>
+            <dd>서비스 접근 권한</dd>
+          </div>
+          <div>
+            <dt>Services</dt>
+            <dd>TEMIS와 연결된 업무 서비스</dd>
+          </div>
+        </dl>
+      </aside>
+    </main>
+  </body>
+</html>

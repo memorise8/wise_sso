@@ -10,3 +10,4 @@ coverage/
 .omo/
 .codegraph
 *.log
+auth-server/.auth-server.pid

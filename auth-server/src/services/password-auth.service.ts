@@ -1,5 +1,7 @@
 import argon2 from "argon2";
 import type { CurrentUser } from "./user.service.js";
+import { userStatuses } from "./user-status.service.js";
+import type { UserStatusValue } from "./user-status.service.js";
 import { HttpError } from "../utils/httpError.js";
 
 export type PasswordAuthInput = {
@@ -22,7 +24,7 @@ export type PasswordCredentialRecord = {
   readonly passwordHash: string;
   readonly failedLoginCount: number;
   readonly lockedUntil: Date | null;
-  readonly userStatus: string;
+  readonly userStatus: UserStatusValue;
 };
 
 export type PasswordAuthStore = {
@@ -31,7 +33,7 @@ export type PasswordAuthStore = {
     readonly email: string;
     readonly name: string | null;
     readonly passwordHash: string;
-    readonly status: string;
+    readonly status: UserStatusValue;
   }) => Promise<CurrentUser>;
   readonly findCredentialByEmail: (email: string) => Promise<PasswordCredentialRecord | null>;
   readonly markLoginSuccess: (userId: string) => Promise<void>;
@@ -72,7 +74,7 @@ const defaultPasswordPolicy: PasswordPolicy = {
   allowedEmailDomain: null
 };
 
-const passwordRegistrationInitialStatus = "pending_verification";
+const passwordRegistrationInitialStatus = userStatuses.pendingEmailVerification;
 
 const dummyPasswordHash = "$argon2id$v=19$m=19456,t=2,p=1$SdlW23hIuyR5YOcdnZi8wg$U6czHfbJGnRhZehGLUmnc9E06qyzWWjlouMxjSv3gTM";
 
@@ -124,14 +126,14 @@ export const loginWithPassword = async (
   const credential = await store.findCredentialByEmail(email);
   const verified = await argon2.verify(credential?.passwordHash ?? dummyPasswordHash, input.password);
   const credentialLocked = credential ? isCredentialLocked(credential) : false;
-  const canLogin = credential && credential.userStatus === "active" && !credentialLocked && verified;
+  const canLogin = credential && credential.userStatus === userStatuses.active && !credentialLocked && verified;
   if (!canLogin) {
-    if (credential && credential.userStatus === "active" && !credentialLocked) {
+    if (credential && credential.userStatus === userStatuses.active && !credentialLocked) {
       await store.markLoginFailure(credential.userId);
     }
     throw new PasswordAuthFailure({
       userId: credential?.userId ?? null,
-      reasonCode: credentialLocked ? "ACCOUNT_LOCKED" : credential?.userStatus === "active" ? "INVALID_CREDENTIALS" : "USER_INACTIVE"
+      reasonCode: credentialLocked ? "ACCOUNT_LOCKED" : credential?.userStatus === userStatuses.active ? "INVALID_CREDENTIALS" : "USER_INACTIVE"
     });
   }
 

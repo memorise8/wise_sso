@@ -7,6 +7,7 @@ const prisma = new PrismaClient();
 const toCurrentUser = (user: {
   readonly id: string;
   readonly email: string | null;
+  readonly emailVerified: boolean;
   readonly name: string | null;
   readonly roles: readonly {
     readonly role: {
@@ -17,6 +18,7 @@ const toCurrentUser = (user: {
 }): CurrentUser => ({
   id: user.id,
   email: user.email,
+  emailVerified: user.emailVerified,
   name: user.name,
   roles: user.roles.map((userRole) => ({
     serviceKey: userRole.role.serviceKey,
