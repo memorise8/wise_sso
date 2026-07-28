@@ -174,6 +174,25 @@ describe("password reset", () => {
     expect(store.state.refreshTokens.find((refreshToken) => refreshToken.userId === "other-user")?.revokedAt).toBeNull();
   });
 
+  it("Given an eight character password When password reset is confirmed Then the password policy accepts it", async () => {
+    const user = await createUser();
+    const store = createStore([user]);
+    const mailer = createFakeResetMailService();
+    await requestPasswordReset(store, mailer, {
+      email: user.email,
+      resetUrlBase: "https://app.example.com/reset-password"
+    });
+    const token = new URL(mailer.messages[0]?.link ?? "").searchParams.get("token") ?? "";
+
+    await confirmPasswordReset(store, {
+      token,
+      password: "abcd1234"
+    });
+
+    const updatedUser = store.state.usersByEmail.get(user.email);
+    expect(await argon2.verify(updatedUser?.passwordHash ?? "", "abcd1234")).toBe(true);
+  });
+
   it("Given an expired reset token When password reset is confirmed Then it is rejected", async () => {
     const user = await createUser();
     const store = createStore([user]);

@@ -18,7 +18,7 @@ const codeChallengeSchema = z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/);
 const oauthStartQuerySchema = z.object({
   client_id: z.string().min(1).optional(),
   redirect_uri: z.string().url().optional(),
-  state: z.string().min(1).optional(),
+  state: z.string().min(1).max(512).optional(),
   code_challenge: codeChallengeSchema.optional(),
   code_challenge_method: z.literal("S256").optional()
 }).strict().superRefine((query, context) => {

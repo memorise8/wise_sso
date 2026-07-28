@@ -35,6 +35,12 @@ export type PasswordAuthStore = {
     readonly passwordHash: string;
     readonly status: UserStatusValue;
   }) => Promise<CurrentUser>;
+  readonly createPendingPasswordCredential: (input: {
+    readonly userId: string;
+    readonly email: string;
+    readonly passwordHash: string;
+    readonly expiresAt: Date;
+  }) => Promise<void>;
   readonly findCredentialByEmail: (email: string) => Promise<PasswordCredentialRecord | null>;
   readonly markLoginSuccess: (userId: string) => Promise<void>;
   readonly markLoginFailure: (userId: string) => Promise<void>;
@@ -47,14 +53,18 @@ type PasswordAuthResult = {
 
 type PasswordAuthFailureAudit = {
   readonly userId: string | null;
-  readonly reasonCode: "ACCOUNT_LOCKED" | "INVALID_CREDENTIALS" | "USER_INACTIVE";
+  readonly reasonCode: "ACCOUNT_LOCKED" | "EMAIL_VERIFICATION_REQUIRED" | "INVALID_CREDENTIALS" | "USER_INACTIVE";
 };
 
 class PasswordAuthFailure extends HttpError {
   public readonly audit: PasswordAuthFailureAudit;
 
   public constructor(audit: PasswordAuthFailureAudit) {
-    super(401, "INVALID_CREDENTIALS", "Invalid email or password");
+    super(
+      audit.reasonCode === "EMAIL_VERIFICATION_REQUIRED" ? 403 : 401,
+      audit.reasonCode === "EMAIL_VERIFICATION_REQUIRED" ? "EMAIL_VERIFICATION_REQUIRED" : "INVALID_CREDENTIALS",
+      audit.reasonCode === "EMAIL_VERIFICATION_REQUIRED" ? "Email verification is required before login" : "Invalid email or password"
+    );
     this.audit = audit;
   }
 }
@@ -70,11 +80,12 @@ const hashPassword = async (password: string): Promise<string> =>
   });
 
 const defaultPasswordPolicy: PasswordPolicy = {
-  minLength: 12,
+  minLength: 8,
   allowedEmailDomain: null
 };
 
 const passwordRegistrationInitialStatus = userStatuses.pendingEmailVerification;
+const pendingPasswordCredentialTtlMs = 24 * 60 * 60 * 1000;
 
 const dummyPasswordHash = "$argon2id$v=19$m=19456,t=2,p=1$SdlW23hIuyR5YOcdnZi8wg$U6czHfbJGnRhZehGLUmnc9E06qyzWWjlouMxjSv3gTM";
 
@@ -105,6 +116,15 @@ export const registerWithPassword = async (
 
   const existingUser = await store.findUserByEmail(email);
   if (existingUser) {
+    const existingCredential = await store.findCredentialByEmail(email);
+    if (!existingCredential && existingUser.emailVerified) {
+      await store.createPendingPasswordCredential({
+        userId: existingUser.id,
+        email,
+        passwordHash,
+        expiresAt: new Date(Date.now() + pendingPasswordCredentialTtlMs)
+      });
+    }
     return { user: existingUser };
   }
 
@@ -126,6 +146,13 @@ export const loginWithPassword = async (
   const credential = await store.findCredentialByEmail(email);
   const verified = await argon2.verify(credential?.passwordHash ?? dummyPasswordHash, input.password);
   const credentialLocked = credential ? isCredentialLocked(credential) : false;
+  if (credential?.userStatus === userStatuses.pendingEmailVerification && verified && !credentialLocked) {
+    throw new PasswordAuthFailure({
+      userId: credential.userId,
+      reasonCode: "EMAIL_VERIFICATION_REQUIRED"
+    });
+  }
+
   const canLogin = credential && credential.userStatus === userStatuses.active && !credentialLocked && verified;
   if (!canLogin) {
     if (credential && credential.userStatus === userStatuses.active && !credentialLocked) {

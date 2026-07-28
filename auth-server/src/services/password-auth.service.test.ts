@@ -8,10 +8,18 @@ import type { UserStatusValue } from "./user-status.service.js";
 type TestPasswordAuthStore = PasswordAuthStore & {
   readonly activateUser: (userId: string) => Promise<void>;
   readonly setUserStatus: (userId: string, status: UserStatusValue) => Promise<void>;
+  readonly seedVerifiedOAuthUser: (input: { readonly email: string; readonly id: string }) => Promise<void>;
+  readonly hasPendingPasswordCredential: (email: string) => Promise<boolean>;
 };
 
 const createStore = (): TestPasswordAuthStore => {
-  const users = new Map<string, { readonly id: string; readonly email: string; readonly name: string | null; readonly status: UserStatusValue }>();
+  const users = new Map<string, {
+    readonly id: string;
+    readonly email: string;
+    readonly emailVerified: boolean;
+    readonly name: string | null;
+    readonly status: UserStatusValue;
+  }>();
   const credentials = new Map<string, {
     readonly userId: string;
     readonly passwordHash: string;
@@ -19,10 +27,15 @@ const createStore = (): TestPasswordAuthStore => {
     readonly lockedUntil: Date | null;
     readonly userStatus: UserStatusValue;
   }>();
+  const pendingCredentials = new Map<string, {
+    readonly userId: string;
+    readonly passwordHash: string;
+    readonly expiresAt: Date;
+  }>();
   const setUserStatus = async (userId: string, status: UserStatusValue): Promise<void> => {
     for (const [email, user] of users) {
       if (user.id === userId) {
-        users.set(email, { ...user, status });
+        users.set(email, { ...user, status, emailVerified: status === userStatuses.active ? true : user.emailVerified });
       }
     }
     for (const [email, credential] of credentials) {
@@ -33,10 +46,19 @@ const createStore = (): TestPasswordAuthStore => {
   };
 
   return {
-    findUserByEmail: async (email) => users.get(email.toLowerCase()) ?? null,
+    findUserByEmail: async (email) => {
+      const user = users.get(email.toLowerCase());
+      return user ? { id: user.id, email: user.email, emailVerified: user.emailVerified, name: user.name, roles: [] } : null;
+    },
     createUserWithPassword: async (input) => {
       const id = `user-${users.size + 1}`;
-      users.set(input.email.toLowerCase(), { id, email: input.email, name: input.name, status: input.status });
+      users.set(input.email.toLowerCase(), {
+        id,
+        email: input.email,
+        emailVerified: input.status === userStatuses.active,
+        name: input.name,
+        status: input.status
+      });
       credentials.set(input.email.toLowerCase(), {
         userId: id,
         passwordHash: input.passwordHash,
@@ -44,7 +66,14 @@ const createStore = (): TestPasswordAuthStore => {
         lockedUntil: null,
         userStatus: input.status
       });
-      return { id, email: input.email, name: input.name, roles: [] };
+      return { id, email: input.email, emailVerified: input.status === userStatuses.active, name: input.name, roles: [] };
+    },
+    createPendingPasswordCredential: async (input) => {
+      pendingCredentials.set(input.email.toLowerCase(), {
+        userId: input.userId,
+        passwordHash: input.passwordHash,
+        expiresAt: input.expiresAt
+      });
     },
     findCredentialByEmail: async (email) => {
       const credential = credentials.get(email.toLowerCase());
@@ -66,12 +95,22 @@ const createStore = (): TestPasswordAuthStore => {
     },
     getCurrentUser: async (userId) => {
       const user = Array.from(users.values()).find((candidate) => candidate.id === userId);
-      return user ? { id: user.id, email: user.email, name: user.name, roles: [] } : null;
+      return user ? { id: user.id, email: user.email, emailVerified: user.emailVerified, name: user.name, roles: [] } : null;
     },
     activateUser: async (userId) => {
       await setUserStatus(userId, userStatuses.active);
     },
-    setUserStatus
+    setUserStatus,
+    seedVerifiedOAuthUser: async (input) => {
+      users.set(input.email.toLowerCase(), {
+        id: input.id,
+        email: input.email.toLowerCase(),
+        emailVerified: true,
+        name: null,
+        status: userStatuses.active
+      });
+    },
+    hasPendingPasswordCredential: async (email) => pendingCredentials.has(email.toLowerCase())
   };
 };
 
@@ -90,14 +129,14 @@ describe("password auth", () => {
     await expect(loginWithPassword(store, {
       email: "user@company.com",
       password: "correct-password-123"
-    })).rejects.toMatchObject(new HttpError(401, "INVALID_CREDENTIALS", "Invalid email or password"));
+    })).rejects.toMatchObject(new HttpError(403, "EMAIL_VERIFICATION_REQUIRED", "Email verification is required before login"));
     await expect(loginWithPassword(store, {
       email: "user@company.com",
       password: "correct-password-123"
     })).rejects.toMatchObject({
       audit: {
         userId: registered.user.id,
-        reasonCode: "USER_INACTIVE"
+        reasonCode: "EMAIL_VERIFICATION_REQUIRED"
       }
     });
     expect((await store.findCredentialByEmail("user@company.com"))?.failedLoginCount).toBe(0);
@@ -155,6 +194,18 @@ describe("password auth", () => {
     expect(loggedIn.user.email).toBe("user@company.com");
   });
 
+  it("Given an eight character password When registering Then the password policy accepts it", async () => {
+    const store = createStore();
+
+    const registered = await registerWithPassword(store, {
+      email: "short@example.com",
+      password: "abcd1234",
+      name: "Short Password"
+    });
+
+    expect(registered.user.email).toBe("short@example.com");
+  });
+
   it("Given a valid company user When the password is wrong Then login is rejected", async () => {
     const store = createStore();
     const registered = await registerWithPassword(store, {
@@ -197,6 +248,24 @@ describe("password auth", () => {
     expect(second.user.name).toBe("First");
   });
 
+  it("Given a verified OAuth user without password When registering with the same email Then a pending password link is created for the same subject", async () => {
+    const store = createStore();
+    await store.seedVerifiedOAuthUser({ id: "google-user-1", email: "oauth@example.com" });
+
+    const registered = await registerWithPassword(store, {
+      email: "OAuth@Example.com",
+      password: "correct-password-123",
+      name: "Ignored Name"
+    });
+
+    expect(registered.user.id).toBe("google-user-1");
+    expect(await store.hasPendingPasswordCredential("oauth@example.com")).toBe(true);
+    await expect(loginWithPassword(store, {
+      email: "oauth@example.com",
+      password: "correct-password-123"
+    })).rejects.toMatchObject(new HttpError(401, "INVALID_CREDENTIALS", "Invalid email or password"));
+  });
+
   it("Given a locked company credential When logging in Then the public error is generic and audit context carries the user id", async () => {
     const users = new Map([[
       "user@company.com",
@@ -207,6 +276,7 @@ describe("password auth", () => {
       createUserWithPassword: async () => {
         throw new Error("not used");
       },
+      createPendingPasswordCredential: async () => undefined,
       findCredentialByEmail: async (email) => ({
         userId: "user-1",
         email,

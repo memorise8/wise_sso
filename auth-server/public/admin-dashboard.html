@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Wise SSO 사용자 관리 대시보드">
+    <meta name="admin-api-base" content="/manage-api">
+    <meta name="theme-color" content="#0f1622">
+    <title>Wise SSO Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20260729b">
+    <script defer src="/assets/admin-dashboard.js?v=20260729b"></script>
+  </head>
+  <body>
+    <main class="admin-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Wise SSO</p>
+          <h1>사용자 관리</h1>
+        </div>
+        <div class="health" data-health>연결 확인 중</div>
+      </header>
+
+      <section class="token-panel" aria-labelledby="token-title">
+        <div>
+          <h2 id="token-title">관리자 Access Token</h2>
+          <p>temis:admin 권한이 있는 access token만 사용할 수 있습니다.</p>
+        </div>
+        <form class="token-form" data-token-form>
+          <label>
+            <span>Bearer token</span>
+            <input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="eyJhbGciOiJSUzI1NiIs...">
+          </label>
+          <button class="primary-button" type="submit">저장</button>
+          <button class="secondary-button" type="button" data-clear-token>삭제</button>
+        </form>
+      </section>
+
+      <section class="workspace" aria-label="사용자 목록">
+        <form class="filters" data-filter-form>
+          <label>
+            <span>이메일</span>
+            <input name="email" type="search" placeholder="gmail.com, hkyssy">
+          </label>
+          <label>
+            <span>상태</span>
+            <select name="status">
+              <option value="">전체</option>
+              <option value="ACTIVE">ACTIVE</option>
+              <option value="PENDING_EMAIL_VERIFICATION">PENDING</option>
+              <option value="SUSPENDED">SUSPENDED</option>
+              <option value="DELETED">DELETED</option>
+            </select>
+          </label>
+          <label>
+            <span>역할</span>
+            <input name="role" type="search" placeholder="temis:user">
+          </label>
+          <button class="primary-button" type="submit">조회</button>
+        </form>
+
+        <div class="summary-row">
+          <p data-summary>토큰을 저장한 뒤 조회하세요.</p>
+          <button class="secondary-button" type="button" data-refresh>새로고침</button>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>사용자</th>
+                <th>상태</th>
+                <th>역할</th>
+                <th>가입일</th>
+                <th>관리</th>
+              </tr>
+            </thead>
+            <tbody data-users>
+              <tr>
+                <td colspan="5" class="empty-cell">조회 결과가 없습니다.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="audit-panel" aria-labelledby="audit-title">
+        <div class="section-head">
+          <div>
+            <h2 id="audit-title">최근 감사 로그</h2>
+            <p>상태 변경, 역할 변경, 로그인 실패를 빠르게 확인합니다.</p>
+          </div>
+          <button class="secondary-button" type="button" data-load-audit>불러오기</button>
+        </div>
+        <div class="audit-list" data-audit>
+          <p class="empty-cell">아직 불러오지 않았습니다.</p>
+        </div>
+      </section>
+
+      <p class="notice" data-notice hidden></p>
+    </main>
+  </body>
+</html>

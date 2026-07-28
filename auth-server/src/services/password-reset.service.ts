@@ -110,7 +110,7 @@ export const requestPasswordReset = async (
 export const confirmPasswordReset = async (
   store: PasswordResetStore,
   input: ConfirmPasswordResetInput,
-  policy: PasswordResetPolicy = { minLength: 12, allowedEmailDomain: null }
+  policy: PasswordResetPolicy = { minLength: 8, allowedEmailDomain: null }
 ): Promise<PasswordResetConfirmed> => {
   assertPasswordPolicy(input.password, policy);
   const reset = await store.resetPasswordWithToken({

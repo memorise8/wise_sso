@@ -36,6 +36,7 @@ type CreateMailServiceOptions = {
 
 type SmtpMailConfig = {
   readonly from: string;
+  readonly replyTo?: string;
   readonly host: string;
   readonly port: number;
   readonly username?: string;
@@ -90,13 +91,14 @@ export const createDevMailService = (logger: DevMailLogger = console): MailServi
 });
 
 const smtpMailConfig = (): SmtpMailConfig => {
-  const { MAIL_FROM, SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD } = env;
+  const { MAIL_FROM, MAIL_REPLY_TO, SMTP_HOST, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD } = env;
   if (!SMTP_HOST) {
     throw new Error("SMTP_HOST is required when MAIL_PROVIDER=smtp");
   }
 
   return {
     from: MAIL_FROM,
+    ...(MAIL_REPLY_TO ? { replyTo: MAIL_REPLY_TO } : {}),
     host: SMTP_HOST,
     port: SMTP_PORT,
     ...(SMTP_USERNAME && SMTP_PASSWORD ? {
@@ -105,6 +107,34 @@ const smtpMailConfig = (): SmtpMailConfig => {
     } : {})
   };
 };
+
+const resendMailConfig = (): SmtpMailConfig => {
+  const apiKey = env.RESEND_API_KEY ?? env.RESEND_ADMIN_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY or RESEND_ADMIN_KEY is required when MAIL_PROVIDER=resend");
+  }
+
+  return {
+    from: env.MAIL_FROM,
+    ...(env.MAIL_REPLY_TO ? { replyTo: env.MAIL_REPLY_TO } : {}),
+    host: "smtp.resend.com",
+    port: 465,
+    username: "resend",
+    password: apiKey
+  };
+};
+
+const emailVerificationHtml = (verificationUrl: string): string => `
+<p>아래 버튼을 눌러 이메일 인증을 완료해 주세요.</p>
+<p><a href="${verificationUrl}">이메일 인증하기</a></p>
+<p>버튼이 동작하지 않으면 아래 링크를 브라우저에 붙여넣어 주세요.</p>
+<p>${verificationUrl}</p>`;
+
+const passwordResetHtml = (resetUrl: string): string => `
+<p>아래 버튼을 눌러 새 비밀번호를 설정해 주세요.</p>
+<p><a href="${resetUrl}">비밀번호 재설정하기</a></p>
+<p>버튼이 동작하지 않으면 아래 링크를 브라우저에 붙여넣어 주세요.</p>
+<p>${resetUrl}</p>`;
 
 const createSmtpMailService = (config: SmtpMailConfig): MailService => {
   const auth = config.username && config.password ? {
@@ -122,17 +152,21 @@ const createSmtpMailService = (config: SmtpMailConfig): MailService => {
     sendEmailVerification: async (input) => {
       await transport.sendMail({
         from: config.from,
+        ...(config.replyTo ? { replyTo: config.replyTo } : {}),
         to: input.to,
         subject: "Verify your email",
-        text: `Use this link to verify your email: ${input.verificationUrl}`
+        text: `Use this link to verify your email: ${input.verificationUrl}`,
+        html: emailVerificationHtml(input.verificationUrl)
       });
     },
     sendPasswordReset: async (input) => {
       await transport.sendMail({
         from: config.from,
+        ...(config.replyTo ? { replyTo: config.replyTo } : {}),
         to: input.to,
         subject: "Reset your password",
-        text: `Use this link to reset your password: ${input.resetUrl}`
+        text: `Use this link to reset your password: ${input.resetUrl}`,
+        html: passwordResetHtml(input.resetUrl)
       });
     }
   };
@@ -144,5 +178,7 @@ export const createMailService = (options: CreateMailServiceOptions = {}): MailS
       return createDevMailService(options.logger);
     case "smtp":
       return createSmtpMailService(smtpMailConfig());
+    case "resend":
+      return createSmtpMailService(resendMailConfig());
   }
 };

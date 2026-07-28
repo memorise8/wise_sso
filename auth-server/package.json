@@ -13,6 +13,7 @@
     "ops:cleanup-audit-logs": "tsx src/scripts/cleanup-audit-logs.ts",
     "ops:grant-admin": "tsx src/scripts/grant-admin.ts",
     "ops:backfill-default-roles": "tsx src/scripts/backfill-default-roles.ts",
+    "ops:merge-split-email-identities": "tsx src/scripts/merge-split-email-identities.ts",
     "qa:seed-temis-admin-flow": "tsx src/scripts/seed-temis-admin-flow-fixture.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",

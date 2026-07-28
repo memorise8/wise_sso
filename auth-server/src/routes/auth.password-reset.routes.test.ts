@@ -25,6 +25,7 @@ const confirmPasswordReset = vi.fn();
 const recordAuthAuditEvent = vi.fn();
 const recordLoginFailureAuditEvent = vi.fn();
 const findAuditUserIdByPasswordEmail = vi.fn();
+const rateLimitCounts = new Map<string, number>();
 
 vi.mock("../services/password-reset.service.js", () => ({
   requestPasswordReset,
@@ -68,6 +69,16 @@ vi.mock("../services/mail.service.js", () => ({
   createMailService: () => ({ sendPasswordReset: vi.fn() })
 }));
 
+vi.mock("../services/redis.client.js", () => ({
+  redisTtlStoreClient: {
+    incrementWithTtl: vi.fn(async (key: string) => {
+      const next = (rateLimitCounts.get(key) ?? 0) + 1;
+      rateLimitCounts.set(key, next);
+      return next;
+    })
+  }
+}));
+
 describe("auth password reset routes", () => {
   beforeEach(() => {
     requestPasswordReset.mockReset();
@@ -75,6 +86,7 @@ describe("auth password reset routes", () => {
     recordAuthAuditEvent.mockReset();
     recordLoginFailureAuditEvent.mockReset();
     findAuditUserIdByPasswordEmail.mockReset();
+    rateLimitCounts.clear();
   });
 
   it("Given a reset request email When POST /auth/password-reset/request is called Then it returns the generic accepted response", async () => {
@@ -115,7 +127,7 @@ describe("auth password reset routes", () => {
       token: "reset-token",
       password: "new-password-123"
     }, {
-      minLength: 12,
+      minLength: 8,
       allowedEmailDomain: null
     });
     expect(recordAuthAuditEvent).toHaveBeenCalledWith(expect.anything(), {

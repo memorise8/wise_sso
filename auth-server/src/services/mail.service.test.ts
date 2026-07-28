@@ -1,3 +1,4 @@
+// allow: SIZE_OK - mail provider contract matrix is kept together to prevent delivery-mode regressions.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const nodemailerCreateTransport = vi.fn();
@@ -11,9 +12,9 @@ vi.mock("nodemailer", () => ({
 const authClientsJson = JSON.stringify([{
   clientId: "temis",
   audience: "temis",
-  allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+  allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
   allowedOrigins: ["https://financenow.kr"],
-  defaultRole: { serviceKey: "temis", name: "pending" }
+  defaultRole: { serviceKey: "temis", name: "user" }
 }]);
 
 const readRequiredTestEnv = (key: string): string => {
@@ -51,6 +52,12 @@ describe("mail service", () => {
   beforeEach(() => {
     vi.resetModules();
     nodemailerCreateTransport.mockReset();
+    delete process.env["MAIL_REPLY_TO"];
+    delete process.env["RESEND_API_KEY"];
+    delete process.env["RESEND_ADMIN_KEY"];
+    delete process.env["SMTP_HOST"];
+    delete process.env["SMTP_USERNAME"];
+    delete process.env["SMTP_PASSWORD"];
     Object.assign(process.env, baseEnv);
   });
 
@@ -125,6 +132,7 @@ describe("mail service", () => {
     Object.assign(process.env, {
       MAIL_PROVIDER: "smtp",
       MAIL_FROM: "Auth <auth@example.com>",
+      MAIL_REPLY_TO: "",
       SMTP_HOST: "smtp.example.com",
       SMTP_PORT: "2525",
       SMTP_USERNAME: "smtp-user",
@@ -153,14 +161,85 @@ describe("mail service", () => {
       from: "Auth <auth@example.com>",
       to: "user@example.com",
       subject: "Reset your password",
-      text: "Use this link to reset your password: https://auth.example.com/reset?token=reset-token"
+      text: "Use this link to reset your password: https://auth.example.com/reset?token=reset-token",
+      html: expect.stringContaining("https://auth.example.com/reset?token=reset-token")
     });
+  });
+
+  it("Given resend mail provider When mail service is created Then Resend SMTP transport is selected", async () => {
+    Object.assign(process.env, {
+      MAIL_PROVIDER: "resend",
+      MAIL_FROM: "TEMIS <no-reply@temis.me>",
+      MAIL_REPLY_TO: "contact@temis.me",
+      RESEND_API_KEY: "re_test_api_key"
+    });
+    const sendMail = vi.fn().mockResolvedValue({});
+    nodemailerCreateTransport.mockReturnValue({ sendMail });
+    const { createMailService } = await import("./mail.service.js");
+    const mailer = createMailService();
+
+    await mailer.sendEmailVerification({
+      to: "user@example.com",
+      verificationUrl: "https://auth.example.com/verify?token=verification-token"
+    });
+
+    expect(nodemailerCreateTransport).toHaveBeenCalledWith({
+      host: "smtp.resend.com",
+      port: 465,
+      secure: true,
+      auth: {
+        user: "resend",
+        pass: "re_test_api_key"
+      }
+    });
+    expect(sendMail).toHaveBeenCalledWith({
+      from: "TEMIS <no-reply@temis.me>",
+      replyTo: "contact@temis.me",
+      to: "user@example.com",
+      subject: "Verify your email",
+      text: "Use this link to verify your email: https://auth.example.com/verify?token=verification-token",
+      html: expect.stringContaining("https://auth.example.com/verify?token=verification-token")
+    });
+  });
+
+  it("Given resend mail provider with admin key name When mail service is created Then Resend SMTP auth uses the fallback key", async () => {
+    Object.assign(process.env, {
+      MAIL_PROVIDER: "resend",
+      MAIL_FROM: "TEMIS <no-reply@temis.me>",
+      RESEND_API_KEY: "",
+      RESEND_ADMIN_KEY: "re_test_admin_key"
+    });
+    const sendMail = vi.fn().mockResolvedValue({});
+    nodemailerCreateTransport.mockReturnValue({ sendMail });
+    const { createMailService } = await import("./mail.service.js");
+    const mailer = createMailService();
+
+    await mailer.sendPasswordReset({
+      to: "user@example.com",
+      resetUrl: "https://auth.example.com/reset?token=reset-token"
+    });
+
+    expect(nodemailerCreateTransport).toHaveBeenCalledWith({
+      host: "smtp.resend.com",
+      port: 465,
+      secure: true,
+      auth: {
+        user: "resend",
+        pass: "re_test_admin_key"
+      }
+    });
+    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      from: "TEMIS <no-reply@temis.me>",
+      to: "user@example.com",
+      subject: "Reset your password"
+    }));
   });
 
   it("Given smtp relay without credentials When mail service is created Then SMTP auth is omitted", async () => {
     Object.assign(process.env, {
       MAIL_PROVIDER: "smtp",
       MAIL_FROM: "Auth <auth@example.com>",
+      MAIL_REPLY_TO: "",
       SMTP_HOST: "smtp-relay.gmail.com",
       SMTP_PORT: "587",
       SMTP_USERNAME: "",
@@ -185,7 +264,8 @@ describe("mail service", () => {
       from: "Auth <auth@example.com>",
       to: "user@example.com",
       subject: "Verify your email",
-      text: "Use this link to verify your email: https://auth.example.com/verify?token=verification-token"
+      text: "Use this link to verify your email: https://auth.example.com/verify?token=verification-token",
+      html: expect.stringContaining("https://auth.example.com/verify?token=verification-token")
     });
   });
 
@@ -227,5 +307,47 @@ describe("mail service", () => {
     expect(parsed.SMTP_HOST).toBe("smtp-relay.gmail.com");
     expect(parsed.SMTP_USERNAME).toBeUndefined();
     expect(parsed.SMTP_PASSWORD).toBeUndefined();
+  });
+
+  it("Given production resend mode without API key When env is parsed Then config fails before delivery", async () => {
+    const { parseEnv } = await import("../config/env.js");
+    expect(() => parseEnv({
+      ...baseEnv,
+      NODE_ENV: "production",
+      MAIL_PROVIDER: "resend",
+      MAIL_FROM: "TEMIS <no-reply@temis.me>"
+    })).toThrow(/RESEND_API_KEY or RESEND_ADMIN_KEY/);
+  });
+
+  it("Given production resend mode with API key When env is parsed Then config accepts Resend delivery settings", async () => {
+    const { parseEnv } = await import("../config/env.js");
+    const parsed = parseEnv({
+      ...baseEnv,
+      NODE_ENV: "production",
+      MAIL_PROVIDER: "resend",
+      MAIL_FROM: "TEMIS <no-reply@temis.me>",
+      MAIL_REPLY_TO: "contact@temis.me",
+      RESEND_API_KEY: "re_test_api_key"
+    });
+
+    expect(parsed.MAIL_PROVIDER).toBe("resend");
+    expect(parsed.MAIL_FROM).toBe("TEMIS <no-reply@temis.me>");
+    expect(parsed.MAIL_REPLY_TO).toBe("contact@temis.me");
+    expect(parsed.RESEND_API_KEY).toBe("re_test_api_key");
+  });
+
+  it("Given production resend mode with admin key name When env is parsed Then config accepts the fallback key", async () => {
+    const { parseEnv } = await import("../config/env.js");
+    const parsed = parseEnv({
+      ...baseEnv,
+      NODE_ENV: "production",
+      MAIL_PROVIDER: "resend",
+      MAIL_FROM: "TEMIS <no-reply@temis.me>",
+      RESEND_ADMIN_KEY: "re_test_admin_key"
+    });
+
+    expect(parsed.MAIL_PROVIDER).toBe("resend");
+    expect(parsed.RESEND_API_KEY).toBeUndefined();
+    expect(parsed.RESEND_ADMIN_KEY).toBe("re_test_admin_key");
   });
 });

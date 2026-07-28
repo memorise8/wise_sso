@@ -47,7 +47,7 @@ type RoleSeedClient = Pick<Prisma.TransactionClient, "role">;
 
 type RoleAssignmentClient = Pick<Prisma.TransactionClient, "role" | "userRole">;
 
-type UserLookupClient = Pick<Prisma.TransactionClient, "user">;
+type UserLookupClient = Pick<Prisma.TransactionClient, "socialAccount" | "subjectReservation" | "user">;
 
 type DefaultRoleBackfillClient = Pick<Prisma.TransactionClient, "$executeRaw" | "role">;
 
@@ -59,7 +59,7 @@ const temisRoles: readonly RoleAssignment[] = [
 
 const defaultRoleAssignment = (clientId: string = "temis"): RoleAssignment => {
   const client = env.AUTH_CLIENTS_JSON.find((candidate) => candidate.clientId === clientId);
-  return client?.defaultRole ?? { serviceKey: "temis", name: "pending" };
+  return client?.defaultRole ?? { serviceKey: "temis", name: "user" };
 };
 
 const toCurrentUser = (user: {
@@ -169,6 +169,54 @@ const nullableEmailForSeparateAccount = async (
   return existingUser ? null : email;
 };
 
+const normalizeEmail = (email: string | null): string | null => email?.trim().toLowerCase() ?? null;
+
+const reservedSubjectIdForEmail = async (
+  client: UserLookupClient,
+  email: string | null
+): Promise<string | null> => {
+  if (!email) {
+    return null;
+  }
+
+  const reservation = await client.subjectReservation.findUnique({ where: { email } });
+  return reservation?.subjectId ?? null;
+};
+
+const attachVerifiedSocialAccountToExistingUser = async (
+  client: UserLookupClient,
+  profile: OAuthProfile
+): Promise<User | null> => {
+  const email = normalizeEmail(profile.email);
+  if (!email || profile.emailVerified !== true) {
+    return null;
+  }
+
+  const user = await client.user.findUnique({ where: { email } });
+  if (!user) {
+    return null;
+  }
+
+  if (user.status === userStatuses.pendingEmailVerification && !user.emailVerified) {
+    await client.user.delete({ where: { id: user.id } });
+    return null;
+  }
+
+  if (user.status !== userStatuses.active || !user.emailVerified) {
+    return null;
+  }
+
+  await client.socialAccount.create({
+    data: {
+      provider: profile.provider,
+      providerUserId: profile.providerUserId,
+      providerEmail: email,
+      userId: user.id
+    }
+  });
+  return user;
+};
+
 export const findOrCreateUserBySocialProfile = async (profile: OAuthProfile, clientId: string = "temis"): Promise<User> => {
   const socialAccount = await prisma.socialAccount.findUnique({
     where: {
@@ -185,9 +233,20 @@ export const findOrCreateUserBySocialProfile = async (profile: OAuthProfile, cli
   }
 
   return prisma.$transaction(async (transaction) => {
-    const userEmail = await nullableEmailForSeparateAccount(transaction, profile.email);
+    const normalizedEmail = normalizeEmail(profile.email);
+    const linkedUser = await attachVerifiedSocialAccountToExistingUser(transaction, {
+      ...profile,
+      email: normalizedEmail
+    });
+    if (linkedUser) {
+      return linkedUser;
+    }
+
+    const userEmail = await nullableEmailForSeparateAccount(transaction, normalizedEmail);
+    const reservedSubjectId = await reservedSubjectIdForEmail(transaction, userEmail);
     const user = await transaction.user.create({
       data: {
+        ...(reservedSubjectId ? { id: reservedSubjectId } : {}),
         email: userEmail,
         emailVerified: profile.emailVerified ?? false,
         name: profile.name,

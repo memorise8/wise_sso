@@ -26,8 +26,37 @@ const credentialsBodySchema = z.object({
   password: z.string().min(1)
 });
 
+const handoffBodySchema = z.object({
+  clientId: z.string().min(1).optional(),
+  redirectUri: z.string().url().optional(),
+  state: z.string().min(1).max(512).optional(),
+  codeChallenge: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/).optional(),
+  codeChallengeMethod: z.literal("S256").optional()
+}).strict();
+
 const registerBodySchema = credentialsBodySchema.extend({
   name: z.string().min(1).nullable().optional().default(null)
+});
+
+const loginBodySchema = credentialsBodySchema.merge(handoffBodySchema).superRefine((body, context) => {
+  const handoffFields = [
+    body.clientId,
+    body.redirectUri,
+    body.codeChallenge,
+    body.codeChallengeMethod
+  ];
+  const hasAnyHandoffField = handoffFields.some((value) => value !== undefined) || body.state !== undefined;
+  const hasRequiredHandoffFields = body.clientId !== undefined &&
+    body.redirectUri !== undefined &&
+    body.codeChallenge !== undefined &&
+    body.codeChallengeMethod !== undefined;
+
+  if (hasAnyHandoffField && !hasRequiredHandoffFields) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "clientId, redirectUri, codeChallenge, and codeChallengeMethod are required together for SSO handoff"
+    });
+  }
 });
 
 const refreshTokenBodySchema = z.object({
@@ -47,7 +76,7 @@ const emailVerificationRequestBodySchema = z.object({
   email: z.string().email(),
   clientId: z.string().min(1).optional(),
   redirectUri: z.string().url().optional(),
-  state: z.string().min(1).optional(),
+  state: z.string().min(1).max(512).optional(),
   codeChallenge: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/).optional(),
   codeChallengeMethod: z.literal("S256").optional()
 }).strict().superRefine((body, context) => {
@@ -86,6 +115,40 @@ const passwordResetUrlBase = (): string => {
 const emailVerificationUrlBase = (): string => {
   const frontendUrl = new URL(env.FRONTEND_REDIRECT_URL);
   return `${frontendUrl.origin}/verify-email`;
+};
+
+const clientForHandoff = (clientId: string, redirectUri: string) => {
+  const client = clientPolicyService.findClient(clientId);
+  if (!client || !clientPolicyService.isRedirectUriAllowed(clientId, redirectUri)) {
+    throw new HttpError(400, "INVALID_CLIENT_REDIRECT_URI", "Invalid request");
+  }
+  return client;
+};
+
+const redirectUrlForHandoff = async (input: {
+  readonly clientId: string;
+  readonly audience: string;
+  readonly redirectUri: string;
+  readonly userId: string;
+  readonly codeChallenge: string;
+  readonly codeChallengeMethod: "S256";
+  readonly state?: string;
+}): Promise<string> => {
+  const redirectUrl = new URL(input.redirectUri);
+  redirectUrl.searchParams.set("code", await authHandoffStore.create({
+    clientId: input.clientId,
+    audience: input.audience,
+    redirectUri: input.redirectUri,
+    userId: input.userId,
+    loginMethod: "password",
+    codeChallenge: input.codeChallenge,
+    codeChallengeMethod: input.codeChallengeMethod,
+    state: input.state ?? null
+  }));
+  if (input.state) {
+    redirectUrl.searchParams.set("state", input.state);
+  }
+  return redirectUrl.toString();
 };
 
 export const refreshTokens: RequestHandler = (request, response, next) => {
@@ -132,16 +195,35 @@ export const registerWithCredentials: RequestHandler = (request, response, next)
 
 export const loginWithCredentials: RequestHandler = (request, response, next) => {
   void (async () => {
-    const body = credentialsBodySchema.parse(request.body);
+    const body = loginBodySchema.parse(request.body);
+    const client = body.clientId && body.redirectUri ? clientForHandoff(body.clientId, body.redirectUri) : null;
     try {
-      const result = await loginWithPassword(passwordAuthStore, body);
-      const tokens = await issueTokenPair(result.user.id);
+      const result = await loginWithPassword(passwordAuthStore, {
+        email: body.email,
+        password: body.password
+      });
       await recordAuthAuditEvent(auditLogStore, {
         eventType: auditEventTypes.loginSuccess,
         outcome: "success",
         userId: result.user.id,
         ...auditContextFromRequest(request)
       });
+      if (client && body.redirectUri && body.codeChallenge && body.codeChallengeMethod) {
+        response.json({
+          redirectUrl: await redirectUrlForHandoff({
+            clientId: client.clientId,
+            audience: client.audience,
+            redirectUri: body.redirectUri,
+            userId: result.user.id,
+            codeChallenge: body.codeChallenge,
+            codeChallengeMethod: body.codeChallengeMethod,
+            ...(body.state ? { state: body.state } : {})
+          })
+        });
+        return;
+      }
+
+      const tokens = await issueTokenPair(result.user.id);
       response.json(tokens);
     } catch (error) {
       if (isPasswordAuthFailure(error)) {
@@ -254,22 +336,35 @@ export const requestEmailVerificationEmail: RequestHandler = (request, response,
 export const confirmEmailVerificationWithToken: RequestHandler = (request, response, next) => {
   void (async () => {
     const body = emailVerificationConfirmBodySchema.parse(request.body);
+    let result: Awaited<ReturnType<typeof confirmEmailVerification>>;
     try {
-      const result = await confirmEmailVerification({
+      result = await confirmEmailVerification({
         store: emailVerificationStore,
         input: body
       });
+    } catch (error) {
       await recordAuthAuditEvent(auditLogStore, {
         eventType: auditEventTypes.emailVerificationConfirm,
-        outcome: "success",
-        userId: result.userId,
-        ...auditContextFromRequest(request)
+        outcome: "failure",
+        userId: null,
+        ...auditContextFromRequest(request),
+        reasonCode: "INVALID_VERIFICATION_TOKEN"
       });
-      if (!result.handoff) {
-        response.json({ status: result.status });
-        return;
-      }
+      throw error;
+    }
 
+    await recordAuthAuditEvent(auditLogStore, {
+      eventType: auditEventTypes.emailVerificationConfirm,
+      outcome: "success",
+      userId: result.userId,
+      ...auditContextFromRequest(request)
+    });
+    if (!result.handoff) {
+      response.json({ status: result.status });
+      return;
+    }
+
+    try {
       const redirectUrl = new URL(result.handoff.redirectUri);
       redirectUrl.searchParams.set("code", await authHandoffStore.create({
         clientId: result.handoff.clientId,
@@ -290,9 +385,9 @@ export const confirmEmailVerificationWithToken: RequestHandler = (request, respo
       await recordAuthAuditEvent(auditLogStore, {
         eventType: auditEventTypes.emailVerificationConfirm,
         outcome: "failure",
-        userId: null,
+        userId: result.userId,
         ...auditContextFromRequest(request),
-        reasonCode: "INVALID_VERIFICATION_TOKEN"
+        reasonCode: "AUTH_HANDOFF_CREATE_FAILED"
       });
       throw error;
     }

@@ -22,6 +22,7 @@ const oauthSessionKeys = {
   codeVerifier: "wise_sso_oauth_code_verifier",
   signupHandoff: "wise_sso_signup_handoff"
 };
+const handoffParamNames = ["client_id", "redirect_uri", "state", "code_challenge", "code_challenge_method"];
 
 const notice = document.querySelector("[data-notice]");
 window.localStorage.removeItem(legacyRefreshTokenStorageKey);
@@ -92,7 +93,7 @@ const storeAccessToken = (tokens) => {
     throw new Error("토큰 응답이 올바르지 않습니다.");
   }
 
-  window.localStorage.setItem(accessTokenStorageKey, tokens.accessToken);
+  window.sessionStorage.setItem(accessTokenStorageKey, tokens.accessToken);
 };
 
 const stripBrowserTokensFromUrl = () => {
@@ -140,7 +141,7 @@ const clearSignupHandoff = () => {
   window.sessionStorage.removeItem(oauthSessionKeys.signupHandoff);
 };
 
-const parseSignupHandoffFromUrl = () => {
+const parseHandoffFromUrl = () => {
   const params = new URLSearchParams(window.location.search);
   const clientId = params.get("client_id");
   const redirectUri = params.get("redirect_uri");
@@ -164,12 +165,12 @@ const parseSignupHandoffFromUrl = () => {
   };
 };
 
-const rememberSignupHandoff = () => {
-  if (activePage !== "signup") {
+const rememberHandoff = () => {
+  if (activePage !== "login" && activePage !== "signup") {
     return;
   }
 
-  const handoff = parseSignupHandoffFromUrl();
+  const handoff = parseHandoffFromUrl();
   if (handoff) {
     window.sessionStorage.setItem(oauthSessionKeys.signupHandoff, JSON.stringify(handoff));
   }
@@ -202,6 +203,32 @@ const readSignupHandoff = () => {
   return null;
 };
 
+const handoffQueryString = () => {
+  const currentParams = new URLSearchParams(window.location.search);
+  const nextParams = new URLSearchParams();
+  for (const name of handoffParamNames) {
+    const value = currentParams.get(name);
+    if (value) {
+      nextParams.set(name, value);
+    }
+  }
+  return nextParams.toString();
+};
+
+const preserveHandoffLinks = () => {
+  const query = handoffQueryString();
+  if (!query) {
+    return;
+  }
+  for (const link of document.querySelectorAll("a[href^='/']")) {
+    const href = link.getAttribute("href");
+    if (!href || href.includes("?")) {
+      continue;
+    }
+    link.setAttribute("href", `${href}?${query}`);
+  }
+};
+
 const base64Url = (bytes) => {
   let binary = "";
   for (const byte of bytes) {
@@ -223,18 +250,23 @@ const sha256Base64Url = async (value) => {
 };
 
 const startOAuthLogin = async (provider) => {
-  const state = randomBase64Url(24);
-  const codeVerifier = randomBase64Url(48);
-  const codeChallenge = await sha256Base64Url(codeVerifier);
+  const handoff = readSignupHandoff();
+  const state = handoff?.state ?? randomBase64Url(24);
+  const codeVerifier = handoff ? null : randomBase64Url(48);
+  const codeChallenge = handoff?.codeChallenge ?? await sha256Base64Url(codeVerifier);
   window.sessionStorage.setItem(oauthSessionKeys.state, state);
-  window.sessionStorage.setItem(oauthSessionKeys.codeVerifier, codeVerifier);
+  if (codeVerifier) {
+    window.sessionStorage.setItem(oauthSessionKeys.codeVerifier, codeVerifier);
+  } else {
+    window.sessionStorage.removeItem(oauthSessionKeys.codeVerifier);
+  }
 
   const startUrl = new URL(`/auth/${provider}`, window.location.origin);
-  startUrl.searchParams.set("client_id", relyingClient.clientId);
-  startUrl.searchParams.set("redirect_uri", relyingClient.redirectUri);
+  startUrl.searchParams.set("client_id", handoff?.clientId ?? relyingClient.clientId);
+  startUrl.searchParams.set("redirect_uri", handoff?.redirectUri ?? relyingClient.redirectUri);
   startUrl.searchParams.set("state", state);
   startUrl.searchParams.set("code_challenge", codeChallenge);
-  startUrl.searchParams.set("code_challenge_method", "S256");
+  startUrl.searchParams.set("code_challenge_method", handoff?.codeChallengeMethod ?? "S256");
   window.location.assign(startUrl.toString());
 };
 
@@ -256,10 +288,16 @@ document.querySelector("[data-form='login']")?.addEventListener("submit", (event
 
   void withSubmitting(form, async () => {
     const values = formValues(form);
+    const handoff = readSignupHandoff();
     const tokens = await submitJson("/auth/login", {
       email: values.email,
-      password: values.password
+      password: values.password,
+      ...(handoff ?? {})
     });
+    if (typeof tokens?.redirectUrl === "string") {
+      window.location.assign(tokens.redirectUrl);
+      return;
+    }
     storeAccessToken(tokens);
     setNotice("success", "로그인했습니다.");
   });
@@ -401,7 +439,8 @@ const confirmEmail = async () => {
   }
 };
 
-rememberSignupHandoff();
+rememberHandoff();
+preserveHandoffLinks();
 
 if (activePage === "callback") {
   void exchangeAuthCode();
