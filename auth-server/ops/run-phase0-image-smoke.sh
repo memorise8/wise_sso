@@ -615,7 +615,8 @@ readonly app_tmpfs="$(docker container inspect "${app_container_id}" --format '{
 [[ "${app_limits}" == "536870912 1000000000 256" ]] || fail "candidate app resource limits mismatch"
 [[ "${app_readonly_rootfs}" == "true" ]] || fail "candidate app root filesystem must be read-only"
 [[ "${app_cap_drop}" == "ALL" ]] || fail "candidate app must drop all Linux capabilities"
-[[ "${app_security_opt}" == *"no-new-privileges:true"* ]] || fail "candidate app must set no-new-privileges"
+[[ "${app_security_opt}" == *"no-new-privileges=true"* || "${app_security_opt}" == *"no-new-privileges:true"* ]] \
+  || fail "candidate app must set no-new-privileges"
 [[ "${app_tmpfs}" == *"rw"* && "${app_tmpfs}" == *"noexec"* && "${app_tmpfs}" == *"nosuid"* \
   && "${app_tmpfs}" == *"nodev"* \
   && ( "${app_tmpfs}" == *"size=67108864"* || "${app_tmpfs}" == *"size=64m"* ) ]] \
