@@ -67,7 +67,7 @@ capture_failure_diagnostics() {
 
   for log_file in \
     network-launch.log postgres-launch.log redis-launch.log \
-    postgres-proxy.log prisma.log docker-app.log app-proxy.log jwks-curl.log; do
+    postgres-proxy.log prisma-format.log prisma.log docker-app.log app-proxy.log jwks-curl.log; do
     printf '\n== %s ==\n' "${log_file}" >>"${raw_file}"
     if [[ -f "${temp_dir}/${log_file}" ]]; then
       tail -n 80 "${temp_dir}/${log_file}" >>"${raw_file}" 2>/dev/null || true
@@ -333,7 +333,7 @@ wait_for_endpoint() {
   fail "candidate app did not serve ${endpoint}"
 }
 
-for command_name in docker ss curl node tee git sha256sum mktemp stat readlink grep tail; do
+for command_name in docker ss curl node tee git sha256sum mktemp stat readlink grep tail cp; do
   command -v "${command_name}" >/dev/null 2>&1 \
     || { printf 'ERROR: %s is required\n' "${command_name}" >&2; exit 1; }
 done
@@ -378,6 +378,21 @@ readonly source_inputs_sha256="${source_inputs_hash_line%% *}"
 readonly dockerfile_sha="$(sha256sum "${APP_DIR}/Dockerfile" | cut -d' ' -f1)"
 readonly lockfile_sha="$(sha256sum "${APP_DIR}/package-lock.json" | cut -d' ' -f1)"
 readonly local_prisma_schema_sha="$(sha256sum "${APP_DIR}/prisma/schema.prisma" | cut -d' ' -f1)"
+cp -R "${APP_DIR}/prisma" "${temp_dir}/prisma"
+cp "${temp_dir}/prisma/schema.prisma" "${temp_dir}/schema.formatted.prisma"
+if (cd "${temp_dir}" && \
+  DATABASE_URL="postgresql://unused:unused@127.0.0.1:1/unused" \
+  "${APP_DIR}/node_modules/.bin/prisma" format \
+    --schema "${temp_dir}/schema.formatted.prisma" \
+    >"${temp_dir}/prisma-format.log" 2>&1); then
+  :
+else
+  fail "pinned Prisma could not normalize the local schema for generated-client comparison"
+fi
+if grep -Fq "Environment variables loaded from" "${temp_dir}/prisma-format.log"; then
+  fail "pinned Prisma format unexpectedly loaded an environment file"
+fi
+readonly formatted_prisma_schema_sha="$(sha256sum "${temp_dir}/schema.formatted.prisma" | cut -d' ' -f1)"
 readonly candidate_image_id="$(docker image inspect "${CANDIDATE_IMAGE}" --format '{{.Id}}')"
 readonly candidate_revision_label="$(docker image inspect "${candidate_image_id}" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')"
 readonly candidate_inputs_label="$(docker image inspect "${candidate_image_id}" --format "{{index .Config.Labels \"${INPUTS_LABEL}\"}}")"
@@ -395,6 +410,7 @@ log "source_inputs_sha256=${source_inputs_sha256} candidate_revision_label=match
 log "dockerfile_sha256=${dockerfile_sha}"
 log "package_lock_sha256=${lockfile_sha}"
 log "local_prisma_schema_sha256=${local_prisma_schema_sha}"
+log "formatted_prisma_schema_sha256=${formatted_prisma_schema_sha} runner=local-pinned-prisma"
 log "candidate_reference=${CANDIDATE_IMAGE}"
 log "candidate_image_id=${candidate_image_id}"
 log "postgres_image_id=${postgres_image_id}"
@@ -489,16 +505,21 @@ else
   fail "host-owned PostgreSQL loopback relay could not be started"
 fi
 
-if DATABASE_URL="postgresql://postgres:${postgres_password}@127.0.0.1:${POSTGRES_PORT}/auth_db" \
+if (cd "${temp_dir}" && \
+  DATABASE_URL="postgresql://postgres:${postgres_password}@127.0.0.1:${POSTGRES_PORT}/auth_db" \
   "${APP_DIR}/node_modules/.bin/prisma" migrate deploy \
-    --schema "${APP_DIR}/prisma/schema.prisma" \
-    >"${temp_dir}/prisma.log" 2>&1; then
+    --schema "${temp_dir}/prisma/schema.prisma" \
+    >"${temp_dir}/prisma.log" 2>&1); then
   log "migrations=ok runner=local-pinned-prisma"
 else
   prisma_exit=$?
   log "migrations=failed runner=local-pinned-prisma exit=${prisma_exit}"
   fail "pinned Prisma migration deploy failed"
 fi
+if grep -Fq "Environment variables loaded from" "${temp_dir}/prisma.log"; then
+  fail "pinned Prisma migration unexpectedly loaded an environment file"
+fi
+log "prisma_env_autoload=absent temp-cwd-and-schema=verified"
 
 if PHASE0_CANDIDATE_IMAGE_ID="${candidate_image_id}" \
   PHASE0_NETWORK_ID="${network_id}" \
@@ -633,9 +654,9 @@ readonly image_schema_hashes="$(docker exec "${app_container_id}" node -e '
 read -r image_prisma_schema_sha generated_client_schema_sha <<<"${image_schema_hashes}"
 [[ "${image_prisma_schema_sha}" == "${local_prisma_schema_sha}" ]] \
   || fail "image Prisma schema hash does not match local clean input"
-[[ "${generated_client_schema_sha}" == "${local_prisma_schema_sha}" ]] \
-  || fail "generated Prisma client schema hash does not match local clean input"
-log "image_prisma_schema_sha256=${image_prisma_schema_sha} generated_client_schema_sha256=${generated_client_schema_sha} local-schema=matched"
+[[ "${generated_client_schema_sha}" == "${formatted_prisma_schema_sha}" ]] \
+  || fail "generated Prisma client schema hash does not match pinned-Prisma-normalized local schema"
+log "image_prisma_schema_sha256=${image_prisma_schema_sha} generated_client_schema_sha256=${generated_client_schema_sha} raw-and-normalized-local-schema=matched"
 
 if docker exec "${app_container_id}" node -e '
   const socket = require("node:net").createConnection({ host: "1.1.1.1", port: 443 });
