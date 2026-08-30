@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.example.invalid/sso/http-response.schema.json",
+  "title": "SSO HTTP response snapshot",
+  "type": "object",
+  "required": ["status", "headers", "body"],
+  "properties": {
+    "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+    "headers": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "body": {}
+  },
+  "additionalProperties": false
+}

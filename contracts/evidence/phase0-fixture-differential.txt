@@ -1,0 +1,16 @@
+Phase 0 fixture differential
+Generated: 2026-08-30T14:09:23Z
+Working tree base: 5ab2a079620409c1f28954ead97b537310fc79ba
+Environment: two patched Express instances with independent disposable PostgreSQL 16 databases and Redis 7.4 logical databases.
+
+PASS security.refresh-none-algorithm
+PASS security.refresh-hs256-rotation
+PASS security.refresh-hs384-algorithm
+PASS security.refresh-hs512-algorithm
+PASS auth.login-issues-verifiable-token
+PASS recovery.password-reset-request
+PASS recovery.email-verification-request
+PASS admin.status-mutation
+All 8 contract scenario(s) passed
+
+The disposable servers, databases, Redis containers, and listeners were stopped and removed after this run. This controlled sample is not production-canary evidence.

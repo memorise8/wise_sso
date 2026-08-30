@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.example.invalid/sso/http-snapshots.schema.json",
+  "type": "object",
+  "required": ["_notice", "health", "ready", "openidConfiguration", "jwks", "notFound"],
+  "properties": {
+    "_notice": { "type": "string", "pattern": "Synthetic" },
+    "health": { "$ref": "#/$defs/response" },
+    "ready": { "$ref": "#/$defs/response" },
+    "openidConfiguration": { "$ref": "#/$defs/response" },
+    "jwks": { "$ref": "#/$defs/response" },
+    "notFound": { "$ref": "#/$defs/response" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "response": {
+      "type": "object",
+      "required": ["status", "headers", "body"],
+      "properties": {
+        "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body": {}
+      },
+      "additionalProperties": false
+    }
+  }
+}

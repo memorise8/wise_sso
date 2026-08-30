@@ -15,6 +15,11 @@ import {
 } from "./services/jwks-discovery.service.js";
 import { checkPostgresReadiness } from "./services/readiness.service.js";
 import type { ReadinessCheck } from "./services/readiness.service.js";
+import {
+  createRequestInstrumentationMiddleware,
+  structuredRequestInstrumentation
+} from "./services/request-instrumentation.service.js";
+import type { RequestInstrumentation } from "./services/request-instrumentation.service.js";
 import { isHttpError } from "./utils/httpError.js";
 
 const publicDir = path.resolve(process.cwd(), "public");
@@ -24,6 +29,7 @@ const authPortalRoutes = ["/", "/login", "/signup", "/auth/callback", "/password
 
 type AppDependencies = {
   readonly readinessCheck?: ReadinessCheck;
+  readonly requestInstrumentation?: RequestInstrumentation;
 };
 
 const sendReadinessUnavailable = (response: Response): void => {
@@ -35,6 +41,7 @@ export const createApp = (dependencies: AppDependencies = {}): Express => {
   const readinessCheck = dependencies.readinessCheck ?? checkPostgresReadiness;
 
   app.set("trust proxy", 1);
+  app.use(createRequestInstrumentationMiddleware(dependencies.requestInstrumentation));
   app.use(helmet());
   app.use(cors(corsOptions));
   app.use(express.json());
@@ -122,4 +129,4 @@ export const createApp = (dependencies: AppDependencies = {}): Express => {
   return app;
 };
 
-export const app = createApp();
+export const app = createApp({ requestInstrumentation: structuredRequestInstrumentation });

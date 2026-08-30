@@ -1,5 +1,6 @@
 import express from "express";
 import { createHash } from "node:crypto";
+import jwt from "jsonwebtoken";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -39,6 +40,7 @@ const recordLoginFailureAuditEvent = vi.fn();
 const findAuditUserIdByEmail = vi.fn();
 const findAuditUserIdByPasswordEmail = vi.fn();
 const createAuthHandoff = vi.fn();
+const tokenTransaction = vi.fn();
 const rateLimitCounts = new Map<string, number>();
 const temisRedirectUri = "https://financenow.kr/auth/callback";
 const validCodeVerifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
@@ -47,6 +49,14 @@ const temisCallerState = "R_sz-vF_74ssoStateBase64urlExactly43Chars";
 
 vi.mock("../services/password-auth.service.js", () => ({
   loginWithPassword
+}));
+
+vi.mock("@prisma/client", () => ({
+  PrismaClient: vi.fn(function PrismaClient() {
+    return {
+      $transaction: tokenTransaction
+    };
+  })
 }));
 
 vi.mock("../services/password-auth.store.js", () => ({
@@ -114,6 +124,7 @@ describe("auth password routes", () => {
     refreshAccessToken.mockReset();
     rotateRefreshToken.mockReset();
     createAuthHandoff.mockReset();
+    tokenTransaction.mockReset();
     recordAuthAuditEvent.mockReset();
     recordLoginFailureAuditEvent.mockReset();
     findAuditUserIdByEmail.mockReset();
@@ -294,5 +305,76 @@ describe("auth password routes", () => {
     expect(recordAuthAuditEvent).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       refreshToken: "raw-refresh-token"
     }));
+  });
+
+  it.each([
+    ["HS384", () => jwt.sign(
+      { sub: "auth-user-1", type: "refresh", tokenId: "refresh-token-id" },
+      "test-refresh-secret-long",
+      { algorithm: "HS384", expiresIn: "30d" }
+    )],
+    ["HS512", () => jwt.sign(
+      { sub: "auth-user-1", type: "refresh", tokenId: "refresh-token-id" },
+      "test-refresh-secret-long",
+      { algorithm: "HS512", expiresIn: "30d" }
+    )],
+    ["none", () => {
+      const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+      const payload = Buffer.from(JSON.stringify({
+        sub: "auth-user-1",
+        type: "refresh",
+        tokenId: "refresh-token-id"
+      })).toString("base64url");
+      return `${header}.${payload}.`;
+    }],
+    ["RS256", () => jwt.sign(
+      { sub: "auth-user-1", type: "refresh", tokenId: "refresh-token-id" },
+      process.env["JWT_ACCESS_PRIVATE_KEY"]?.replace(/\\n/g, "\n") ?? "",
+      { algorithm: "RS256", expiresIn: "30d" }
+    )],
+    ["HS256 access type", () => jwt.sign(
+      { sub: "auth-user-1", type: "access", tokenId: "refresh-token-id" },
+      "test-refresh-secret-long",
+      { algorithm: "HS256", expiresIn: "30d" }
+    )],
+    ["malformed", () => "not-a-jwt"]
+  ])("Given an actual %s refresh token When POST /auth/refresh is called Then it returns the generic 401 envelope and audits once without a token DB transaction", async (_algorithm, createToken) => {
+    const actualTokenService = await vi.importActual<typeof import("../services/token.service.js")>(
+      "../services/token.service.js"
+    );
+    rotateRefreshToken.mockImplementation(actualTokenService.rotateRefreshToken);
+    const { authRouter } = await import("./auth.routes.js");
+    const { HttpError } = await import("../utils/httpError.js");
+    const app = express();
+    app.use(express.json());
+    app.use("/auth", authRouter);
+    app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+      if (error instanceof HttpError) {
+        response.status(error.statusCode).json({ error: { code: error.code, message: error.message } });
+        return;
+      }
+
+      response.status(500).json({ error: { code: "INTERNAL_SERVER_ERROR", message: "Internal server error" } });
+    });
+
+    const response = await request(app)
+      .post("/auth/refresh")
+      .send({ refreshToken: createToken() });
+
+    expect(response.status).toBe(401);
+    expect(response.body).toEqual({
+      error: {
+        code: "INVALID_REFRESH_TOKEN",
+        message: "Invalid refresh token"
+      }
+    });
+    expect(recordAuthAuditEvent).toHaveBeenCalledTimes(1);
+    expect(recordAuthAuditEvent).toHaveBeenCalledWith(expect.anything(), {
+      eventType: "refresh",
+      outcome: "failure",
+      userId: null,
+      reasonCode: "REFRESH_FAILED"
+    });
+    expect(tokenTransaction).not.toHaveBeenCalled();
   });
 });

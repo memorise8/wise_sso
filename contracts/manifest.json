@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "baseline": {
+    "implementation": "Express",
+    "sourceRoot": "auth-server/src",
+    "note": "References are traceability evidence only; the runner does not import them."
+  },
+  "fixtureAdapter": {
+    "express": "adapters/express_fixture.py",
+    "protocol": "adapters/README.md",
+    "dependencies": ["psql", "Python standard-library TCP/RESP"],
+    "safety": "loopback-only, test-named PostgreSQL database, acknowledged isolated Redis DB >= 1, dev mail acknowledgement"
+  },
+  "validations": [
+    { "snapshot": "snapshots/http.json", "schema": "schemas/http-snapshots.schema.json" },
+    { "snapshot": "snapshots/http.json#/health", "schema": "schemas/http-response.schema.json" },
+    { "snapshot": "snapshots/http.json#/ready", "schema": "schemas/http-response.schema.json" },
+    { "snapshot": "snapshots/http.json#/openidConfiguration", "schema": "schemas/http-response.schema.json" },
+    { "snapshot": "snapshots/http.json#/jwks", "schema": "schemas/http-response.schema.json" },
+    { "snapshot": "snapshots/http.json#/notFound", "schema": "schemas/http-response.schema.json" },
+    { "snapshot": "snapshots/jwt-access.json", "schema": "schemas/jwt-access-snapshot.schema.json" },
+    { "snapshot": "snapshots/jwt-access.json#/claims", "schema": "schemas/jwt-access-claims.schema.json" },
+    { "snapshot": "snapshots/state.json", "schema": "schemas/auth-state.schema.json" },
+    { "snapshot": "snapshots/state.json#/user", "schema": "schemas/auth-state.schema.json#/$defs/user" },
+    { "snapshot": "snapshots/state.json#/refreshToken", "schema": "schemas/auth-state.schema.json#/$defs/refreshToken" },
+    { "snapshot": "snapshots/state.json#/authHandoff", "schema": "schemas/auth-state.schema.json#/$defs/authHandoff" },
+    { "snapshot": "snapshots/state.json#/oauthState", "schema": "schemas/auth-state.schema.json#/$defs/oauthState" }
+  ],
+  "behaviors": [
+    {
+      "id": "service.health",
+      "description": "Liveness response remains stable.",
+      "scenarios": ["public.health"],
+      "schemas": ["schemas/http-response.schema.json"],
+      "snapshots": ["snapshots/http.json#/health"],
+      "evidence": ["auth-server/src/app.ts", "auth-server/src/app.test.ts"]
+    },
+    {
+      "id": "service.readiness",
+      "description": "A ready instance reports the stable readiness response.",
+      "scenarios": ["public.ready"],
+      "schemas": ["schemas/http-response.schema.json"],
+      "snapshots": ["snapshots/http.json#/ready"],
+      "evidence": ["auth-server/src/app.ts", "auth-server/src/services/readiness.service.ts"]
+    },
+    {
+      "id": "oidc.discovery",
+      "description": "OIDC discovery metadata and public cache policy remain compatible.",
+      "scenarios": ["public.openid-configuration"],
+      "schemas": ["schemas/http-response.schema.json", "schemas/jwt-access-claims.schema.json"],
+      "snapshots": ["snapshots/http.json#/openidConfiguration", "snapshots/jwt-access.json"],
+      "evidence": ["auth-server/src/app.ts", "auth-server/src/services/jwks-discovery.service.ts"]
+    },
+    {
+      "id": "oidc.jwks",
+      "description": "JWKS shape, signing algorithm, key use, and cache policy remain compatible.",
+      "scenarios": ["public.jwks"],
+      "schemas": ["schemas/http-response.schema.json"],
+      "snapshots": ["snapshots/http.json#/jwks"],
+      "evidence": ["auth-server/src/app.ts", "auth-server/src/services/jwks-discovery.service.ts"]
+    },
+    {
+      "id": "http.not-found",
+      "description": "Unknown routes retain the public error envelope.",
+      "scenarios": ["public.not-found"],
+      "schemas": ["schemas/http-response.schema.json"],
+      "snapshots": ["snapshots/http.json#/notFound"],
+      "evidence": ["auth-server/src/app.ts"]
+    },
+    {
+      "id": "auth.state-shapes",
+      "description": "Synthetic state examples document the DB/Redis boundary without production data.",
+      "scenarios": [],
+      "schemas": ["schemas/auth-state.schema.json"],
+      "snapshots": ["snapshots/state.json"],
+      "evidence": [
+        "auth-server/prisma/schema.prisma",
+        "auth-server/src/services/auth-handoff.store.ts",
+        "auth-server/src/services/oauth-state.store.ts",
+        "auth-server/src/services/token.service.ts"
+      ]
+    },
+    {
+      "id": "auth.credentials-and-token-lifecycle",
+      "description": "Credential registration/login and refresh rotation require isolated seeded stores before differential execution.",
+      "execution": "fixture-required",
+      "endpoints": [
+        "POST /auth/register",
+        "POST /auth/login",
+        "POST /auth/refresh",
+        "POST /auth/logout",
+        "GET /users/me"
+      ],
+      "scenarios": [
+        "security.refresh-none-algorithm",
+        "security.refresh-hs256-rotation",
+        "security.refresh-hs384-algorithm",
+        "security.refresh-hs512-algorithm",
+        "auth.login-issues-verifiable-token"
+      ],
+      "schemas": ["schemas/jwt-access-claims.schema.json", "schemas/auth-state.schema.json"],
+      "snapshots": ["snapshots/jwt-access.json", "snapshots/state.json"],
+      "evidence": [
+        "auth-server/src/routes/auth.routes.ts",
+        "auth-server/src/controllers/auth.controller.ts",
+        "auth-server/src/controllers/user.controller.ts",
+        "auth-server/src/routes/auth.flow.routes.test.ts"
+      ]
+    },
+    {
+      "id": "auth.handoff-and-oauth",
+      "description": "OAuth state and one-time authorization-code consumption require deterministic provider/store fixtures.",
+      "execution": "fixture-required",
+      "endpoints": [
+        "GET /auth/google",
+        "GET /auth/google/callback",
+        "GET /auth/naver",
+        "GET /auth/naver/callback",
+        "GET /auth/kakao",
+        "GET /auth/kakao/callback",
+        "POST /auth/exchange"
+      ],
+      "scenarios": [],
+      "schemas": ["schemas/auth-state.schema.json", "schemas/jwt-access-claims.schema.json"],
+      "snapshots": ["snapshots/state.json", "snapshots/jwt-access.json"],
+      "evidence": [
+        "auth-server/src/routes/auth.routes.ts",
+        "auth-server/src/controllers/oauth.controller.ts",
+        "auth-server/src/routes/auth.oauth.routes.test.ts"
+      ]
+    },
+    {
+      "id": "auth.account-recovery",
+      "description": "Email verification and password-reset transitions require deterministic mail/store fixtures.",
+      "execution": "fixture-required",
+      "endpoints": [
+        "POST /auth/password-reset/request",
+        "POST /auth/password-reset/confirm",
+        "POST /auth/email-verification/request",
+        "POST /auth/email-verification/confirm"
+      ],
+      "scenarios": ["recovery.password-reset-request", "recovery.email-verification-request"],
+      "schemas": ["schemas/auth-state.schema.json"],
+      "snapshots": ["snapshots/state.json"],
+      "evidence": [
+        "auth-server/src/controllers/auth.controller.ts",
+        "auth-server/src/routes/auth.password-reset.routes.test.ts",
+        "auth-server/src/routes/auth.email-verification.routes.test.ts"
+      ]
+    },
+    {
+      "id": "admin.authorization-and-mutations",
+      "description": "Admin reads/mutations require seeded users, roles, access tokens, and audit assertions.",
+      "execution": "fixture-required",
+      "endpoints": [
+        "GET /admin/users",
+        "GET /admin/audit-logs",
+        "PATCH /admin/users/:id/status",
+        "POST /admin/users/:id/roles",
+        "DELETE /admin/users/:id/roles/:roleId",
+        "POST /admin/users/:id/revoke-sessions"
+      ],
+      "scenarios": ["admin.status-mutation"],
+      "schemas": ["schemas/jwt-access-claims.schema.json", "schemas/auth-state.schema.json"],
+      "snapshots": ["snapshots/jwt-access.json", "snapshots/state.json"],
+      "evidence": [
+        "auth-server/src/routes/admin.routes.ts",
+        "auth-server/src/routes/admin.routes.test.ts"
+      ]
+    }
+  ]
+}

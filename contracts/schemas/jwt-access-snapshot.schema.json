@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.example.invalid/sso/jwt-access-snapshot.schema.json",
+  "type": "object",
+  "required": ["_notice", "header", "claims", "signature"],
+  "properties": {
+    "_notice": { "type": "string", "pattern": "Synthetic" },
+    "header": {
+      "type": "object",
+      "required": ["alg", "typ", "kid"],
+      "properties": {
+        "alg": { "const": "RS256" },
+        "typ": { "const": "JWT" },
+        "kid": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "claims": { "$ref": "jwt-access-claims.schema.json" },
+    "signature": { "const": "[SYNTHETIC-NOT-A-SIGNATURE]" }
+  },
+  "additionalProperties": false
+}

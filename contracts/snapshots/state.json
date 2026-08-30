@@ -1,0 +1,40 @@
+{
+  "_notice": "Synthetic and sanitized. Hashes/codes are non-secret placeholders.",
+  "user": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "email": "contract-user@example.invalid",
+    "emailVerified": true,
+    "status": "ACTIVE",
+    "roles": [{ "serviceKey": "example", "name": "viewer" }]
+  },
+  "refreshToken": {
+    "tokenHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "userId": "00000000-0000-4000-8000-000000000001",
+    "audience": "service.example.invalid",
+    "expiresAt": "2024-01-01T01:00:00Z",
+    "revokedAt": null
+  },
+  "authHandoff": {
+    "key": "wiseacct:auth-handoff:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ttlSeconds": 120,
+    "clientId": "example-client",
+    "audience": "service.example.invalid",
+    "redirectUri": "https://client.example.invalid/callback",
+    "userId": "00000000-0000-4000-8000-000000000001",
+    "loginMethod": "password",
+    "codeChallenge": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "codeChallengeMethod": "S256",
+    "state": "synthetic-caller-state",
+    "expiresAtEpochMs": 1700000120000
+  },
+  "oauthState": {
+    "key": "wiseacct:oauth-state:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    "ttlSeconds": 600,
+    "provider": "google",
+    "clientId": "example-client",
+    "redirectUri": "https://client.example.invalid/callback",
+    "callerState": "synthetic-caller-state",
+    "codeChallenge": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "codeChallengeMethod": "S256"
+  }
+}
