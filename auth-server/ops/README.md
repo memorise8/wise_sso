@@ -93,6 +93,67 @@ curl -i http://127.0.0.1:4000/readyz
 
 `/healthz` only proves the HTTP process is alive. `/readyz` checks PostgreSQL and should be the load balancer readiness gate.
 
+## Phase 0 Candidate Image Smoke
+
+First commit the exact image inputs (`Dockerfile`, `package*.json`, `tsconfig`,
+`prisma`, `src`, and `public`) so they have no tracked or untracked changes, then
+build with an explicit candidate tag:
+
+```sh
+cd auth-server
+npm run build:phase0-image -- wiseacct-sso-auth:phase0-<revision>
+```
+
+The build wrapper hashes `git ls-tree -r HEAD` for exactly those inputs, passes
+`SOURCE_REVISION` and `SOURCE_INPUTS_SHA256` as build arguments, applies OCI
+revision and source-input labels, and verifies them on the resolved image ID.
+
+Run that candidate against disposable PostgreSQL 16 and Redis 7.4 without
+changing the current Compose stack. The harness fails closed if its explicit
+`wiseacct-phase0-smoke-*` resource names or loopback ports `4001`/`5433` are in
+use, creates a Docker internal network with no external egress, generates a new
+ephemeral RSA keypair, refresh secret, and database password for every run,
+applies migrations with the pinned local Prisma binary, and removes only
+resources whose captured ID and per-run ownership label both match. It never
+reads `auth-server/.env`; OAuth and external mail delivery are disabled and all
+remaining application configuration is synthetic. The resolved immutable image
+ID is used for launch and compared with the running container image ID. The
+smoke harness independently requires the same clean HEAD inputs and label
+values, then compares the local Prisma schema hash with both schema copies in
+the running image.
+
+```sh
+cd auth-server
+npm run test:phase0-image-smoke -- <current-candidate-image>
+```
+
+Sanitized evidence is atomically written only to
+`contracts/evidence/phase0-image-smoke.txt`. The image argument is mandatory so
+stale tags cannot be tested accidentally. Evidence includes the source SHA,
+Dockerfile and lockfile hashes, resolved image IDs, running image IDs, and owned
+resource IDs, but never generated secret values.
+
+On failure, bounded tails of Docker launch, relay, Prisma, app, and JWKS logs plus
+candidate/PostgreSQL/Redis state and Docker log tails are sanitized into the
+fixed mode-600 `contracts/evidence/phase0-image-smoke-diagnostics.txt`. Exact
+synthetic DB credentials, URI passwords, PEM blocks, JWTs, and generic
+credential/token patterns are redacted before publication. A successful run
+atomically replaces that artifact with an `EMPTY` success marker.
+
+The harness requires Linux with readable same-user `/proc/<pid>/environ`, Bash,
+Docker Engine with Linux bridge networking, Node.js, `curl`, `ss`, GNU
+`readlink`/`stat`/`sha256sum`/`grep`, and the repository's installed pinned
+Prisma binary. Docker does not publish ports from the internal network. Instead,
+short-lived host Node.js TCP relays, identified by PID and per-run ownership
+environment, bind only `127.0.0.1:4001` and `127.0.0.1:5433` and forward to the
+captured internal container addresses. The candidate remains attached only to
+the internal Docker network and therefore receives no external-egress network.
+PostgreSQL is limited to 512 MiB/1 CPU/256 PIDs, Redis to 128 MiB/0.5 CPU/128
+PIDs, and the candidate app to 512 MiB/1 CPU/256 PIDs. The app also drops all
+capabilities, enables `no-new-privileges`, uses a read-only root filesystem, and
+gets only a bounded, non-executable `/tmp` tmpfs. The harness inspects and
+records these effective settings rather than trusting command arguments alone.
+
 ## TEMIS Client Policy
 
 Production `AUTH_CLIENTS_JSON` must keep redirect authorization separate from CORS:

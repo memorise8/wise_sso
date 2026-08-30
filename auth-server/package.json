@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
+    "build:phase0-image": "bash ops/build-phase0-image.sh",
     "test": "vitest run",
     "test:phase0-integration": "bash ops/run-phase0-integration.sh",
+    "test:phase0-image-smoke": "bash ops/run-phase0-image-smoke.sh",
     "qa:auth-flow": "node scripts/qa-auth-flow.mjs",
     "start": "node dist/src/server.js",
     "tokens:cleanup": "tsx src/scripts/cleanup-refresh-tokens.ts",

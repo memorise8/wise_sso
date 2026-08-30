@@ -1,0 +1,6 @@
+NOT-YET-RUN
+
+The earlier image smoke evidence was invalidated because it used deployment
+configuration or a non-canonical candidate. Run the exact canonical hardened
+image with auth-server/ops/run-phase0-image-smoke.sh to atomically replace this
+marker with synthetic-secret, internal-network evidence.
