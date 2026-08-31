@@ -5,16 +5,12 @@ import {
   recordAuthAuditEvent
 } from "../services/audit.service.js";
 import { auditLogStore } from "../services/audit.store.js";
+import { redisTtlStoreClient } from "../services/redis.client.js";
 
 type RateLimitOptions = {
   readonly windowMs: number;
   readonly maxRequests: number;
   readonly message: string;
-};
-
-type RateLimitBucket = {
-  count: number;
-  resetAtMs: number;
 };
 
 const getClientKey = (request: Request): string => {
@@ -23,27 +19,20 @@ const getClientKey = (request: Request): string => {
 };
 
 export const createRateLimitMiddleware = (options: RateLimitOptions): RequestHandler => {
-  const buckets = new Map<string, RateLimitBucket>();
-
   return (request, response, next) => {
     void (async () => {
-      const nowMs = Date.now();
       const clientKey = getClientKey(request);
-      const existingBucket = buckets.get(clientKey);
-      const bucket =
-        existingBucket && existingBucket.resetAtMs > nowMs
-          ? existingBucket
-          : { count: 0, resetAtMs: nowMs + options.windowMs };
+      const windowSeconds = Math.ceil(options.windowMs / 1000);
+      const count = await redisTtlStoreClient.incrementWithTtl(
+        `wiseacct:rate-limit:${clientKey}:${request.baseUrl}${request.path}`,
+        windowSeconds
+      );
 
-      bucket.count += 1;
-      buckets.set(clientKey, bucket);
-
-      if (bucket.count <= options.maxRequests) {
+      if (count <= options.maxRequests) {
         next();
         return;
       }
 
-      const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAtMs - nowMs) / 1000));
       await recordAuthAuditEvent(auditLogStore, {
         eventType: auditEventTypes.rateLimitExceeded,
         outcome: "failure",
@@ -54,11 +43,11 @@ export const createRateLimitMiddleware = (options: RateLimitOptions): RequestHan
           route: `${request.baseUrl}${request.path}`,
           method: request.method,
           maxRequests: options.maxRequests,
-          windowSeconds: Math.ceil(options.windowMs / 1000),
-          retryAfterSeconds
+          windowSeconds,
+          retryAfterSeconds: windowSeconds
         }
       });
-      response.setHeader("Retry-After", String(retryAfterSeconds));
+      response.setHeader("Retry-After", String(windowSeconds));
       response.status(429).json({
         error: {
           code: "RATE_LIMITED",

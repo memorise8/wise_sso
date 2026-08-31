@@ -26,9 +26,9 @@ process.env["AUTH_CLIENTS_JSON"] = JSON.stringify([
   {
     clientId: "temis",
     audience: "temis",
-    allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+    allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
     allowedOrigins: ["https://financenow.kr"],
-    defaultRole: { serviceKey: "temis", name: "pending" }
+    defaultRole: { serviceKey: "temis", name: "user" }
   },
   {
     clientId: "ledger",
@@ -80,8 +80,12 @@ const authHandoffs = new Map<string, AuthHandoffMetadata>();
 let oauthStateSequence = 0;
 let authHandoffSequence = 0;
 const temisRedirectUri = "https://financenow.kr/auth/callback";
+const temisMeRedirectUri = "https://temis.me/auth/callback";
+const tiTemisMeRedirectUri = "https://ti.temis.me/auth/callback";
 const validCodeVerifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
 const validCodeChallenge = createHash("sha256").update(validCodeVerifier).digest("base64url");
+const temisCallerState = "R_sz-vF_74ssoStateBase64urlExactly43Chars";
+const rateLimitCounts = new Map<string, number>();
 
 vi.mock("../services/token.service.js", () => ({
   issueTokenPair,
@@ -117,6 +121,16 @@ vi.mock("../services/audit.store.js", () => ({
     create: vi.fn(),
     findUserIdByEmail: findAuditUserIdByEmail,
     findUserIdByPasswordEmail: findAuditUserIdByPasswordEmail
+  }
+}));
+
+vi.mock("../services/redis.client.js", () => ({
+  redisTtlStoreClient: {
+    incrementWithTtl: vi.fn(async (key: string) => {
+      const next = (rateLimitCounts.get(key) ?? 0) + 1;
+      rateLimitCounts.set(key, next);
+      return next;
+    })
   }
 }));
 
@@ -231,6 +245,7 @@ describe("auth OAuth routes", () => {
     vi.resetModules();
     oauthStates.clear();
     authHandoffs.clear();
+    rateLimitCounts.clear();
     oauthStateSequence = 0;
     authHandoffSequence = 0;
     issueTokenPair.mockReset();
@@ -320,6 +335,40 @@ describe("auth OAuth routes", () => {
     });
   });
 
+  it("Given the TEMIS rebrand callback URI When GET /auth/google is called Then it accepts the redirect URI", async () => {
+    const app = await createOAuthTestApp();
+
+    const response = await request(app).get("/auth/google").query({
+      client_id: "temis",
+      redirect_uri: temisMeRedirectUri,
+      state: temisCallerState,
+      code_challenge: validCodeChallenge,
+      code_challenge_method: "S256"
+    });
+
+    expect(response.status).toBe(302);
+    const redirectUrl = new URL(z.string().url().parse(response.headers["location"]));
+    const providerState = z.string().min(1).parse(redirectUrl.searchParams.get("state"));
+    expect(oauthStates.get(providerState)?.redirectUri).toBe(temisMeRedirectUri);
+  });
+
+  it("Given the TEMIS isolated certification callback URI When GET /auth/google is called Then it accepts the redirect URI", async () => {
+    const app = await createOAuthTestApp();
+
+    const response = await request(app).get("/auth/google").query({
+      client_id: "temis",
+      redirect_uri: tiTemisMeRedirectUri,
+      state: temisCallerState,
+      code_challenge: validCodeChallenge,
+      code_challenge_method: "S256"
+    });
+
+    expect(response.status).toBe(302);
+    const redirectUrl = new URL(z.string().url().parse(response.headers["location"]));
+    const providerState = z.string().min(1).parse(redirectUrl.searchParams.get("state"));
+    expect(oauthStates.get(providerState)?.redirectUri).toBe(tiTemisMeRedirectUri);
+  });
+
   it("Given a callback without OAuth state When GET /auth/google/callback is called Then it rejects the request before token exchange", async () => {
     const app = await createOAuthTestApp();
 
@@ -376,7 +425,7 @@ describe("auth OAuth routes", () => {
     const loginResponse = await request(app).get("/auth/google").query({
       client_id: "temis",
       redirect_uri: temisRedirectUri,
-      state: "qa-state",
+      state: temisCallerState,
       code_challenge: validCodeChallenge,
       code_challenge_method: "S256"
     });
@@ -393,11 +442,60 @@ describe("auth OAuth routes", () => {
     expect(redirectUrl.origin).toBe("https://financenow.kr");
     expect(redirectUrl.pathname).toBe("/auth/callback");
     expect(redirectUrl.searchParams.get("code")).toEqual(expect.any(String));
-    expect(redirectUrl.searchParams.get("state")).toBe("qa-state");
+    expect(redirectUrl.searchParams.get("state")).toBe(temisCallerState);
     expect(redirectUrl.searchParams.get("accessToken")).toBeNull();
     expect(redirectUrl.searchParams.get("refreshToken")).toBeNull();
     expect(redirectUrl.hash).not.toContain("accessToken");
     expect(redirectUrl.hash).not.toContain("refreshToken");
+    const handoffCode = z.string().min(1).parse(redirectUrl.searchParams.get("code"));
+    expect(authHandoffs.get(handoffCode)?.state).toBe(temisCallerState);
+  });
+
+  it("Given an active browser re-enters Google OAuth with a new TEMIS state When callback completes Then the new caller state is echoed", async () => {
+    const app = await createOAuthTestApp();
+    kyPost.mockReturnValue({
+      json: vi.fn().mockResolvedValue({ access_token: "provider-access-token" })
+    });
+    kyGet.mockReturnValue({
+      json: vi.fn().mockResolvedValue({
+        sub: "google-user-1",
+        email: "user@example.com",
+        name: "Google User"
+      })
+    });
+    findOrCreateUserBySocialProfile.mockResolvedValue({ id: "user-1", status: "ACTIVE" });
+    const firstCallerState = "first_43char_state_from_temis_BFF_exactly_001";
+    const secondCallerState = "second_43char_state_from_temis_BFF_exactly_02";
+    const startOAuth = async (callerState: string): Promise<string> => {
+      const response = await request(app).get("/auth/google").query({
+        client_id: "temis",
+        redirect_uri: temisRedirectUri,
+        state: callerState,
+        code_challenge: validCodeChallenge,
+        code_challenge_method: "S256"
+      });
+      const location = z.string().url().parse(response.headers["location"]);
+      return z.string().min(1).parse(new URL(location).searchParams.get("state"));
+    };
+
+    const firstProviderState = await startOAuth(firstCallerState);
+    const secondProviderState = await startOAuth(secondCallerState);
+    const firstCallback = await request(app)
+      .get("/auth/google/callback")
+      .query({ code: "authorization-code-1", state: firstProviderState });
+    const secondCallback = await request(app)
+      .get("/auth/google/callback")
+      .query({ code: "authorization-code-2", state: secondProviderState });
+
+    const firstRedirectUrl = new URL(z.string().url().parse(firstCallback.headers["location"]));
+    const secondRedirectUrl = new URL(z.string().url().parse(secondCallback.headers["location"]));
+    expect(firstCallback.status).toBe(302);
+    expect(secondCallback.status).toBe(302);
+    expect(firstProviderState).not.toBe(secondProviderState);
+    expect(firstRedirectUrl.searchParams.get("state")).toBe(firstCallerState);
+    expect(secondRedirectUrl.searchParams.get("state")).toBe(secondCallerState);
+    expect(firstRedirectUrl.searchParams.get("state")).not.toBe(firstProviderState);
+    expect(secondRedirectUrl.searchParams.get("state")).not.toBe(secondProviderState);
   });
 
   it("Given repeated OAuth start requests When GET /auth/google exceeds the auth limit Then it returns a generic rate limit error and audits the limit", async () => {

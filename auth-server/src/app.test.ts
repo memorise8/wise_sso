@@ -10,6 +10,12 @@ vi.mock("./services/oauth-state.store.js", () => ({
   }
 }));
 
+vi.mock("./services/redis.client.js", () => ({
+  redisTtlStoreClient: {
+    incrementWithTtl: vi.fn(async () => 1)
+  }
+}));
+
 const temisRedirectUri = "https://financenow.kr/auth/callback";
 const validCodeChallenge = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
 const accessKeyId = "temis-access-key-1";
@@ -60,9 +66,9 @@ const setRequiredEnv = (): void => {
     {
       clientId: "temis",
       audience: "temis",
-      allowedRedirectUris: [temisRedirectUri],
+      allowedRedirectUris: [temisRedirectUri, "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
       allowedOrigins: ["https://financenow.kr"],
-      defaultRole: { serviceKey: "temis", name: "pending" }
+      defaultRole: { serviceKey: "temis", name: "user" }
     }
   ]);
 };
@@ -130,6 +136,28 @@ describe("app CORS allowlist", () => {
     expect(response.headers["content-type"]).toContain("text/html");
     expect(response.text).toContain("회원가입");
     expect(response.text).toContain("data-form=\"signup\"");
+  });
+
+  it("Given the admin dashboard route When GET /admin/dashboard is called Then it serves the static management shell", async () => {
+    const { app } = await import("./app.js");
+
+    const response = await request(app).get("/admin/dashboard");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.text).toContain("사용자 관리");
+    expect(response.text).toContain("data-token-form");
+  });
+
+  it("Given the public management alias When GET /manage/dashboard is called Then it serves the static management shell", async () => {
+    const { app } = await import("./app.js");
+
+    const response = await request(app).get("/manage/dashboard");
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.text).toContain("사용자 관리");
+    expect(response.text).toContain("content=\"/manage-api\"");
   });
 });
 

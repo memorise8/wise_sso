@@ -1,4 +1,5 @@
 import express from "express";
+import { createHash } from "node:crypto";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +20,15 @@ process.env["KAKAO_REDIRECT_URI"] = "http://localhost:4000/auth/kakao/callback";
 process.env["CORS_ALLOWED_ORIGINS"] = "http://localhost:3000";
 process.env["AUTH_RATE_LIMIT_WINDOW_SECONDS"] = "60";
 process.env["AUTH_RATE_LIMIT_MAX_REQUESTS"] = "2";
+process.env["AUTH_CLIENTS_JSON"] = JSON.stringify([
+  {
+    clientId: "temis",
+    audience: "temis",
+    allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
+    allowedOrigins: ["https://financenow.kr"],
+    defaultRole: { serviceKey: "temis", name: "user" }
+  }
+]);
 
 const loginWithPassword = vi.fn();
 const issueTokenPair = vi.fn();
@@ -28,6 +38,12 @@ const recordAuthAuditEvent = vi.fn();
 const recordLoginFailureAuditEvent = vi.fn();
 const findAuditUserIdByEmail = vi.fn();
 const findAuditUserIdByPasswordEmail = vi.fn();
+const createAuthHandoff = vi.fn();
+const rateLimitCounts = new Map<string, number>();
+const temisRedirectUri = "https://financenow.kr/auth/callback";
+const validCodeVerifier = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
+const validCodeChallenge = createHash("sha256").update(validCodeVerifier).digest("base64url");
+const temisCallerState = "R_sz-vF_74ssoStateBase64urlExactly43Chars";
 
 vi.mock("../services/password-auth.service.js", () => ({
   loginWithPassword
@@ -42,6 +58,23 @@ vi.mock("../services/token.service.js", () => ({
   refreshAccessToken,
   rotateRefreshToken,
   revokeRefreshToken: vi.fn()
+}));
+
+vi.mock("../services/auth-handoff.store.js", () => ({
+  authHandoffStore: {
+    create: createAuthHandoff,
+    consume: vi.fn()
+  }
+}));
+
+vi.mock("../services/redis.client.js", () => ({
+  redisTtlStoreClient: {
+    incrementWithTtl: vi.fn(async (key: string) => {
+      const next = (rateLimitCounts.get(key) ?? 0) + 1;
+      rateLimitCounts.set(key, next);
+      return next;
+    })
+  }
 }));
 
 vi.mock("../services/audit.service.js", () => ({
@@ -80,10 +113,12 @@ describe("auth password routes", () => {
     issueTokenPair.mockReset();
     refreshAccessToken.mockReset();
     rotateRefreshToken.mockReset();
+    createAuthHandoff.mockReset();
     recordAuthAuditEvent.mockReset();
     recordLoginFailureAuditEvent.mockReset();
     findAuditUserIdByEmail.mockReset();
     findAuditUserIdByPasswordEmail.mockReset();
+    rateLimitCounts.clear();
   });
 
   it("Given a valid refresh token When POST /auth/refresh succeeds Then it records a success audit event with the rotated user id", async () => {
@@ -128,6 +163,67 @@ describe("auth password routes", () => {
       password: "correct-password-123"
     });
     expect(issueTokenPair).toHaveBeenCalledWith("user-1");
+  });
+
+  it("Given valid company credentials with TEMIS handoff When POST /auth/login is called Then it returns a redirect URL with code and original state only", async () => {
+    const { authRouter } = await import("./auth.routes.js");
+    const app = express();
+    app.use(express.json());
+    app.use("/auth", authRouter);
+    loginWithPassword.mockResolvedValue({ user: { id: "user-1" } });
+    createAuthHandoff.mockResolvedValue("handoff-code-1");
+
+    const response = await request(app)
+      .post("/auth/login")
+      .send({
+        email: "user@company.com",
+        password: "correct-password-123",
+        clientId: "temis",
+        redirectUri: temisRedirectUri,
+        state: temisCallerState,
+        codeChallenge: validCodeChallenge,
+        codeChallengeMethod: "S256"
+      });
+
+    expect(response.status).toBe(200);
+    const redirectUrl = new URL(response.body.redirectUrl);
+    expect(redirectUrl.toString()).toBe(`${temisRedirectUri}?code=handoff-code-1&state=${temisCallerState}`);
+    expect(redirectUrl.searchParams.get("accessToken")).toBeNull();
+    expect(redirectUrl.searchParams.get("refreshToken")).toBeNull();
+    expect(issueTokenPair).not.toHaveBeenCalled();
+    expect(createAuthHandoff).toHaveBeenCalledWith({
+      clientId: "temis",
+      audience: "temis",
+      redirectUri: temisRedirectUri,
+      userId: "user-1",
+      loginMethod: "password",
+      codeChallenge: validCodeChallenge,
+      codeChallengeMethod: "S256",
+      state: temisCallerState
+    });
+  });
+
+  it("Given valid company credentials with an unregistered redirect When POST /auth/login is called Then it rejects before creating a handoff", async () => {
+    const { authRouter } = await import("./auth.routes.js");
+    const app = express();
+    app.use(express.json());
+    app.use("/auth", authRouter);
+    loginWithPassword.mockResolvedValue({ user: { id: "user-1" } });
+
+    const response = await request(app)
+      .post("/auth/login")
+      .send({
+        email: "user@company.com",
+        password: "correct-password-123",
+        clientId: "temis",
+        redirectUri: "https://evil.example/callback",
+        state: temisCallerState,
+        codeChallenge: validCodeChallenge,
+        codeChallengeMethod: "S256"
+      });
+
+    expect(response.status).toBe(400);
+    expect(createAuthHandoff).not.toHaveBeenCalled();
   });
 
   it("Given repeated auth requests from one client When POST /auth/login exceeds the threshold Then it returns 429", async () => {

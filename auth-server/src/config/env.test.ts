@@ -5,9 +5,9 @@ import { generateKeyPairSync } from "node:crypto";
 const temisClientPolicy = {
   clientId: "temis",
   audience: "temis",
-  allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+  allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
   allowedOrigins: ["https://financenow.kr"],
-  defaultRole: { serviceKey: "temis", name: "pending" }
+  defaultRole: { serviceKey: "temis", name: "user" }
 };
 const authClientsJson = (clients: readonly object[]): string => JSON.stringify(clients);
 const temisClientJson = (override: object): string => authClientsJson([{ ...temisClientPolicy, ...override }]);
@@ -235,7 +235,7 @@ describe("parseEnv CORS allowlist", () => {
     })).toThrow();
   });
 
-  it("Given the TEMIS relying client env When env is parsed Then the first client policy keeps the pending default role", async () => {
+  it("Given the TEMIS relying client env When env is parsed Then the first client policy keeps the user default role", async () => {
     const { parseEnv } = await import("./env.js");
 
     const parsed = parseEnv(baseEnv);

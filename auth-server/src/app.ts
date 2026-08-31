@@ -19,6 +19,7 @@ import { isHttpError } from "./utils/httpError.js";
 
 const publicDir = path.resolve(process.cwd(), "public");
 const authPortalFile = path.join(publicDir, "auth-portal.html");
+const adminDashboardFile = path.join(publicDir, "admin-dashboard.html");
 const authPortalRoutes = ["/", "/login", "/signup", "/auth/callback", "/password-reset", "/verify-email"] as const;
 
 type AppDependencies = {
@@ -33,6 +34,7 @@ export const createApp = (dependencies: AppDependencies = {}): Express => {
   const app = express();
   const readinessCheck = dependencies.readinessCheck ?? checkPostgresReadiness;
 
+  app.set("trust proxy", 1);
   app.use(helmet());
   app.use(cors(corsOptions));
   app.use(express.json());
@@ -64,9 +66,14 @@ export const createApp = (dependencies: AppDependencies = {}): Express => {
     response.set("cache-control", publicMetadataCacheControl).status(200).json(getOpenIdConfiguration());
   });
 
+  app.get(["/admin/dashboard", "/manage/dashboard"], (_request, response) => {
+    response.sendFile(adminDashboardFile);
+  });
+
   app.use("/auth", authRouter);
   app.use("/users", userRouter);
   app.use("/admin", adminRouter);
+  app.use("/manage-api", adminRouter);
 
   for (const route of authPortalRoutes) {
     app.get(route, (_request, response) => {

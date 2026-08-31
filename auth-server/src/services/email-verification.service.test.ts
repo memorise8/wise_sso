@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import type { MailService } from "./mail.service.js";
 import { HttpError } from "../utils/httpError.js";
 import {
@@ -37,6 +38,7 @@ type TestStore = EmailVerificationStore & {
 };
 
 const fixedNow = new Date("2026-07-08T00:00:00.000Z");
+const hashToken = (token: string): string => createHash("sha256").update(token).digest("hex");
 
 const createFakeVerificationMailService = (): MailService & {
   readonly messages: readonly SentVerificationMessage[];
@@ -88,22 +90,22 @@ const createStore = (initialUsers: readonly EmailVerificationUser[] = []): TestS
       );
       const token = tokens[index];
       if (!token) {
-        return false;
+        return null;
+      }
+
+      const storedUser = [...users.values()].find((user) => user.id === input.userId);
+      if (storedUser?.status !== userStatuses.pendingEmailVerification) {
+        return null;
       }
 
       tokens[index] = { ...token, usedAt: input.usedAt };
-      const storedUser = [...users.values()].find((user) => user.id === input.userId);
-      if (storedUser?.status !== userStatuses.pendingEmailVerification) {
-        return false;
-      }
-
       for (const [email, user] of users) {
         if (user.id === input.userId) {
           users.set(email, { ...user, status: userStatuses.active });
         }
       }
 
-      return true;
+      return input.userId;
     }
   };
 };
@@ -131,6 +133,27 @@ describe("email verification service", () => {
     const token = link ? new URL(link).searchParams.get("token") : null;
     expect(token).toBeTruthy();
     expect(store.tokens[0]?.tokenHash).not.toBe(token);
+  });
+
+  it.each([
+    userStatuses.active,
+    userStatuses.suspended,
+    userStatuses.deleted
+  ])("Given a %s email user When verification is requested Then no new verification token is issued", async (status) => {
+    const store = createStore([{ id: "user-1", email: "user@example.com", status }]);
+    const mailer = createFakeVerificationMailService();
+
+    const result = await requestEmailVerification({
+      store,
+      mailer,
+      input: { email: "user@example.com", handoff: temisHandoff },
+      verificationUrlBase: "https://app.example.com/verify-email",
+      now: () => fixedNow
+    });
+
+    expect(result).toEqual({ status: "accepted" });
+    expect(store.tokens).toEqual([]);
+    expect(mailer.messages).toEqual([]);
   });
 
   it("Given an unknown email When verification is requested Then the response is generic and no email is sent", async () => {
@@ -197,24 +220,24 @@ describe("email verification service", () => {
     expect(mailer.messages[0]?.link).not.toContain("refreshToken");
   });
 
-  it("Given a token for a suspended user When verification is confirmed Then the account is not reactivated", async () => {
-    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.suspended }]);
-    const mailer = createFakeVerificationMailService();
-    await requestEmailVerification({
-      store,
-      mailer,
-      input: { email: "user@example.com" },
-      verificationUrlBase: "https://app.example.com/verify-email",
-      now: () => fixedNow
+  it("Given a legacy token for a non-pending user When verification is confirmed Then the account is not reactivated and the token remains unused", async () => {
+    const store = createStore([{ id: "user-1", email: "user@example.com", status: userStatuses.active }]);
+    store.tokens.push({
+      id: "token-1",
+      tokenHash: hashToken("legacy-token"),
+      userId: "user-1",
+      expiresAt: new Date("2026-07-09T00:00:00.000Z"),
+      usedAt: null,
+      handoff: temisHandoff
     });
-    const token = new URL(mailer.messages[0]?.link ?? "").searchParams.get("token") ?? "";
 
     await expect(confirmEmailVerification({
       store,
-      input: { token },
+      input: { token: "legacy-token" },
       now: () => fixedNow
     })).rejects.toMatchObject(new HttpError(400, "INVALID_VERIFICATION_TOKEN", "Invalid or expired verification token"));
-    expect(store.users.get("user@example.com")?.status).toBe(userStatuses.suspended);
+    expect(store.users.get("user@example.com")?.status).toBe(userStatuses.active);
+    expect(store.tokens[0]?.usedAt).toBeNull();
   });
 
   it("Given an expired token When verification is confirmed Then confirmation is rejected", async () => {

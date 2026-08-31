@@ -4,16 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Wise SSO 로그인 및 회원가입">
+    <meta name="theme-color" content="#0f1622">
     <title>Wise SSO</title>
-    <link rel="stylesheet" href="/assets/auth.css?v=20260722b">
-    <script defer src="/assets/auth.js?v=20260722b"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/assets/auth.css?v=20260724a">
+    <script defer src="/assets/auth.js?v=20260724a"></script>
   </head>
   <body>
     <main class="auth-shell" data-view="login">
       <section class="auth-panel" aria-labelledby="auth-title">
         <a class="brand" href="/login" aria-label="Wise SSO 로그인">
-          <span class="brand-mark" aria-hidden="true">W</span>
-          <span>Wise SSO</span>
+          <span class="brand-wordmark">TEMIS</span>
+          <span class="brand-badge">SSO</span>
         </a>
 
         <div class="view" data-page="login">
@@ -71,7 +75,7 @@
             </label>
             <label>
               <span>비밀번호</span>
-              <input name="password" type="password" autocomplete="new-password" minlength="12" required>
+              <input name="password" type="password" autocomplete="new-password" minlength="8" required>
             </label>
             <button class="primary-button" type="submit">가입 요청</button>
           </form>
@@ -111,7 +115,7 @@
           <form class="auth-form" data-form="password-reset-confirm" data-reset-mode="confirm" hidden>
             <label>
               <span>새 비밀번호</span>
-              <input name="password" type="password" autocomplete="new-password" minlength="12" required>
+              <input name="password" type="password" autocomplete="new-password" minlength="8" required>
             </label>
             <button class="primary-button" type="submit">비밀번호 변경</button>
           </form>
@@ -131,29 +135,6 @@
 
         <p class="notice" data-notice hidden></p>
       </section>
-
-      <aside class="trust-panel" aria-label="SSO 안내">
-        <div>
-          <p class="eyebrow">Unified access</p>
-          <h2>한 번 로그인하고 여러 서비스를 안전하게 사용합니다.</h2>
-          <p>계정 로그인과 서비스 접근을 한 곳에서 관리합니다. 서비스 데이터는 각 서비스 서버에 남습니다.</p>
-        </div>
-
-        <dl class="trust-list">
-          <div>
-            <dt>Issuer</dt>
-            <dd>https://auth.financenow.kr</dd>
-          </div>
-          <div>
-            <dt>Token</dt>
-            <dd>서비스 접근 권한</dd>
-          </div>
-          <div>
-            <dt>Services</dt>
-            <dd>TEMIS와 연결된 업무 서비스</dd>
-          </div>
-        </dl>
-      </aside>
     </main>
   </body>
 </html>

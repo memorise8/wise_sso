@@ -22,7 +22,8 @@ const mocks = vi.hoisted(() => ({
   findUserIdByPasswordEmail: vi.fn(),
   getCurrentUserWithStatus: vi.fn(),
   consumeAuthHandoff: vi.fn(),
-  createAuthHandoff: vi.fn()
+  createAuthHandoff: vi.fn(),
+  rateLimitCounts: new Map<string, number>()
 }));
 
 vi.mock("../services/password-auth.service.js", () => ({
@@ -108,6 +109,16 @@ vi.mock("../services/auth-handoff.store.js", () => ({
   }
 }));
 
+vi.mock("../services/redis.client.js", () => ({
+  redisTtlStoreClient: {
+    incrementWithTtl: vi.fn(async (key: string) => {
+      const next = (mocks.rateLimitCounts.get(key) ?? 0) + 1;
+      mocks.rateLimitCounts.set(key, next);
+      return next;
+    })
+  }
+}));
+
 const setRequiredEnv = (maxRequests: string): void => {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -151,9 +162,9 @@ const setRequiredEnv = (maxRequests: string): void => {
     {
       clientId: "temis",
       audience: "temis",
-      allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+      allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
       allowedOrigins: ["https://financenow.kr"],
-      defaultRole: { serviceKey: "temis", name: "pending" }
+      defaultRole: { serviceKey: "temis", name: "user" }
     }
   ]);
 };
@@ -167,8 +178,12 @@ const validPkceQuery = {
 } as const;
 
 const resetMocks = (): void => {
-  for (const mock of Object.values(mocks)) {
-    mock.mockReset();
+  for (const value of Object.values(mocks)) {
+    if (value instanceof Map) {
+      value.clear();
+      continue;
+    }
+    value.mockReset();
   }
 };
 

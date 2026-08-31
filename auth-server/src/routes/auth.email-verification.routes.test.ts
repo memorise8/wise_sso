@@ -27,6 +27,7 @@ const recordLoginFailureAuditEvent = vi.fn();
 const findAuditUserIdByEmail = vi.fn();
 const findAuditUserIdByPasswordEmail = vi.fn();
 const createAuthHandoff = vi.fn();
+const rateLimitCounts = new Map<string, number>();
 
 vi.mock("../services/email-verification.service.js", () => ({
   requestEmailVerification,
@@ -68,6 +69,16 @@ vi.mock("../services/auth-handoff.store.js", () => ({
   }
 }));
 
+vi.mock("../services/redis.client.js", () => ({
+  redisTtlStoreClient: {
+    incrementWithTtl: vi.fn(async (key: string) => {
+      const next = (rateLimitCounts.get(key) ?? 0) + 1;
+      rateLimitCounts.set(key, next);
+      return next;
+    })
+  }
+}));
+
 describe("auth email verification routes", () => {
   beforeEach(() => {
     vi.resetModules();
@@ -78,6 +89,7 @@ describe("auth email verification routes", () => {
     findAuditUserIdByEmail.mockReset();
     findAuditUserIdByPasswordEmail.mockReset();
     createAuthHandoff.mockReset();
+    rateLimitCounts.clear();
   });
 
   it("Given any valid email When POST /auth/email-verification/request is called Then it returns a generic accepted response", async () => {
@@ -220,6 +232,54 @@ describe("auth email verification routes", () => {
     expect([...redirectUrl.searchParams.keys()].sort()).toEqual(["code", "state"]);
     expect(redirectUrl.searchParams.get("accessToken")).toBeNull();
     expect(redirectUrl.searchParams.get("refreshToken")).toBeNull();
+  });
+
+  it("Given handoff creation fails after verification When POST /auth/email-verification/confirm fails Then it does not record an invalid token failure", async () => {
+    const { authRouter } = await import("./auth.routes.js");
+    const app = express();
+    app.use(express.json());
+    app.use("/auth", authRouter);
+    app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
+      response.status(500).json({
+        error: {
+          code: error instanceof Error ? error.name : "INTERNAL_ERROR",
+          message: "Internal server error"
+        }
+      });
+    });
+    createAuthHandoff.mockRejectedValue(new Error("Redis unavailable"));
+    confirmEmailVerification.mockResolvedValue({
+      status: "verified",
+      userId: "user-1",
+      handoff: {
+        clientId: "temis",
+        audience: "temis",
+        redirectUri: "https://financenow.kr/auth/callback",
+        state: "caller-state",
+        codeChallenge: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+        codeChallengeMethod: "S256"
+      }
+    });
+
+    const response = await request(app)
+      .post("/auth/email-verification/confirm")
+      .send({ token: "raw-verification-token" });
+
+    expect(response.status).toBe(500);
+    expect(recordAuthAuditEvent).toHaveBeenCalledWith(expect.anything(), {
+      eventType: "email_verification_confirm",
+      outcome: "success",
+      userId: "user-1"
+    });
+    expect(recordAuthAuditEvent).toHaveBeenCalledWith(expect.anything(), {
+      eventType: "email_verification_confirm",
+      outcome: "failure",
+      userId: "user-1",
+      reasonCode: "AUTH_HANDOFF_CREATE_FAILED"
+    });
+    expect(recordAuthAuditEvent).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reasonCode: "INVALID_VERIFICATION_TOKEN"
+    }));
   });
 
   it("Given an invalid verification token When POST /auth/email-verification/confirm fails Then it records a generic failure audit event", async () => {

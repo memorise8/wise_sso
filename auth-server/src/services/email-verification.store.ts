@@ -17,11 +17,21 @@ export const emailVerificationStore: EmailVerificationStore = {
       select: {
         id: true,
         email: true,
-        status: true
+        status: true,
+        pendingPasswordCredential: {
+          select: {
+            expiresAt: true
+          }
+        }
       }
     });
 
-    return user;
+    return user ? {
+      id: user.id,
+      email: user.email,
+      status: user.status,
+      hasPendingPasswordCredential: (user.pendingPasswordCredential?.expiresAt ?? new Date(0)) > new Date()
+    } : null;
   },
   createVerificationToken: async (input) => {
     await prisma.emailVerificationToken.create({
@@ -82,8 +92,21 @@ export const emailVerificationStore: EmailVerificationStore = {
       handoff
     };
   },
-  markTokenUsedAndActivateUser: async (input): Promise<boolean> =>
+  markTokenUsedAndActivateUser: async (input): Promise<string | null> =>
     prisma.$transaction(async (transaction) => {
+      const user = await transaction.user.findUnique({
+        where: { id: input.userId },
+        select: { id: true, email: true, status: true }
+      });
+      const pendingPasswordCredential = await transaction.pendingPasswordCredential.findUnique({
+        where: { userId: input.userId }
+      });
+      const canActivateUser = user?.status === userStatuses.pendingEmailVerification;
+      const canAttachPassword = pendingPasswordCredential !== null && pendingPasswordCredential.expiresAt > input.usedAt;
+      if (!canActivateUser && !canAttachPassword) {
+        return null;
+      }
+
       const tokenUpdate = await transaction.emailVerificationToken.updateMany({
         where: {
           id: input.tokenId,
@@ -94,22 +117,56 @@ export const emailVerificationStore: EmailVerificationStore = {
         data: { usedAt: input.usedAt }
       });
       if (tokenUpdate.count !== 1) {
-        return false;
+        return null;
       }
 
-      const userUpdate = await transaction.user.updateMany({
-        where: {
-          id: input.userId,
-          status: userStatuses.pendingEmailVerification
-        },
-        data: { status: userStatuses.active, emailVerified: true }
+      if (canActivateUser) {
+        const subjectReservation = user.email
+          ? await transaction.subjectReservation.findUnique({ where: { email: user.email.toLowerCase() } })
+          : null;
+        const reservedSubjectId = subjectReservation?.subjectId ?? null;
+        if (reservedSubjectId && reservedSubjectId !== input.userId) {
+          const subjectUser = await transaction.user.findUnique({
+            where: { id: reservedSubjectId },
+            select: { id: true }
+          });
+          if (subjectUser) {
+            return null;
+          }
+        }
+        const activatedUserId = reservedSubjectId ?? input.userId;
+        const userUpdate = await transaction.user.updateMany({
+          where: {
+            id: input.userId,
+            status: userStatuses.pendingEmailVerification
+          },
+          data: {
+            ...(reservedSubjectId ? { id: activatedUserId } : {}),
+            status: userStatuses.active,
+            emailVerified: true
+          }
+        });
+        if (userUpdate.count !== 1) {
+          return null;
+        }
+        await seedTemisRolesAndAssignDefaultRole(transaction, activatedUserId);
+        return activatedUserId;
+      }
+
+      if (!pendingPasswordCredential) {
+        return null;
+      }
+      await transaction.passwordCredential.create({
+        data: {
+          userId: pendingPasswordCredential.userId,
+          email: pendingPasswordCredential.email,
+          passwordHash: pendingPasswordCredential.passwordHash
+        }
       });
-      if (userUpdate.count !== 1) {
-        return false;
-      }
+      await transaction.pendingPasswordCredential.delete({
+        where: { userId: input.userId }
+      });
 
-      await seedTemisRolesAndAssignDefaultRole(transaction, input.userId);
-
-      return true;
+      return input.userId;
     })
 };

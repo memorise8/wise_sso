@@ -98,7 +98,7 @@ curl -i http://127.0.0.1:4000/readyz
 Production `AUTH_CLIENTS_JSON` must keep redirect authorization separate from CORS:
 
 ```sh
-export AUTH_CLIENTS_JSON='[{"clientId":"temis","audience":"temis","allowedRedirectUris":["https://financenow.kr/auth/callback"],"allowedOrigins":["https://financenow.kr"],"defaultRole":{"serviceKey":"temis","name":"pending"}}]'
+export AUTH_CLIENTS_JSON='[{"clientId":"temis","audience":"temis","allowedRedirectUris":["https://financenow.kr/auth/callback","https://temis.me/auth/callback","https://ti.temis.me/auth/callback"],"allowedOrigins":["https://financenow.kr"],"defaultRole":{"serviceKey":"temis","name":"user"}}]'
 ```
 
 `allowedRedirectUris` must exactly match the TEMIS backend/BFF callback that exchanges handoff codes. `allowedOrigins` is only for browser CORS.

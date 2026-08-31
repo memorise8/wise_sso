@@ -1,12 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { MailService } from "./mail.service.js";
 import type { UserStatusValue } from "./user-status.service.js";
+import { userStatuses } from "./user-status.service.js";
 import { HttpError } from "../utils/httpError.js";
 
 export type EmailVerificationUser = {
   readonly id: string;
   readonly email: string | null;
   readonly status: UserStatusValue;
+  readonly hasPendingPasswordCredential: boolean;
 };
 
 export type EmailVerificationTokenRecord = {
@@ -39,7 +41,7 @@ export type EmailVerificationStore = {
     readonly tokenId: string;
     readonly userId: string;
     readonly usedAt: Date;
-  }) => Promise<boolean>;
+  }) => Promise<string | null>;
 };
 
 export type EmailVerificationAccepted = {
@@ -97,7 +99,7 @@ export const requestEmailVerification = async (
 ): Promise<EmailVerificationAccepted> => {
   const email = normalizeEmail(context.input.email);
   const user = await context.store.findUserByEmail(email);
-  if (!user?.email) {
+  if (!user?.email || (user.status !== userStatuses.pendingEmailVerification && !user.hasPendingPasswordCredential)) {
     return { status: "accepted" };
   }
 
@@ -126,14 +128,14 @@ export const confirmEmailVerification = async (
     throw invalidVerificationToken();
   }
 
-  const consumed = await context.store.markTokenUsedAndActivateUser({
+  const activatedUserId = await context.store.markTokenUsedAndActivateUser({
     tokenId: token.id,
     userId: token.userId,
     usedAt: now
   });
-  if (!consumed) {
+  if (!activatedUserId) {
     throw invalidVerificationToken();
   }
 
-  return { status: "verified", userId: token.userId, handoff: token.handoff };
+  return { status: "verified", userId: activatedUserId, handoff: token.handoff };
 };

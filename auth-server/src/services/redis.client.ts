@@ -16,6 +16,7 @@ const consumeIfValueScript = [
 export type RedisTtlStoreClient = {
   readonly setIfAbsent: (key: string, value: string, ttlSeconds: number) => Promise<boolean>;
   readonly get?: (key: string) => Promise<string | null>;
+  readonly incrementWithTtl: (key: string, ttlSeconds: number) => Promise<number>;
   readonly consume: (key: string) => Promise<string | null>;
   readonly consumeIfValue?: (key: string, expectedValue: string) => Promise<string | null>;
 };
@@ -61,6 +62,13 @@ export const redisTtlStoreClient: RedisTtlStoreClient = {
   get: async (key) => withRedis(async () => {
     const result = await redisClient.get(key);
     return typeof result === "string" ? result : null;
+  }),
+  incrementWithTtl: async (key, ttlSeconds) => withRedis(async () => {
+    const count = await redisClient.incr(key);
+    if (count === 1) {
+      await redisClient.expire(key, ttlSeconds);
+    }
+    return count;
   }),
   consume: async (key) => withRedis(async () => {
     const result = await redisClient.eval(consumeOnceScript, {

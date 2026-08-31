@@ -26,6 +26,7 @@ model User {
 
   socialAccounts          SocialAccount[]
   passwordCredential      PasswordCredential?
+  pendingPasswordCredential PendingPasswordCredential?
   refreshTokens           RefreshToken[]
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
@@ -47,6 +48,29 @@ model PasswordCredential {
   updatedAt         DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PendingPasswordCredential {
+  id           String   @id @default(uuid())
+  userId       String   @unique
+  email        String   @unique
+  passwordHash String
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+model SubjectReservation {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  subjectId String   @unique
+  reason    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model SocialAccount {

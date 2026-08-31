@@ -48,9 +48,9 @@ type RoleInput = {
 const temisClientPolicy = {
   clientId: "temis",
   audience: "temis",
-  allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+  allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
   allowedOrigins: ["https://financenow.kr"],
-  defaultRole: { serviceKey: "temis", name: "pending" }
+  defaultRole: { serviceKey: "temis", name: "user" }
 };
 const oauthUser = {
   id: "user-1",
@@ -83,12 +83,17 @@ const setAdditionalClientDefaultRole = (defaultRole: RoleInput): void => {
 
 const mocks = vi.hoisted(() => ({
   socialAccount: {
-    findUnique: vi.fn()
+    findUnique: vi.fn(),
+    create: vi.fn()
   },
   user: {
     findUnique: vi.fn(),
     create: vi.fn(),
+    delete: vi.fn(),
     findMany: vi.fn()
+  },
+  subjectReservation: {
+    findUnique: vi.fn()
   },
   role: {
     upsert: vi.fn()
@@ -116,17 +121,22 @@ vi.mock("@prisma/client", () => ({
 beforeEach(() => {
   vi.resetModules();
   configureAccessKeyEnv();
-  setTemisDefaultRole("pending");
+  setTemisDefaultRole("user");
   mocks.socialAccount.findUnique.mockReset();
+  mocks.socialAccount.create.mockReset();
   mocks.user.findUnique.mockReset();
   mocks.user.create.mockReset();
+  mocks.user.delete.mockReset();
   mocks.user.findMany.mockReset();
+  mocks.subjectReservation.findUnique.mockReset();
   mocks.role.upsert.mockReset();
   mocks.userRole.createMany.mockReset();
   mocks.executeRaw.mockReset();
   mocks.transaction.mockReset();
   mocks.transaction.mockImplementation(async (work) => work({
     user: mocks.user,
+    socialAccount: mocks.socialAccount,
+    subjectReservation: mocks.subjectReservation,
     role: mocks.role,
     userRole: mocks.userRole,
     $executeRaw: mocks.executeRaw
@@ -137,10 +147,11 @@ beforeEach(() => {
     name: input.create.name
   }));
   mocks.userRole.createMany.mockResolvedValue({ count: 1 });
+  mocks.subjectReservation.findUnique.mockResolvedValue(null);
 });
 
 describe("findOrCreateUserBySocialProfile", () => {
-  it("Given a new OAuth user When the profile is persisted Then TEMIS roles are seeded and only temis pending is assigned", async () => {
+  it("Given a new OAuth user When the profile is persisted Then TEMIS roles are seeded and only temis user is assigned", async () => {
     const { findOrCreateUserBySocialProfile } = await import("./user.service.js");
     mocks.socialAccount.findUnique.mockResolvedValue(null);
     mocks.user.findUnique.mockResolvedValue(null);
@@ -168,12 +179,12 @@ describe("findOrCreateUserBySocialProfile", () => {
     expect(mocks.userRole.createMany).toHaveBeenCalledWith({
       data: {
         userId: "user-1",
-        roleId: "role-temis-pending"
+        roleId: "role-temis-user"
       },
       skipDuplicates: true
     });
     expect(mocks.userRole.createMany).not.toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ roleId: "role-temis-user" })
+      data: expect.objectContaining({ roleId: "role-temis-pending" })
     }));
     expect(mocks.userRole.createMany).not.toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ roleId: "role-temis-admin" })
@@ -257,6 +268,109 @@ describe("findOrCreateUserBySocialProfile", () => {
     }));
   });
 
+  it("Given an active verified password user with the same email When Google OAuth is persisted Then the social identity is attached to the existing subject", async () => {
+    const { findOrCreateUserBySocialProfile } = await import("./user.service.js");
+    const existingUser = {
+      ...oauthUser,
+      id: "password-user-1",
+      email: "oauth@example.com",
+      emailVerified: true,
+      status: "ACTIVE"
+    };
+    mocks.socialAccount.findUnique.mockResolvedValue(null);
+    mocks.user.findUnique.mockResolvedValue(existingUser);
+    mocks.socialAccount.create.mockResolvedValue({});
+
+    const user = await findOrCreateUserBySocialProfile({
+      provider: "google",
+      providerUserId: "google-user-1",
+      email: "OAuth@Example.com",
+      name: "OAuth User",
+      profileUrl: null,
+      emailVerified: true
+    });
+
+    expect(user.id).toBe("password-user-1");
+    expect(mocks.socialAccount.create).toHaveBeenCalledWith({
+      data: {
+        provider: "google",
+        providerUserId: "google-user-1",
+        providerEmail: "oauth@example.com",
+        userId: "password-user-1"
+      }
+    });
+    expect(mocks.user.create).not.toHaveBeenCalled();
+  });
+
+  it("Given an unverified pending email user When Google OAuth is persisted Then the pending pre-registration is discarded before the canonical account is created", async () => {
+    const { findOrCreateUserBySocialProfile } = await import("./user.service.js");
+    mocks.socialAccount.findUnique.mockResolvedValue(null);
+    mocks.user.findUnique.mockResolvedValueOnce({
+      ...oauthUser,
+      id: "unverified-password-user",
+      email: "oauth@example.com",
+      emailVerified: false,
+      status: "PENDING_EMAIL_VERIFICATION"
+    }).mockResolvedValueOnce(null);
+    mocks.user.delete.mockResolvedValue({});
+    mocks.user.create.mockResolvedValue({ ...oauthUser, email: "oauth@example.com", emailVerified: true });
+
+    await findOrCreateUserBySocialProfile({
+      provider: "google",
+      providerUserId: "google-user-1",
+      email: "oauth@example.com",
+      name: "OAuth User",
+      profileUrl: null,
+      emailVerified: true
+    });
+
+    expect(mocks.socialAccount.create).not.toHaveBeenCalled();
+    expect(mocks.user.delete).toHaveBeenCalledWith({
+      where: { id: "unverified-password-user" }
+    });
+    expect(mocks.user.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        email: "oauth@example.com",
+        emailVerified: true
+      })
+    }));
+  });
+
+  it("Given a reserved subject for a verified provider email When OAuth creates the user Then the stable subject is reused", async () => {
+    const { findOrCreateUserBySocialProfile } = await import("./user.service.js");
+    mocks.socialAccount.findUnique.mockResolvedValue(null);
+    mocks.user.findUnique.mockResolvedValue(null);
+    mocks.subjectReservation.findUnique.mockResolvedValue({
+      id: "reservation-1",
+      email: "oauth@example.com",
+      subjectId: "stable-subject-1",
+      reason: "temis-subject-preservation",
+      createdAt: new Date("2026-07-28T00:00:00.000Z"),
+      updatedAt: new Date("2026-07-28T00:00:00.000Z")
+    });
+    mocks.user.create.mockResolvedValue({ ...oauthUser, id: "stable-subject-1", emailVerified: true });
+
+    const user = await findOrCreateUserBySocialProfile({
+      provider: "google",
+      providerUserId: "google-user-1",
+      email: "OAuth@Example.com",
+      name: "OAuth User",
+      profileUrl: null,
+      emailVerified: true
+    });
+
+    expect(user.id).toBe("stable-subject-1");
+    expect(mocks.subjectReservation.findUnique).toHaveBeenCalledWith({
+      where: { email: "oauth@example.com" }
+    });
+    expect(mocks.user.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        id: "stable-subject-1",
+        email: "oauth@example.com"
+      })
+    }));
+  });
+
   it("Given OAuth starts without a provider verified email claim When a new OAuth user is persisted Then emailVerified is false", async () => {
     const { findOrCreateUserBySocialProfile } = await import("./user.service.js");
     mocks.socialAccount.findUnique.mockResolvedValue(null);
@@ -280,7 +394,7 @@ describe("findOrCreateUserBySocialProfile", () => {
 });
 
 describe("seedTemisRolesAndAssignDefaultRole", () => {
-  it("Given a roleless existing user When default role assignment is repeated Then the operation is idempotent and never grants user or admin", async () => {
+  it("Given a roleless existing user When default role assignment is repeated Then the operation is idempotent and grants only user", async () => {
     const { seedTemisRolesAndAssignDefaultRole } = await import("./user.service.js");
     const assignedUserRoles = new Set<string>();
     mocks.userRole.createMany.mockImplementation(async (input: { readonly data: { readonly userId: string; readonly roleId: string } }) => {
@@ -299,15 +413,15 @@ describe("seedTemisRolesAndAssignDefaultRole", () => {
       userRole: mocks.userRole
     }, "user-1");
 
-    expect(assignedUserRoles).toEqual(new Set(["user-1:role-temis-pending"]));
-    expect(assignedUserRoles).not.toContain("user-1:role-temis-user");
+    expect(assignedUserRoles).toEqual(new Set(["user-1:role-temis-user"]));
+    expect(assignedUserRoles).not.toContain("user-1:role-temis-pending");
     expect(assignedUserRoles).not.toContain("user-1:role-temis-admin");
     expect(mocks.userRole.createMany).toHaveBeenCalledTimes(2);
   });
 });
 
 describe("backfillRolelessUsersWithDefaultRole", () => {
-  it("Given existing roleless users When backfill runs twice Then it assigns only the default pending role idempotently", async () => {
+  it("Given existing roleless users When backfill runs twice Then it assigns only the default user role idempotently", async () => {
     const { backfillRolelessUsersWithDefaultRole } = await import("./user.service.js");
     mocks.executeRaw.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
 
@@ -321,12 +435,12 @@ describe("backfillRolelessUsersWithDefaultRole", () => {
     });
 
     expect(firstResult).toEqual({
-      defaultRole: { serviceKey: "temis", name: "pending" },
+      defaultRole: { serviceKey: "temis", name: "user" },
       rolelessUserCount: 2,
       assignedUserRoleCount: 2
     });
     expect(secondResult).toEqual({
-      defaultRole: { serviceKey: "temis", name: "pending" },
+      defaultRole: { serviceKey: "temis", name: "user" },
       rolelessUserCount: 0,
       assignedUserRoleCount: 0
     });

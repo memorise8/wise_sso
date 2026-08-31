@@ -51,6 +51,22 @@ export const passwordAuthStore: PasswordAuthStore = {
     });
     return toCurrentUser(user);
   },
+  createPendingPasswordCredential: async (input) => {
+    await prisma.pendingPasswordCredential.upsert({
+      where: { userId: input.userId },
+      create: {
+        userId: input.userId,
+        email: input.email.toLowerCase(),
+        passwordHash: input.passwordHash,
+        expiresAt: input.expiresAt
+      },
+      update: {
+        email: input.email.toLowerCase(),
+        passwordHash: input.passwordHash,
+        expiresAt: input.expiresAt
+      }
+    });
+  },
   findCredentialByEmail: async (email): Promise<PasswordCredentialRecord | null> => {
     const credential = await prisma.passwordCredential.findUnique({
       where: { email },

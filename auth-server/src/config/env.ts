@@ -50,7 +50,7 @@ const durationInSecondsSchema = z.string().min(1).transform((value, context) => 
   }
 });
 
-const mailProviderSchema = z.enum(["dev", "smtp"]).default("dev");
+const mailProviderSchema = z.enum(["dev", "smtp", "resend"]).default("dev");
 const optionalNonEmptyStringSchema = z.preprocess(
   (value) => value === "" ? undefined : value,
   z.string().min(1).optional()
@@ -135,7 +135,7 @@ const envSchema = z.object({
   JWT_AUDIENCE: z.string().min(1),
   ACCESS_TOKEN_EXPIRES_IN: durationInSecondsSchema.default("15m"),
   REFRESH_TOKEN_EXPIRES_IN_DAYS: z.coerce.number().int().positive().default(30),
-  PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).default(12),
+  PASSWORD_MIN_LENGTH: z.coerce.number().int().min(8).default(8),
   COMPANY_ALLOWED_EMAIL_DOMAIN: z.string().optional().default(""),
   CORS_ALLOWED_ORIGINS: corsOriginsSchema,
   AUTH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(60),
@@ -155,6 +155,9 @@ const envSchema = z.object({
   KAKAO_REDIRECT_URI: z.string().url(),
   MAIL_PROVIDER: mailProviderSchema,
   MAIL_FROM: z.string().min(1).default("Auth <no-reply@example.com>"),
+  MAIL_REPLY_TO: optionalNonEmptyStringSchema,
+  RESEND_API_KEY: optionalNonEmptyStringSchema,
+  RESEND_ADMIN_KEY: optionalNonEmptyStringSchema,
   SMTP_HOST: optionalNonEmptyStringSchema,
   SMTP_PORT: z.coerce.number().int().positive().default(587),
   SMTP_USERNAME: optionalNonEmptyStringSchema,
@@ -186,10 +189,10 @@ const envSchema = z.object({
 
   rejectProductionLocalhostClients(value.AUTH_CLIENTS_JSON, value.NODE_ENV, context);
 
-  if (value.MAIL_PROVIDER !== "smtp") {
+  if (value.MAIL_PROVIDER === "dev") {
     context.addIssue({
       code: z.ZodIssueCode.custom,
-      message: "MAIL_PROVIDER must be smtp in production",
+      message: "MAIL_PROVIDER must not be dev in production",
       path: ["MAIL_PROVIDER"]
     });
   }
@@ -202,11 +205,19 @@ const envSchema = z.object({
     });
   }
 
-  if (!value.SMTP_HOST) {
+  if (value.MAIL_PROVIDER === "smtp" && !value.SMTP_HOST) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: "SMTP_HOST is required when MAIL_PROVIDER=smtp in production",
       path: ["SMTP_HOST"]
+    });
+  }
+
+  if (value.MAIL_PROVIDER === "resend" && !value.RESEND_API_KEY && !value.RESEND_ADMIN_KEY) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "RESEND_API_KEY or RESEND_ADMIN_KEY is required when MAIL_PROVIDER=resend",
+      path: ["RESEND_API_KEY"]
     });
   }
 

@@ -7,7 +7,14 @@ class Element {
   constructor(attributes = {}) {
     this.attributes = new Map(Object.entries(attributes));
     this.dataset = {};
+    for (const [name, value] of Object.entries(attributes)) {
+      if (name.startsWith("data-")) {
+        const dataName = name.slice(5).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
+        this.dataset[dataName] = value;
+      }
+    }
     this.hidden = false;
+    this.listeners = new Map();
     this.textContent = "";
   }
 
@@ -19,11 +26,28 @@ class Element {
     this.attributes.set(name, String(value));
   }
 
-  querySelector() {
+  querySelector(selector) {
+    if (selector === "button[type='submit']") {
+      return this.button ?? null;
+    }
     return null;
   }
 
-  addEventListener() {}
+  addEventListener(eventName, listener) {
+    this.listeners.set(eventName, listener);
+  }
+
+  dispatch(eventName) {
+    const listener = this.listeners.get(eventName);
+    if (!listener) {
+      return;
+    }
+
+    listener({
+      currentTarget: this,
+      preventDefault() {}
+    });
+  }
 }
 
 class HTMLFormElement extends Element {}
@@ -43,19 +67,27 @@ const createStorage = (entries = {}) => {
 };
 
 const waitForAsyncScriptWork = async () => {
-  await new Promise((resolve) => {
-    setImmediate(resolve);
-  });
-  await new Promise((resolve) => {
-    setImmediate(resolve);
-  });
+  for (let count = 0; count < 5; count += 1) {
+    await new Promise((resolve) => {
+      setImmediate(resolve);
+    });
+  }
 };
 
-const runPortalScript = async ({ url, fetchPayload, sessionEntries = {} }) => {
+const runPortalScript = async ({ url, fetchPayload, sessionEntries = {}, withLoginSurface = false }) => {
   const script = await readFile(new URL("../public/assets/auth.js", import.meta.url), "utf8");
   const locationUrl = new URL(url);
   const notice = new Element();
   const authShell = new Element();
+  const googleLink = new Element({ href: "/auth/google" });
+  const signupLink = new Element({ href: "/signup" });
+  const passwordResetLink = new Element({ href: "/password-reset" });
+  const loginForm = new HTMLFormElement({ "data-form": "login" });
+  loginForm.button = new HTMLButtonElement({ type: "submit" });
+  loginForm.formEntries = [
+    ["email", "person@example.com"],
+    ["password", "correct-password-123"]
+  ];
   const views = [
     new Element({ "data-page": "login" }),
     new Element({ "data-page": "signup" }),
@@ -75,11 +107,20 @@ const runPortalScript = async ({ url, fetchPayload, sessionEntries = {} }) => {
       if (selector === ".auth-shell") {
         return authShell;
       }
+      if (withLoginSurface && selector === "[data-form='login']") {
+        return loginForm;
+      }
       return null;
     },
     querySelectorAll: (selector) => {
       if (selector === "[data-page]") {
         return views;
+      }
+      if (withLoginSurface && selector === "a[href='/auth/google']") {
+        return [googleLink];
+      }
+      if (withLoginSurface && selector === "a[href^='/']") {
+        return [googleLink, signupLink, passwordResetLink];
       }
       return [];
     }
@@ -146,7 +187,15 @@ const runPortalScript = async ({ url, fetchPayload, sessionEntries = {} }) => {
     document,
     Error,
     fetch,
-    FormData: class FormData {},
+    FormData: class FormData {
+      constructor(form) {
+        this.form = form;
+      }
+
+      entries() {
+        return this.form.formEntries ?? [];
+      }
+    },
     HTMLButtonElement,
     HTMLElement: Element,
     HTMLFormElement,
@@ -163,6 +212,16 @@ const runPortalScript = async ({ url, fetchPayload, sessionEntries = {} }) => {
     accessToken: localStorage.getItem("wise_sso_access_token"),
     refreshToken: localStorage.getItem("wise_sso_refresh_token"),
     fetchCalls,
+    links: {
+      google: googleLink.getAttribute("href"),
+      passwordReset: passwordResetLink.getAttribute("href"),
+      signup: signupLink.getAttribute("href")
+    },
+    clickGoogle: () => {
+      googleLink.dispatch("click");
+    },
+    loginForm,
+    currentHref: () => location.href,
     href: location.href,
     notice: {
       hidden: notice.hidden,
@@ -176,6 +235,43 @@ const sessionEntries = {
   wise_sso_oauth_code_verifier: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
   wise_sso_oauth_state: "expected-state"
 };
+
+const handoffState = "R_sz-vF_74ssoStateBase64urlExactly43Chars";
+const handoffChallenge = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
+const handoffUrl = `https://auth.financenow.kr/login?client_id=temis&redirect_uri=https%3A%2F%2Ffinancenow.kr%2Fauth%2Fcallback&state=${handoffState}&code_challenge=${handoffChallenge}&code_challenge_method=S256`;
+const loginSurface = await runPortalScript({
+  url: handoffUrl,
+  fetchPayload: { redirectUrl: `https://financenow.kr/auth/callback?code=handoff-code&state=${handoffState}` },
+  withLoginSurface: true
+});
+
+assert.match(loginSurface.links.google, /^\/auth\/google\?/, "Google link should preserve handoff query");
+assert.match(loginSurface.links.signup, /^\/signup\?/, "signup link should preserve handoff query");
+assert.match(loginSurface.links.passwordReset, /^\/password-reset\?/, "password reset link should preserve handoff query");
+assert.match(loginSurface.links.google, new RegExp(`state=${handoffState}`), "Google link should keep caller state exactly");
+
+loginSurface.clickGoogle();
+await waitForAsyncScriptWork();
+const googleStartUrl = new URL(loginSurface.currentHref());
+assert.equal(googleStartUrl.pathname, "/auth/google", "Google button should navigate to the OAuth start endpoint");
+assert.equal(googleStartUrl.searchParams.get("client_id"), "temis", "Google button should keep client_id");
+assert.equal(googleStartUrl.searchParams.get("redirect_uri"), "https://financenow.kr/auth/callback", "Google button should keep redirect_uri");
+assert.equal(googleStartUrl.searchParams.get("state"), handoffState, "Google button should keep caller state exactly");
+assert.equal(googleStartUrl.searchParams.get("code_challenge"), handoffChallenge, "Google button should keep the original PKCE challenge");
+assert.equal(googleStartUrl.searchParams.get("code_challenge_method"), "S256", "Google button should keep the PKCE method");
+
+loginSurface.loginForm.dispatch("submit");
+await waitForAsyncScriptWork();
+
+assert.equal(loginSurface.fetchCalls.length, 1, "handoff login should call the login endpoint once");
+assert.equal(loginSurface.fetchCalls[0].path, "/auth/login", "handoff login should use the login API");
+const loginBody = JSON.parse(loginSurface.fetchCalls[0].body);
+assert.equal(loginBody.clientId, "temis", "handoff login should send clientId");
+assert.equal(loginBody.redirectUri, "https://financenow.kr/auth/callback", "handoff login should send redirectUri");
+assert.equal(loginBody.state, handoffState, "handoff login should keep caller state exactly");
+assert.equal(loginBody.codeChallenge, handoffChallenge, "handoff login should send PKCE challenge");
+assert.equal(loginBody.codeChallengeMethod, "S256", "handoff login should send PKCE method");
+assert.equal(loginSurface.currentHref(), `https://financenow.kr/auth/callback?code=handoff-code&state=${handoffState}`, "handoff login should follow redirectUrl with code and state only");
 
 const devResult = await runPortalScript({
   url: "http://localhost:3000/auth/callback?code=handoff-code&state=expected-state&accessToken=leaked&refreshToken=leaked#access_token=leaked&refresh_token=leaked",

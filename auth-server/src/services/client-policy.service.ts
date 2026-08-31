@@ -3,9 +3,9 @@ import { z } from "zod";
 const temisClientPolicy = {
   clientId: "temis",
   audience: "temis",
-  allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+  allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
   allowedOrigins: ["https://financenow.kr"],
-  defaultRole: { serviceKey: "temis", name: "pending" }
+  defaultRole: { serviceKey: "temis", name: "user" }
 } as const;
 
 const allowedTemisDefaultRoleNames = new Set(["pending", "user"]);

@@ -50,9 +50,9 @@ process.env.AUTH_CLIENTS_JSON = JSON.stringify([
   {
     clientId: "temis",
     audience: "temis",
-    allowedRedirectUris: ["https://financenow.kr/auth/callback"],
+    allowedRedirectUris: ["https://financenow.kr/auth/callback", "https://temis.me/auth/callback", "https://ti.temis.me/auth/callback"],
     allowedOrigins: ["https://financenow.kr"],
-    defaultRole: { serviceKey: "temis", name: "pending" }
+    defaultRole: { serviceKey: "temis", name: "user" }
   }
 ]);
 process.env.MAIL_PROVIDER = "dev";

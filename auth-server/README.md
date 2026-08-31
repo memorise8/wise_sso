@@ -139,11 +139,15 @@ KAKAO_REDIRECT_URI
   {
     "clientId": "temis",
     "audience": "temis",
-    "allowedRedirectUris": ["https://financenow.kr/auth/callback"],
+    "allowedRedirectUris": [
+      "https://financenow.kr/auth/callback",
+      "https://temis.me/auth/callback",
+      "https://ti.temis.me/auth/callback"
+    ],
     "allowedOrigins": ["https://financenow.kr"],
     "defaultRole": {
       "serviceKey": "temis",
-      "name": "pending"
+      "name": "user"
     }
   }
 ]
@@ -310,17 +314,29 @@ GET /auth/google?client_id=temis&redirect_uri=https%3A%2F%2Ffinancenow.kr%2Fauth
 - 내부 앱으로 만든 경우 Google Workspace 조직 내부 사용자만 로그인할 수 있습니다.
 - 운영 도메인 적용 직후에는 Google 설정 반영에 시간이 걸릴 수 있습니다.
 
-## SMTP Setup
+## Email Delivery Setup
 
-개발 환경에서는 `MAIL_PROVIDER=dev`를 사용해 실제 SMTP 발송 없이 verification/reset link를 테스트합니다.
+개발 환경에서는 `MAIL_PROVIDER=dev`를 사용해 실제 발송 없이 verification/reset link를 테스트합니다.
 
-운영 환경에서는 `MAIL_PROVIDER=smtp`와 SMTP 값을 채웁니다. `smtp` mode는 설정된 SMTP transport로 email verification과 password reset 메일을 발송합니다.
+TEMIS 운영 기본값은 Resend입니다. API 키는 소스나 문서에 저장하지 말고 서버 `.env`에만 넣습니다.
+
+```text
+MAIL_PROVIDER=resend
+MAIL_FROM=TEMIS <no-reply@temis.me>
+MAIL_REPLY_TO=contact@temis.me
+RESEND_API_KEY=<resend-api-key>
+```
+
+`resend` mode는 Resend SMTP endpoint `smtp.resend.com:465`를 사용합니다. `RESEND_API_KEY`가 없으면 production 환경에서 서버가 시작되지 않습니다. 기존 운영 환경에서 이미 `RESEND_ADMIN_KEY` 이름으로 저장한 경우에도 fallback으로 읽지만, 신규 배포에서는 `RESEND_API_KEY`를 권장합니다.
+
+일반 SMTP 서버를 직접 쓰는 경우에는 `MAIL_PROVIDER=smtp`와 SMTP 값을 채웁니다. `smtp` mode는 설정된 SMTP transport로 email verification과 password reset 메일을 발송합니다.
 
 SMTP 계정 인증을 사용하는 일반 SMTP 서버:
 
 ```text
 MAIL_PROVIDER=smtp
 MAIL_FROM=Auth <no-reply@example.com>
+MAIL_REPLY_TO=support@example.com
 SMTP_HOST=<smtp-host>
 SMTP_PORT=587
 SMTP_USERNAME=<smtp-username>
@@ -332,6 +348,7 @@ Google Workspace SMTP Relay처럼 서버 공인 IP 기반 릴레이를 사용하
 ```text
 MAIL_PROVIDER=smtp
 MAIL_FROM=Auth <no-reply@company.com>
+MAIL_REPLY_TO=support@company.com
 SMTP_HOST=smtp-relay.gmail.com
 SMTP_PORT=587
 SMTP_USERNAME=
@@ -403,7 +420,7 @@ Content-Type: application/json
 
 {
   "email": "user@example.com",
-  "password": "minimum-12-chars",
+  "password": "minimum-8-chars",
   "name": "User Name"
 }
 ```
@@ -440,7 +457,7 @@ Content-Type: application/json
 
 {
   "email": "user@example.com",
-  "password": "minimum-12-chars"
+  "password": "minimum-8-chars"
 }
 ```
 
@@ -463,7 +480,7 @@ Content-Type: application/json
 
 {
   "token": "<reset-token-from-email>",
-  "password": "new-minimum-12-chars"
+  "password": "new-minimum-8-chars"
 }
 ```
 
@@ -504,7 +521,7 @@ SUSPENDED: 운영자가 접근을 중단한 상태입니다. 새 token 발급과
 DELETED: 삭제 처리 상태입니다. 새 token 발급과 refresh가 거부되고 refresh token이 폐기됩니다.
 ```
 
-TEMIS 접근 권한은 role로 분리합니다. 기본 `AUTH_CLIENTS_JSON`은 새 사용자를 `temis:pending`으로 둡니다. 관리자가 승인하면 `temis:user`를 부여하고, 운영 bootstrap 또는 기존 admin이 필요한 계정에만 `temis:admin`을 부여합니다. `temis:pending`은 로그인/토큰 상태와 별개인 서비스 승인 대기 role입니다.
+TEMIS 접근 권한은 role로 분리합니다. 현재 운영 기본 `AUTH_CLIENTS_JSON`은 새 사용자를 `temis:user`로 둡니다. 운영 bootstrap 또는 기존 admin이 필요한 계정에만 `temis:admin`을 부여합니다. 승인형 서비스로 되돌릴 경우 기본 role을 `temis:pending`으로 낮추고 관리자가 승인 후 `temis:user`를 부여하는 구조를 사용할 수 있습니다.
 
 첫 admin은 public API가 아니라 ops CLI로만 만듭니다.
 
