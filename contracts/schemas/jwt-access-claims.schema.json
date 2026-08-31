@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.example.invalid/sso/jwt-access-claims.schema.json",
+  "title": "SSO access-token claims",
+  "type": "object",
+  "required": ["sub", "iss", "aud", "exp", "iat", "roles", "email", "email_verified", "name", "type"],
+  "properties": {
+    "sub": { "type": "string", "minLength": 1 },
+    "iss": { "type": "string", "format": "uri" },
+    "aud": {
+      "oneOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+      ]
+    },
+    "exp": { "type": "integer" },
+    "iat": { "type": "integer" },
+    "roles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["serviceKey", "name"],
+        "properties": {
+          "serviceKey": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "email": { "type": ["string", "null"] },
+    "email_verified": { "type": "boolean" },
+    "name": { "type": ["string", "null"] },
+    "type": { "const": "access" }
+  },
+  "additionalProperties": true
+}

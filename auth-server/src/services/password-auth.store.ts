@@ -91,16 +91,20 @@ export const passwordAuthStore: PasswordAuthStore = {
     });
   },
   markLoginFailure: async (userId) => {
-    const credential = await prisma.passwordCredential.findUnique({ where: { userId } });
-    if (!credential) {
-      return;
-    }
+    const lockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+    await prisma.$transaction(async (transaction) => {
+      const result = await transaction.passwordCredential.updateMany({
+        where: { userId },
+        data: { failedLoginCount: { increment: 1 } }
+      });
+      if (result.count === 0) {
+        return;
+      }
 
-    const failedLoginCount = credential.failedLoginCount + 1;
-    const lockedUntil = failedLoginCount >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
-    await prisma.passwordCredential.update({
-      where: { userId },
-      data: { failedLoginCount, lockedUntil }
+      await transaction.passwordCredential.updateMany({
+        where: { userId, failedLoginCount: { gte: 5 } },
+        data: { lockedUntil }
+      });
     });
   },
   getCurrentUser: async (userId) => {

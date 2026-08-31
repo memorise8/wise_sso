@@ -1,0 +1,306 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "security.refresh-none-algorithm",
+      "fixture": "active-user-refresh-none",
+      "fixtureExpect": {
+        "$allowExtra": true,
+        "refreshToken": {
+          "$capture": "none-token",
+          "$predicate": "jwt",
+          "header": { "alg": "none", "typ": "JWT" },
+          "claims": {
+            "sub": { "$capture": "subject", "$predicate": "uuid" },
+            "type": "refresh",
+            "tokenId": { "$capture": "token-id", "$predicate": "nonempty-string" },
+            "audience": { "$fixture": "audience" },
+            "iat": { "$capture": "issued-at", "$predicate": "timestamp" },
+            "exp": { "$capture": "expires-at", "$predicate": "timestamp" }
+          }
+        },
+        "algorithm": "none",
+        "audience": { "$predicate": "nonempty-string" }
+      },
+      "stateProbe": "refresh-ledger",
+      "request": {
+        "method": "POST",
+        "path": "/auth/refresh",
+        "json": { "refreshToken": { "$fixture": "refreshToken" } }
+      },
+      "expect": {
+        "status": 401,
+        "json": {
+          "error": { "code": "INVALID_REFRESH_TOKEN", "message": "Invalid refresh token" }
+        }
+      },
+      "stateAssertions": [{ "type": "unchanged" }]
+    },
+    {
+      "id": "security.refresh-hs256-rotation",
+      "fixture": "active-user-refresh-hs256",
+      "fixtureExpect": {
+        "$allowExtra": true,
+        "refreshToken": {
+          "$capture": "seeded-hs256-token",
+          "$predicate": "jwt",
+          "header": { "alg": "HS256", "typ": "JWT" },
+          "claims": {
+            "sub": { "$fixture": "userId" },
+            "type": "refresh",
+            "tokenId": { "$capture": "seeded-token-id", "$predicate": "nonempty-string" },
+            "audience": { "$fixture": "audience" },
+            "iat": { "$capture": "seeded-issued-at", "$predicate": "timestamp" },
+            "exp": { "$capture": "seeded-expires-at", "$predicate": "timestamp" }
+          }
+        },
+        "algorithm": "HS256",
+        "audience": { "$predicate": "nonempty-string" }
+      },
+      "stateProbe": "refresh-ledger",
+      "request": {
+        "method": "POST",
+        "path": "/auth/refresh",
+        "json": { "refreshToken": { "$fixture": "refreshToken" } }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "accessToken": { "$capture": "rotated-access-token", "$predicate": "jwt" },
+          "refreshToken": {
+            "$capture": "rotated-refresh-token",
+            "$predicate": "jwt",
+            "header": { "alg": "HS256", "typ": "JWT" },
+            "claims": {
+              "sub": { "$fixture": "userId" },
+              "type": "refresh",
+              "tokenId": { "$capture": "rotated-token-id", "$predicate": "nonempty-string" },
+              "audience": { "$fixture": "audience" },
+              "iat": { "$capture": "rotated-issued-at", "$predicate": "timestamp" },
+              "exp": { "$capture": "rotated-expires-at", "$predicate": "timestamp" }
+            }
+          }
+        }
+      },
+      "assertions": [
+        {
+          "type": "jwt-rs256-jwks",
+          "tokenPath": "$.json.accessToken",
+          "jwksPath": "/.well-known/jwks.json",
+          "claims": {
+            "sub": { "$fixture": "userId" },
+            "email": { "$fixture": "email" },
+            "name": { "$fixture": "name" },
+            "email_verified": true,
+            "type": "access",
+            "roles": { "$fixture": "roles" },
+            "iat": { "$capture": "access-issued-at", "$predicate": "timestamp" },
+            "exp": { "$capture": "access-expires-at", "$predicate": "timestamp" },
+            "iss": "https://auth.financenow.kr",
+            "aud": { "$fixture": "audience" }
+          }
+        }
+      ],
+      "stateAssertions": [{ "type": "refresh-rotation" }]
+    },
+    {
+      "id": "security.refresh-hs384-algorithm",
+      "fixture": "active-user-refresh-hs384",
+      "fixtureExpect": {
+        "$allowExtra": true,
+        "refreshToken": {
+          "$capture": "hs384-token",
+          "$predicate": "jwt",
+          "header": { "alg": "HS384", "typ": "JWT" },
+          "claims": {
+            "sub": { "$capture": "subject", "$predicate": "uuid" },
+            "type": "refresh",
+            "tokenId": { "$capture": "token-id", "$predicate": "nonempty-string" },
+            "audience": { "$fixture": "audience" },
+            "iat": { "$capture": "issued-at", "$predicate": "timestamp" },
+            "exp": { "$capture": "expires-at", "$predicate": "timestamp" }
+          }
+        },
+        "algorithm": "HS384",
+        "audience": { "$predicate": "nonempty-string" }
+      },
+      "stateProbe": "refresh-ledger",
+      "request": {
+        "method": "POST",
+        "path": "/auth/refresh",
+        "json": { "refreshToken": { "$fixture": "refreshToken" } }
+      },
+      "expect": {
+        "status": 401,
+        "json": {
+          "error": { "code": "INVALID_REFRESH_TOKEN", "message": "Invalid refresh token" }
+        }
+      },
+      "stateAssertions": [{ "type": "unchanged" }]
+    },
+    {
+      "id": "security.refresh-hs512-algorithm",
+      "fixture": "active-user-refresh-hs512",
+      "fixtureExpect": {
+        "$allowExtra": true,
+        "refreshToken": {
+          "$capture": "hs512-token",
+          "$predicate": "jwt",
+          "header": { "alg": "HS512", "typ": "JWT" },
+          "claims": {
+            "sub": { "$capture": "subject", "$predicate": "uuid" },
+            "type": "refresh",
+            "tokenId": { "$capture": "token-id", "$predicate": "nonempty-string" },
+            "audience": { "$fixture": "audience" },
+            "iat": { "$capture": "issued-at", "$predicate": "timestamp" },
+            "exp": { "$capture": "expires-at", "$predicate": "timestamp" }
+          }
+        },
+        "algorithm": "HS512",
+        "audience": { "$predicate": "nonempty-string" }
+      },
+      "stateProbe": "refresh-ledger",
+      "request": {
+        "method": "POST",
+        "path": "/auth/refresh",
+        "json": { "refreshToken": { "$fixture": "refreshToken" } }
+      },
+      "expect": {
+        "status": 401,
+        "json": {
+          "error": { "code": "INVALID_REFRESH_TOKEN", "message": "Invalid refresh token" }
+        }
+      },
+      "stateAssertions": [{ "type": "unchanged" }]
+    },
+    {
+      "id": "auth.login-issues-verifiable-token",
+      "fixture": "active-password-user",
+      "steps": [
+        {
+          "stateProbe": "auth-lifecycle",
+          "request": {
+            "method": "POST",
+            "path": "/auth/login",
+            "json": {
+              "email": { "$fixture": "email" },
+              "password": { "$fixture": "password" },
+              "clientId": { "$fixture": "clientId" },
+              "redirectUri": { "$fixture": "redirectUri" },
+              "state": { "$fixture": "state" },
+              "codeChallenge": { "$fixture": "codeChallenge" },
+              "codeChallengeMethod": "S256"
+            }
+          },
+          "expect": {
+            "status": 200,
+            "json": {
+              "redirectUrl": {
+                "$url": {
+                  "base": { "$fixture": "redirectUri" },
+                  "query": {
+                    "code": { "$capture": "handoff-code", "$predicate": "nonempty-string" },
+                    "state": { "$fixture": "state" }
+                  }
+                }
+              }
+            }
+          },
+          "stateAssertions": [
+            { "type": "numeric-delta", "path": "$.authHandoffKeys", "by": 1 },
+            { "type": "numeric-delta", "path": "$.activeRefreshTokens", "by": 0 }
+          ]
+        },
+        {
+          "stateProbe": "auth-lifecycle",
+          "request": {
+            "method": "POST",
+            "path": "/auth/exchange",
+            "json": {
+              "clientId": { "$fixture": "clientId" },
+              "redirectUri": { "$fixture": "redirectUri" },
+              "code": { "$captureValue": "handoff-code" },
+              "codeVerifier": { "$fixture": "codeVerifier" }
+            }
+          },
+          "expect": {
+            "status": 200,
+            "json": {
+              "accessToken": { "$capture": "access-token", "$predicate": "jwt" },
+              "refreshToken": { "$capture": "refresh-token", "$predicate": "jwt" }
+            }
+          },
+          "assertions": [
+            {
+              "type": "jwt-rs256-jwks",
+              "tokenPath": "$.json.accessToken",
+              "jwksPath": "/.well-known/jwks.json",
+              "claims": {
+                "sub": { "$fixture": "userId" },
+                "email": { "$fixture": "email" },
+                "name": { "$fixture": "name" },
+                "email_verified": true,
+                "type": "access",
+                "roles": { "$fixture": "roles" },
+                "iat": { "$capture": "issued-at", "$predicate": "timestamp" },
+                "exp": { "$capture": "expires-at", "$predicate": "timestamp" },
+                "iss": "https://auth.financenow.kr",
+                "aud": { "$fixture": "audience" }
+              }
+            }
+          ],
+          "stateAssertions": [
+            { "type": "numeric-delta", "path": "$.authHandoffKeys", "by": -1 },
+            { "type": "numeric-delta", "path": "$.activeRefreshTokens", "by": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "recovery.password-reset-request",
+      "fixture": "active-password-user",
+      "stateProbe": "password-reset-ledger",
+      "request": {
+        "method": "POST",
+        "path": "/auth/password-reset/request",
+        "json": { "email": { "$fixture": "email" } }
+      },
+      "expect": { "status": 202, "json": { "status": "accepted" } },
+      "stateAssertions": [{ "type": "numeric-delta", "path": "$.unusedTokens", "by": 1 }]
+    },
+    {
+      "id": "recovery.email-verification-request",
+      "fixture": "pending-email-user",
+      "stateProbe": "email-verification-ledger",
+      "request": {
+        "method": "POST",
+        "path": "/auth/email-verification/request",
+        "json": { "email": { "$fixture": "email" } }
+      },
+      "expect": { "status": 202, "json": { "status": "accepted" } },
+      "stateAssertions": [{ "type": "numeric-delta", "path": "$.unusedTokens", "by": 1 }]
+    },
+    {
+      "id": "admin.status-mutation",
+      "fixture": "admin-and-active-target",
+      "stateProbe": "target-user",
+      "request": {
+        "method": "PATCH",
+        "path": { "$fixture": "targetStatusPath" },
+        "headers": { "authorization": { "$fixture": "authorization" } },
+        "json": { "status": "SUSPENDED", "reasonCode": "CONTRACT_FIXTURE" }
+      },
+      "expect": {
+        "status": 200,
+        "json": {
+          "statusChanged": true,
+          "revokedRefreshTokenCount": 0
+        }
+      },
+      "stateAssertions": [
+        { "type": "transition", "path": "$.status", "from": "ACTIVE", "to": "SUSPENDED" },
+        { "type": "numeric-delta", "path": "$.auditEvents", "by": 1 }
+      ]
+    }
+  ]
+}

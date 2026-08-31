@@ -260,16 +260,74 @@ describe("issueTokenPair", () => {
   it("Given an active DB user When issuing a token pair Then the active-status check and refresh-token write share one transaction", async () => {
     const { issueTokenPair } = await import("./token.service.js");
 
-    await issueTokenPair("auth-user-1");
+    const tokens = await issueTokenPair("auth-user-1");
+    const decodedRefreshToken = jwt.decode(tokens.refreshToken, { complete: true });
 
     expect(mocks.transaction).toHaveBeenCalledTimes(1);
     expect(mocks.queryRaw).toHaveBeenCalledTimes(1);
     expect(mocks.refreshToken.create).toHaveBeenCalledTimes(1);
+    expect(decodedRefreshToken).not.toBeNull();
+    expect(typeof decodedRefreshToken === "string" ? undefined : decodedRefreshToken?.header.alg).toBe("HS256");
   });
 
 });
 
 describe("rotateRefreshToken", () => {
+  it.each([
+    ["HS384", () => jwt.sign(
+      { sub: "auth-user-1", type: "refresh", tokenId: "refresh-token-id" },
+      "test-refresh-secret-long",
+      { algorithm: "HS384", expiresIn: "30d" }
+    )],
+    ["HS512", () => jwt.sign(
+      { sub: "auth-user-1", type: "refresh", tokenId: "refresh-token-id" },
+      "test-refresh-secret-long",
+      { algorithm: "HS512", expiresIn: "30d" }
+    )],
+    ["none", () => {
+      const header = Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url");
+      const payload = Buffer.from(JSON.stringify({
+        sub: "auth-user-1",
+        type: "refresh",
+        tokenId: "refresh-token-id"
+      })).toString("base64url");
+      return `${header}.${payload}.`;
+    }],
+    ["RS256", () => jwt.sign(
+      { sub: "auth-user-1", type: "refresh", tokenId: "refresh-token-id" },
+      createAccessKeyFixture().privateKeyPem,
+      { algorithm: "RS256", expiresIn: "30d" }
+    )],
+    ["HS256 access type", () => jwt.sign(
+      { sub: "auth-user-1", type: "access", tokenId: "refresh-token-id" },
+      "test-refresh-secret-long",
+      { algorithm: "HS256", expiresIn: "30d" }
+    )],
+    ["malformed", () => "not-a-jwt"]
+  ])("Given a refresh token using %s When refresh rotates Then it is rejected before persistence", async (_algorithm, createToken) => {
+    const { HttpError } = await import("../utils/httpError.js");
+    const { rotateRefreshToken } = await import("./token.service.js");
+
+    await expect(rotateRefreshToken(createToken())).rejects.toMatchObject(
+      new HttpError(401, "INVALID_REFRESH_TOKEN", "Invalid refresh token")
+    );
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.refreshToken.findFirst).not.toHaveBeenCalled();
+    expect(mocks.refreshToken.updateMany).not.toHaveBeenCalled();
+    expect(mocks.refreshToken.create).not.toHaveBeenCalled();
+  });
+
+  it("Given refresh verification throws an unexpected internal error When refresh rotates Then the error is preserved", async () => {
+    const unexpectedError = new Error("unexpected verification failure");
+    vi.spyOn(jwt, "verify").mockImplementationOnce(() => {
+      throw unexpectedError;
+    });
+    const { rotateRefreshToken } = await import("./token.service.js");
+
+    await expect(rotateRefreshToken("refresh-token")).rejects.toBe(unexpectedError);
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
   it("Given the same valid refresh token is used concurrently When refresh rotates Then only one request mints a new token pair", async () => {
     const { HttpError } = await import("../utils/httpError.js");
     const { rotateRefreshToken } = await import("./token.service.js");

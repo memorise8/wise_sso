@@ -1,0 +1,17 @@
+{
+  "_notice": "Synthetic decoded JWT only; this is not a usable token.",
+  "header": { "alg": "RS256", "typ": "JWT", "kid": "auth-79d0a7ecc677e242" },
+  "claims": {
+    "sub": "00000000-0000-4000-8000-000000000001",
+    "iss": "https://auth.financenow.kr",
+    "aud": "service.example.invalid",
+    "iat": 1700000000,
+    "exp": 1700000900,
+    "roles": [{ "serviceKey": "example", "name": "viewer" }],
+    "email": "contract-user@example.invalid",
+    "email_verified": true,
+    "name": "Contract User",
+    "type": "access"
+  },
+  "signature": "[SYNTHETIC-NOT-A-SIGNATURE]"
+}

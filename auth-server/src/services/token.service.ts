@@ -73,6 +73,7 @@ const accessOptions = (tokenAudience: TokenAudience): SignOptions => ({
 });
 
 const refreshOptions = (): SignOptions => ({
+  algorithm: "HS256",
   expiresIn: `${env.REFRESH_TOKEN_EXPIRES_IN_DAYS}d`
 });
 
@@ -212,7 +213,21 @@ export const verifyAccessToken = (accessToken: string): string => {
 };
 
 export const rotateRefreshToken = async (refreshToken: string): Promise<RefreshTokenRotation> => {
-  const payload = readJwtPayload(jwt.verify(refreshToken, env.JWT_REFRESH_SECRET));
+  let verifiedRefreshToken: string | JwtPayload;
+  try {
+    verifiedRefreshToken = jwt.verify(refreshToken, env.JWT_REFRESH_SECRET, {
+      algorithms: ["HS256"]
+    });
+  } catch (error) {
+    if (error instanceof jwt.JsonWebTokenError) {
+      throw invalidRefreshTokenError();
+    }
+    throw error;
+  }
+  if (typeof verifiedRefreshToken === "string") {
+    throw invalidRefreshTokenError();
+  }
+  const payload = verifiedRefreshToken;
   if (payload["type"] !== "refresh" || typeof payload.sub !== "string") {
     throw new HttpError(401, "INVALID_REFRESH_TOKEN", "Invalid refresh token");
   }

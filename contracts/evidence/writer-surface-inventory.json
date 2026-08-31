@@ -1,0 +1,582 @@
+{
+  "schema_version": 1,
+  "scope": "Express prerequisite worktree DB/Redis writer surfaces",
+  "generated_from": {
+    "http_mounts": "auth-server/src/app.ts",
+    "route_files": [
+      "auth-server/src/routes/auth.routes.ts",
+      "auth-server/src/routes/admin.routes.ts",
+      "auth-server/src/routes/user.routes.ts"
+    ],
+    "command_catalog": "auth-server/package.json",
+    "script_roots": [
+      "auth-server/src/scripts",
+      "auth-server/ops"
+    ]
+  },
+  "classification_contract": {
+    "allowed_drain_classes": [
+      "root_producer",
+      "oauth_callback",
+      "handoff_exchange",
+      "remaining_writer_ingress",
+      "writer_job"
+    ],
+    "ordered_stop_stages": [
+      "STOP_BACKGROUND_OPS_WRITERS",
+      "STOP_ROOT_PRODUCERS",
+      "DRAIN_OAUTH_CALLBACKS",
+      "STOP_OAUTH_CALLBACKS",
+      "DRAIN_HANDOFF_EXCHANGE",
+      "STOP_HANDOFF_EXCHANGE",
+      "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "VERIFY_ALL_WRITERS_CLOSED",
+      "WAIT_LIMITER_WINDOW",
+      "SWITCH_CLOSED",
+      "SYNTHETIC_VERIFY",
+      "REOPEN"
+    ],
+    "classification_rule": "Every effective HTTP path that can write PostgreSQL or Redis, including middleware-only and denial-only writes, has exactly one drain_class. Every direct writer-capable command has writer_job. Isolated test writers remain inventoried but are marked cutover_scope=false.",
+    "switch_gate": "Routing changes fail closed unless unclassified_writer_routes and duplicate_writer_ids are empty, all cutover_scope writer ingress/jobs are closed or fenced, and writer in-flight/process/lease counts are zero."
+  },
+  "cross_cutting_writer_hooks": [
+    {
+      "id": "hook.auth-rate-limit",
+      "applies_to": "all /auth routes",
+      "writes": [
+        "Redis INCR+EXPIRE wiseacct:rate-limit:<client-ip>:<baseUrl><path> on every request",
+        "PostgreSQL AuditLog on 429"
+      ],
+      "evidence": [
+        "auth-server/src/routes/auth.routes.ts:21",
+        "auth-server/src/routes/auth.routes.ts:27",
+        "auth-server/src/middlewares/rateLimit.middleware.ts:21",
+        "auth-server/src/middlewares/rateLimit.middleware.ts:26",
+        "auth-server/src/middlewares/rateLimit.middleware.ts:36"
+      ]
+    },
+    {
+      "id": "hook.admin-denial-audit",
+      "applies_to": "all /admin and /manage-api routes after a valid access token reaches DB-backed admin authorization",
+      "writes": [
+        "PostgreSQL AuditLog admin_authorization_failure when the DB user is not ACTIVE temis:admin"
+      ],
+      "notes": "A missing/invalid bearer token fails in authMiddleware before this audit hook and does not write this denial event.",
+      "evidence": [
+        "auth-server/src/routes/admin.routes.ts:80",
+        "auth-server/src/routes/admin.routes.ts:91",
+        "auth-server/src/routes/admin.routes.ts:96",
+        "auth-server/src/routes/admin.routes.ts:114",
+        "auth-server/src/middlewares/auth.middleware.ts:13"
+      ]
+    }
+  ],
+  "http_writer_routes": [
+    {
+      "id": "http.auth.google.start",
+      "method": "GET",
+      "path": "/auth/google",
+      "write_condition": "every request writes limiter; accepted request creates OAuth state",
+      "stores": ["redis:rate_limit", "redis:oauth_state", "postgres:audit_on_rate_limit"],
+      "producer_consumer_roles": ["oauth_state_producer"],
+      "drain_class": "root_producer",
+      "stop_stage": "STOP_ROOT_PRODUCERS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:27", "auth-server/src/services/oauth.service.ts:146", "auth-server/src/services/oauth-state.store.ts:51"]
+    },
+    {
+      "id": "http.auth.naver.start",
+      "method": "GET",
+      "path": "/auth/naver",
+      "write_condition": "every request writes limiter; accepted request creates OAuth state",
+      "stores": ["redis:rate_limit", "redis:oauth_state", "postgres:audit_on_rate_limit"],
+      "producer_consumer_roles": ["oauth_state_producer"],
+      "drain_class": "root_producer",
+      "stop_stage": "STOP_ROOT_PRODUCERS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:28", "auth-server/src/services/oauth.service.ts:146", "auth-server/src/services/oauth-state.store.ts:51"]
+    },
+    {
+      "id": "http.auth.kakao.start",
+      "method": "GET",
+      "path": "/auth/kakao",
+      "write_condition": "every request writes limiter; accepted request creates OAuth state",
+      "stores": ["redis:rate_limit", "redis:oauth_state", "postgres:audit_on_rate_limit"],
+      "producer_consumer_roles": ["oauth_state_producer"],
+      "drain_class": "root_producer",
+      "stop_stage": "STOP_ROOT_PRODUCERS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:29", "auth-server/src/services/oauth.service.ts:146", "auth-server/src/services/oauth-state.store.ts:51"]
+    },
+    {
+      "id": "http.auth.google.callback",
+      "method": "GET",
+      "path": "/auth/google/callback",
+      "write_condition": "every request writes limiter; provider-error path writes audit; accepted callback consumes OAuth state, may create/link identity, writes login audit, and creates handoff",
+      "stores": ["redis:rate_limit", "redis:oauth_state", "postgres:user_identity", "postgres:audit", "redis:auth_handoff"],
+      "producer_consumer_roles": ["oauth_state_consumer", "identity_producer", "auth_handoff_producer"],
+      "drain_class": "oauth_callback",
+      "stop_stage": "STOP_OAUTH_CALLBACKS",
+      "drain_before_stop_seconds": 600,
+      "evidence": ["auth-server/src/routes/auth.routes.ts:31", "auth-server/src/controllers/oauth.controller.ts:89", "auth-server/src/services/oauth.service.ts:225", "auth-server/src/services/user.service.ts:220", "auth-server/src/services/auth-handoff.store.ts:115"]
+    },
+    {
+      "id": "http.auth.naver.callback",
+      "method": "GET",
+      "path": "/auth/naver/callback",
+      "write_condition": "every request writes limiter; provider-error path writes audit; accepted callback consumes OAuth state, may create/link identity, writes login audit, and creates handoff",
+      "stores": ["redis:rate_limit", "redis:oauth_state", "postgres:user_identity", "postgres:audit", "redis:auth_handoff"],
+      "producer_consumer_roles": ["oauth_state_consumer", "identity_producer", "auth_handoff_producer"],
+      "drain_class": "oauth_callback",
+      "stop_stage": "STOP_OAUTH_CALLBACKS",
+      "drain_before_stop_seconds": 600,
+      "evidence": ["auth-server/src/routes/auth.routes.ts:32", "auth-server/src/controllers/oauth.controller.ts:89", "auth-server/src/services/oauth.service.ts:225", "auth-server/src/services/user.service.ts:220", "auth-server/src/services/auth-handoff.store.ts:115"]
+    },
+    {
+      "id": "http.auth.kakao.callback",
+      "method": "GET",
+      "path": "/auth/kakao/callback",
+      "write_condition": "every request writes limiter; provider-error path writes audit; accepted callback consumes OAuth state, may create/link identity, writes login audit, and creates handoff",
+      "stores": ["redis:rate_limit", "redis:oauth_state", "postgres:user_identity", "postgres:audit", "redis:auth_handoff"],
+      "producer_consumer_roles": ["oauth_state_consumer", "identity_producer", "auth_handoff_producer"],
+      "drain_class": "oauth_callback",
+      "stop_stage": "STOP_OAUTH_CALLBACKS",
+      "drain_before_stop_seconds": 600,
+      "evidence": ["auth-server/src/routes/auth.routes.ts:33", "auth-server/src/controllers/oauth.controller.ts:89", "auth-server/src/services/oauth.service.ts:225", "auth-server/src/services/user.service.ts:220", "auth-server/src/services/auth-handoff.store.ts:115"]
+    },
+    {
+      "id": "http.auth.register",
+      "method": "POST",
+      "path": "/auth/register",
+      "write_condition": "every request writes limiter; accepted registration creates User+PasswordCredential or upserts PendingPasswordCredential, then writes audit",
+      "stores": ["redis:rate_limit", "postgres:user_credentials", "postgres:audit"],
+      "producer_consumer_roles": ["account_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:35", "auth-server/src/controllers/auth.controller.ts:179", "auth-server/src/services/password-auth.store.ts:37", "auth-server/src/services/password-auth.store.ts:54"]
+    },
+    {
+      "id": "http.auth.login",
+      "method": "POST",
+      "path": "/auth/login",
+      "write_condition": "every request writes limiter; login updates failed/lock or reset counters and writes audit; direct login creates RefreshToken, SSO login creates handoff",
+      "stores": ["redis:rate_limit", "postgres:password_credential", "postgres:audit", "postgres:refresh_token", "redis:auth_handoff"],
+      "producer_consumer_roles": ["credential_state_producer", "refresh_token_producer", "auth_handoff_producer"],
+      "drain_class": "root_producer",
+      "stop_stage": "STOP_ROOT_PRODUCERS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:36", "auth-server/src/controllers/auth.controller.ts:196", "auth-server/src/services/password-auth.store.ts:87", "auth-server/src/services/password-auth.store.ts:93", "auth-server/src/services/token.service.ts:195", "auth-server/src/controllers/auth.controller.ts:211"]
+    },
+    {
+      "id": "http.auth.exchange",
+      "method": "POST",
+      "path": "/auth/exchange",
+      "write_condition": "every request writes limiter; valid binding atomically consumes handoff, creates RefreshToken and writes success/failure audit; malformed/invalid exchange writes failure audit",
+      "stores": ["redis:rate_limit", "redis:auth_handoff", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["auth_handoff_consumer", "refresh_token_producer"],
+      "drain_class": "handoff_exchange",
+      "stop_stage": "STOP_HANDOFF_EXCHANGE",
+      "drain_before_stop_seconds": 120,
+      "evidence": ["auth-server/src/routes/auth.routes.ts:37", "auth-server/src/controllers/oauth.controller.ts:136", "auth-server/src/services/auth-handoff.store.ts:145", "auth-server/src/services/token.service.ts:195"]
+    },
+    {
+      "id": "http.auth.refresh",
+      "method": "POST",
+      "path": "/auth/refresh",
+      "write_condition": "every request writes limiter; valid refresh revokes old row and creates replacement; success/failure writes audit",
+      "stores": ["redis:rate_limit", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["refresh_token_consumer", "refresh_token_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:38", "auth-server/src/controllers/auth.controller.ts:154", "auth-server/src/services/token.service.ts:215"]
+    },
+    {
+      "id": "http.auth.logout",
+      "method": "POST",
+      "path": "/auth/logout",
+      "write_condition": "every request writes limiter; revokes matching RefreshToken rows and writes audit",
+      "stores": ["redis:rate_limit", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["refresh_token_consumer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:39", "auth-server/src/controllers/auth.controller.ts:242", "auth-server/src/services/token.service.ts:276"]
+    },
+    {
+      "id": "http.auth.password-reset.request",
+      "method": "POST",
+      "path": "/auth/password-reset/request",
+      "write_condition": "every request writes limiter; eligible user creates PasswordResetToken; request writes audit",
+      "stores": ["redis:rate_limit", "postgres:password_reset_token", "postgres:audit"],
+      "producer_consumer_roles": ["password_reset_token_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:40", "auth-server/src/controllers/auth.controller.ts:256", "auth-server/src/services/password-reset.store.ts:41"]
+    },
+    {
+      "id": "http.auth.password-reset.confirm",
+      "method": "POST",
+      "path": "/auth/password-reset/confirm",
+      "write_condition": "every request writes limiter; valid token is consumed, password state changes and all refresh tokens are revoked; success/failure writes audit",
+      "stores": ["redis:rate_limit", "postgres:password_reset_token", "postgres:password_credential", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["password_reset_token_consumer", "credential_state_producer", "refresh_token_consumer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:41", "auth-server/src/controllers/auth.controller.ts:273", "auth-server/src/services/password-reset.store.ts:50"]
+    },
+    {
+      "id": "http.auth.email-verification.request",
+      "method": "POST",
+      "path": "/auth/email-verification/request",
+      "write_condition": "every request writes limiter; eligible user creates EmailVerificationToken with optional handoff metadata; request writes audit",
+      "stores": ["redis:rate_limit", "postgres:email_verification_token", "postgres:audit"],
+      "producer_consumer_roles": ["email_verification_token_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:42", "auth-server/src/controllers/auth.controller.ts:301", "auth-server/src/services/email-verification.store.ts:36"]
+    },
+    {
+      "id": "http.auth.email-verification.confirm",
+      "method": "POST",
+      "path": "/auth/email-verification/confirm",
+      "write_condition": "every request writes limiter; consumes verification token, activates/renames user or attaches pending credential, assigns role, writes audit, and may create handoff",
+      "stores": ["redis:rate_limit", "postgres:email_verification_token", "postgres:user_credentials_roles", "postgres:audit", "redis:auth_handoff"],
+      "producer_consumer_roles": ["email_verification_token_consumer", "account_state_producer", "auth_handoff_producer"],
+      "drain_class": "root_producer",
+      "stop_stage": "STOP_ROOT_PRODUCERS",
+      "evidence": ["auth-server/src/routes/auth.routes.ts:43", "auth-server/src/controllers/auth.controller.ts:336", "auth-server/src/services/email-verification.store.ts:95", "auth-server/src/controllers/auth.controller.ts:367"]
+    },
+    {
+      "id": "http.admin.users.list",
+      "method": "GET",
+      "path": "/admin/users",
+      "write_condition": "conditional: authenticated DB-backed admin denial writes AuditLog; authorized request is read-only",
+      "stores": ["postgres:audit_on_denial"],
+      "producer_consumer_roles": ["audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:82", "auth-server/src/routes/admin.routes.ts:91", "auth-server/src/routes/admin.routes.ts:162"]
+    },
+    {
+      "id": "http.admin.audit-logs.list",
+      "method": "GET",
+      "path": "/admin/audit-logs",
+      "write_condition": "conditional: authenticated DB-backed admin denial writes AuditLog; authorized request is read-only",
+      "stores": ["postgres:audit_on_denial"],
+      "producer_consumer_roles": ["audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:82", "auth-server/src/routes/admin.routes.ts:91", "auth-server/src/routes/admin.routes.ts:169"]
+    },
+    {
+      "id": "http.admin.users.status",
+      "method": "PATCH",
+      "path": "/admin/users/:id/status",
+      "write_condition": "denial writes audit; authorized request updates status, conditionally revokes refresh tokens, and writes mutation audit",
+      "stores": ["postgres:user", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["account_state_producer", "refresh_token_consumer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/admin.routes.ts:176", "auth-server/src/services/admin-user.service.ts:121"]
+    },
+    {
+      "id": "http.admin.users.roles.assign",
+      "method": "POST",
+      "path": "/admin/users/:id/roles",
+      "write_condition": "denial writes audit; authorized request upserts Role, inserts UserRole, and writes mutation audit when assigned",
+      "stores": ["postgres:role", "postgres:user_role", "postgres:audit"],
+      "producer_consumer_roles": ["authorization_state_producer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/admin.routes.ts:193", "auth-server/src/services/admin-user.service.ts:155", "auth-server/src/services/admin-user.store.ts:57"]
+    },
+    {
+      "id": "http.admin.users.roles.remove",
+      "method": "DELETE",
+      "path": "/admin/users/:id/roles/:roleId",
+      "write_condition": "denial writes audit; authorized removal deletes UserRole, revokes refresh tokens, and writes mutation audit",
+      "stores": ["postgres:user_role", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["authorization_state_producer", "refresh_token_consumer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/admin.routes.ts:210", "auth-server/src/services/admin-user.service.ts:188", "auth-server/src/services/admin-user.store.ts:90"]
+    },
+    {
+      "id": "http.admin.users.revoke-sessions",
+      "method": "POST",
+      "path": "/admin/users/:id/revoke-sessions",
+      "write_condition": "denial writes audit; authorized request revokes all target refresh tokens and writes mutation audit",
+      "stores": ["postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["refresh_token_consumer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/routes/admin.routes.ts:232", "auth-server/src/services/admin-user.store.ts:48"]
+    },
+    {
+      "id": "http.manage-api.users.list",
+      "method": "GET",
+      "path": "/manage-api/users",
+      "alias_of": "http.admin.users.list",
+      "write_condition": "conditional: authenticated DB-backed admin denial writes AuditLog; authorized request is read-only",
+      "stores": ["postgres:audit_on_denial"],
+      "producer_consumer_roles": ["audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:83", "auth-server/src/routes/admin.routes.ts:91", "auth-server/src/routes/admin.routes.ts:162"]
+    },
+    {
+      "id": "http.manage-api.audit-logs.list",
+      "method": "GET",
+      "path": "/manage-api/audit-logs",
+      "alias_of": "http.admin.audit-logs.list",
+      "write_condition": "conditional: authenticated DB-backed admin denial writes AuditLog; authorized request is read-only",
+      "stores": ["postgres:audit_on_denial"],
+      "producer_consumer_roles": ["audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:83", "auth-server/src/routes/admin.routes.ts:91", "auth-server/src/routes/admin.routes.ts:169"]
+    },
+    {
+      "id": "http.manage-api.users.status",
+      "method": "PATCH",
+      "path": "/manage-api/users/:id/status",
+      "alias_of": "http.admin.users.status",
+      "write_condition": "denial writes audit; authorized request updates status, conditionally revokes refresh tokens, and writes mutation audit",
+      "stores": ["postgres:user", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["account_state_producer", "refresh_token_consumer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:83", "auth-server/src/routes/admin.routes.ts:176"]
+    },
+    {
+      "id": "http.manage-api.users.roles.assign",
+      "method": "POST",
+      "path": "/manage-api/users/:id/roles",
+      "alias_of": "http.admin.users.roles.assign",
+      "write_condition": "denial writes audit; authorized request upserts Role, inserts UserRole, and writes mutation audit when assigned",
+      "stores": ["postgres:role", "postgres:user_role", "postgres:audit"],
+      "producer_consumer_roles": ["authorization_state_producer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:83", "auth-server/src/routes/admin.routes.ts:193"]
+    },
+    {
+      "id": "http.manage-api.users.roles.remove",
+      "method": "DELETE",
+      "path": "/manage-api/users/:id/roles/:roleId",
+      "alias_of": "http.admin.users.roles.remove",
+      "write_condition": "denial writes audit; authorized removal deletes UserRole, revokes refresh tokens, and writes mutation audit",
+      "stores": ["postgres:user_role", "postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["authorization_state_producer", "refresh_token_consumer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:83", "auth-server/src/routes/admin.routes.ts:210"]
+    },
+    {
+      "id": "http.manage-api.users.revoke-sessions",
+      "method": "POST",
+      "path": "/manage-api/users/:id/revoke-sessions",
+      "alias_of": "http.admin.users.revoke-sessions",
+      "write_condition": "denial writes audit; authorized request revokes all target refresh tokens and writes mutation audit",
+      "stores": ["postgres:refresh_token", "postgres:audit"],
+      "producer_consumer_roles": ["refresh_token_consumer", "audit_producer"],
+      "drain_class": "remaining_writer_ingress",
+      "stop_stage": "STOP_ALL_REMAINING_WRITER_INGRESS",
+      "evidence": ["auth-server/src/app.ts:83", "auth-server/src/routes/admin.routes.ts:232"]
+    }
+  ],
+  "background_maintenance_ops_writers": [
+    {
+      "id": "job.tokens-cleanup",
+      "entrypoint": "npm run tokens:cleanup",
+      "write_condition": "default execution deletes expired/revoked RefreshToken rows; --dry-run is read-only",
+      "stores": ["postgres:refresh_token"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:13", "auth-server/src/scripts/cleanup-refresh-tokens.ts:56", "auth-server/src/services/token-cleanup.service.ts:48"]
+    },
+    {
+      "id": "job.audit-cleanup",
+      "entrypoint": "npm run ops:cleanup-audit-logs -- --execute",
+      "write_condition": "--execute deletes old AuditLog rows; default is dry-run",
+      "stores": ["postgres:audit"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:14", "auth-server/src/scripts/cleanup-audit-logs.ts:25", "auth-server/src/services/audit-retention.service.ts:42"]
+    },
+    {
+      "id": "job.grant-admin",
+      "entrypoint": "npm run ops:grant-admin -- --email <email>",
+      "write_condition": "assigns temis:admin, revokes refresh tokens and writes audit",
+      "stores": ["postgres:role", "postgres:user_role", "postgres:refresh_token", "postgres:audit"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:15", "auth-server/src/scripts/grant-admin.ts:54", "auth-server/ops/README.md:112"]
+    },
+    {
+      "id": "job.backfill-default-roles",
+      "entrypoint": "npm run ops:backfill-default-roles",
+      "write_condition": "upserts default role and creates missing UserRole rows in a serializable transaction",
+      "stores": ["postgres:role", "postgres:user_role"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:16", "auth-server/src/scripts/backfill-default-roles.ts:25", "auth-server/src/services/user.service.ts:133"]
+    },
+    {
+      "id": "job.merge-split-identities",
+      "entrypoint": "npm run ops:merge-split-email-identities -- --apply",
+      "write_condition": "--apply moves email/password identity, writes audit and deletes merged user; default is dry-run",
+      "stores": ["postgres:user", "postgres:password_credential", "postgres:audit"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:17", "auth-server/src/scripts/merge-split-email-identities.ts:89", "auth-server/src/scripts/merge-split-email-identities.ts:129"]
+    },
+    {
+      "id": "job.qa-seed-admin-flow",
+      "entrypoint": "npm run qa:seed-temis-admin-flow",
+      "write_condition": "non-production guard; deletes/recreates fixture users, roles, user roles and refresh token",
+      "stores": ["postgres:user", "postgres:role", "postgres:user_role", "postgres:refresh_token"],
+      "cutover_scope": false,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:18", "auth-server/src/scripts/seed-temis-admin-flow-fixture.ts:116", "auth-server/src/scripts/seed-temis-admin-flow-fixture.ts:127"]
+    },
+    {
+      "id": "job.prisma-migrate-dev",
+      "entrypoint": "npm run prisma:migrate",
+      "write_condition": "Prisma development migration command may create/apply schema migrations",
+      "stores": ["postgres:schema"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:20"]
+    },
+    {
+      "id": "job.prisma-migrate-deploy",
+      "entrypoint": "npm run prisma:migrate:deploy",
+      "write_condition": "applies pending Prisma schema migrations and migration history",
+      "stores": ["postgres:schema", "postgres:migration_history"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:21", "auth-server/ops/README.md:16", "auth-server/README.md:168"]
+    },
+    {
+      "id": "job.prisma-studio",
+      "entrypoint": "npm run prisma:studio",
+      "write_condition": "interactive database UI is writer-capable even though no automatic mutation is defined",
+      "stores": ["postgres:any_application_table"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:22"]
+    },
+    {
+      "id": "job.provision-current-server-db",
+      "entrypoint": "auth-server/ops/provision-current-server-db.sh",
+      "write_condition": "creates/alters application role and database and changes database/schema grants",
+      "stores": ["postgres:cluster_roles", "postgres:database", "postgres:privileges"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/ops/provision-current-server-db.sh:27", "auth-server/ops/provision-current-server-db.sh:32", "auth-server/ops/provision-current-server-db.sh:47"]
+    },
+    {
+      "id": "job.init-local-postgres",
+      "entrypoint": "docker compose up postgres on a fresh auth-postgres-data volume",
+      "write_condition": "fresh-volume entrypoint creates role/database and changes grants",
+      "stores": ["postgres:cluster_roles", "postgres:database", "postgres:privileges"],
+      "cutover_scope": false,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/docker-compose.yml:56", "auth-server/ops/init-local-postgres.sh:21", "auth-server/ops/init-local-postgres.sh:28"]
+    },
+    {
+      "id": "job.restore-test-db",
+      "entrypoint": "documented createdb -> npm run ops:restore-test -- <backup.dump> -> dropdb sequence",
+      "write_condition": "documented lifecycle creates and later drops a disposable database; pg_restore writes only to the required restore-test URL",
+      "stores": ["postgres:database_catalog", "postgres:disposable_restore_test_database"],
+      "cutover_scope": false,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:24", "auth-server/ops/restore-test-auth-db.sh:13", "auth-server/ops/README.md:70"]
+    },
+    {
+      "id": "job.phase0-integration",
+      "entrypoint": "npm run test:phase0-integration",
+      "write_condition": "creates isolated test containers, applies migrations, and runs DB/Redis mutation tests against fixed test URLs",
+      "stores": ["postgres:isolated_phase0_test", "redis:isolated_phase0_test"],
+      "cutover_scope": false,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/package.json:10", "auth-server/ops/run-phase0-integration.sh:5", "auth-server/ops/run-phase0-integration.sh:94"]
+    },
+    {
+      "id": "job.compose-volume-delete",
+      "entrypoint": "docker compose down -v",
+      "write_condition": "destructive storage administration deletes the Auth PostgreSQL volume; not a SQL writer but must be fenced during migration",
+      "stores": ["postgres:volume"],
+      "cutover_scope": true,
+      "drain_class": "writer_job",
+      "stop_stage": "STOP_BACKGROUND_OPS_WRITERS",
+      "evidence": ["auth-server/ops/DOCKER_INVENTORY.md:26", "auth-server/ops/DOCKER_INVENTORY.md:27"]
+    }
+  ],
+  "reviewed_non_writer_surfaces": {
+    "http": [
+      "GET /healthz",
+      "GET /readyz",
+      "GET /.well-known/jwks.json",
+      "GET /.well-known/openid-configuration",
+      "GET /users/me",
+      "GET /admin/dashboard",
+      "GET /manage/dashboard",
+      "GET /",
+      "GET /login",
+      "GET /signup",
+      "GET /auth/callback",
+      "GET /password-reset",
+      "GET /verify-email",
+      "GET /assets/*"
+    ],
+    "commands": [
+      "npm run build",
+      "npm test",
+      "npm run qa:auth-flow (test wrapper)",
+      "npm run ops:backup",
+      "npm run prisma:generate",
+      "auth-server/ops/run-auth-server.sh"
+    ],
+    "evidence": [
+      "auth-server/src/app.ts:48",
+      "auth-server/src/app.ts:54",
+      "auth-server/src/app.ts:58",
+      "auth-server/src/app.ts:68",
+      "auth-server/src/app.ts:72",
+      "auth-server/src/app.ts:76",
+      "auth-server/src/app.ts:85",
+      "auth-server/src/routes/user.routes.ts:7",
+      "auth-server/package.json:7",
+      "auth-server/package.json:23"
+    ]
+  },
+  "scheduler_discovery": {
+    "repository_defined_schedulers_or_cron_jobs": [],
+    "status": "none_found_in_repository",
+    "operational_caveat": "Absence from this repository does not prove that host cron, systemd timers, CI/CD schedules, or external operator automation are absent. Those external owners must be enumerated and fenced before cutover.",
+    "searched_terms": ["cron", "scheduler", "schedule", "systemd", "timer", "job"]
+  },
+  "coverage": {
+    "source_route_definition_count": 21,
+    "effective_http_writer_route_count": 27,
+    "auth_route_count": 15,
+    "admin_route_count": 6,
+    "manage_api_alias_route_count": 6,
+    "writer_capable_job_count": 14,
+    "unclassified_writer_routes": [],
+    "duplicate_writer_ids": [],
+    "classification_status": "PASS",
+    "route_expansion_assertion": "15 auth route definitions mounted once + 6 admin route definitions mounted at both /admin and /manage-api = 27 effective writer paths",
+    "fail_closed_instruction": "Any newly discovered route, mount alias, middleware writer, script, scheduler, host timer, CI job, or interactive DB tool that can mutate PostgreSQL/Redis must be added with exactly one drain_class; otherwise set classification_status=FAIL and prohibit canary, cutover, and rollback routing changes."
+  }
+}

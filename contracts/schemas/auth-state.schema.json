@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.example.invalid/sso/auth-state.schema.json",
+  "title": "Synthetic auth persistence state snapshot",
+  "type": "object",
+  "required": ["_notice", "user", "refreshToken", "authHandoff", "oauthState"],
+  "properties": {
+    "_notice": { "type": "string", "pattern": "Synthetic" },
+    "user": { "$ref": "#/$defs/user" },
+    "refreshToken": { "$ref": "#/$defs/refreshToken" },
+    "authHandoff": { "$ref": "#/$defs/authHandoff" },
+    "oauthState": { "$ref": "#/$defs/oauthState" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "user": {
+      "type": "object",
+      "required": ["id", "email", "emailVerified", "status", "roles"],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "email": { "type": "string", "format": "email" },
+        "emailVerified": { "type": "boolean" },
+        "status": { "enum": ["PENDING_EMAIL_VERIFICATION", "ACTIVE", "SUSPENDED", "DELETED"] },
+        "roles": { "type": "array" }
+      },
+      "additionalProperties": false
+    },
+    "refreshToken": {
+      "type": "object",
+      "required": ["tokenHash", "userId", "audience", "expiresAt", "revokedAt"],
+      "properties": {
+        "tokenHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "userId": { "type": "string", "format": "uuid" },
+        "audience": { "type": "string", "minLength": 1 },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "revokedAt": { "oneOf": [{ "type": "string", "format": "date-time" }, { "type": "null" }] }
+      },
+      "additionalProperties": false
+    },
+    "authHandoff": {
+      "type": "object",
+      "required": ["key", "ttlSeconds", "clientId", "audience", "redirectUri", "userId", "loginMethod", "codeChallenge", "codeChallengeMethod", "state", "expiresAtEpochMs"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^wiseacct:auth-handoff:[a-f0-9]{64}$" },
+        "ttlSeconds": { "const": 120 },
+        "clientId": { "type": "string", "minLength": 1 },
+        "audience": { "type": "string", "minLength": 1 },
+        "redirectUri": { "type": "string", "format": "uri" },
+        "userId": { "type": "string", "format": "uuid" },
+        "provider": { "enum": ["google", "naver", "kakao"] },
+        "loginMethod": { "enum": ["oauth", "password"] },
+        "codeChallenge": { "type": "string", "minLength": 43, "maxLength": 128 },
+        "codeChallengeMethod": { "const": "S256" },
+        "state": { "type": ["string", "null"] },
+        "expiresAtEpochMs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "oauthState": {
+      "type": "object",
+      "required": ["key", "ttlSeconds", "provider", "clientId", "redirectUri", "callerState", "codeChallenge", "codeChallengeMethod"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^wiseacct:oauth-state:[A-Za-z0-9_-]{43}$" },
+        "ttlSeconds": { "const": 600 },
+        "provider": { "enum": ["google", "naver", "kakao"] },
+        "clientId": { "type": "string", "minLength": 1 },
+        "redirectUri": { "type": "string", "format": "uri" },
+        "callerState": { "type": ["string", "null"] },
+        "codeChallenge": { "type": ["string", "null"] },
+        "codeChallengeMethod": { "enum": ["S256", null] }
+      },
+      "additionalProperties": false
+    }
+  }
+}

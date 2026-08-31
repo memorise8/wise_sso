@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "kind": "phase0-controlled-contract-sample",
+  "generatedAt": "2026-08-30T14:09:23Z",
+  "workingTreeBaseSha": "5ab2a079620409c1f28954ead97b537310fc79ba",
+  "backend": "express",
+  "backendVersion": "1.0.0",
+  "environment": "two-isolated-patched-express-contract-fixtures",
+  "instanceCount": 2,
+  "sampleCount": 22,
+  "routes": {
+    "POST /auth/refresh": { "count": 8, "outcomes": { "2xx": 2, "4xx": 6 } },
+    "POST /auth/login": { "count": 4, "outcomes": { "2xx": 4 } },
+    "POST /auth/exchange": { "count": 2, "outcomes": { "2xx": 2 } },
+    "GET /.well-known/jwks.json": { "count": 2, "outcomes": { "2xx": 2 } },
+    "POST /auth/password-reset/request": { "count": 2, "outcomes": { "2xx": 2 } },
+    "POST /auth/email-verification/request": { "count": 2, "outcomes": { "2xx": 2 } },
+    "PATCH /admin/users/:id/status": { "count": 2, "outcomes": { "2xx": 2 } }
+  },
+  "labelsObserved": ["metric", "backend", "version", "method", "route", "outcome", "latencyMs"],
+  "forbiddenLabelsObserved": [],
+  "containsPiiOrSecrets": false,
+  "promotionEligible": false,
+  "promotionBlocker": "This Phase 0 controlled sample proves metric emission and label shape only. It does not satisfy the production canary minimum sample and overlapping observation window required by the approved plan.",
+  "evidence": {
+    "rawReport": "contracts/evidence/phase0-fixture-differential.txt",
+    "contractScenarios": [
+      "security.refresh-none-algorithm",
+      "security.refresh-hs256-rotation",
+      "security.refresh-hs384-algorithm",
+      "security.refresh-hs512-algorithm",
+      "auth.login-issues-verifiable-token",
+      "recovery.password-reset-request",
+      "recovery.email-verification-request",
+      "admin.status-mutation"
+    ],
+    "comparison": "Two isolated patched Express instances with independent PostgreSQL and Redis stores passed all eight fixture scenarios."
+  }
+}

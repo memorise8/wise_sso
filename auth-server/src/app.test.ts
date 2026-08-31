@@ -176,6 +176,48 @@ describe("app health and readiness probes", () => {
     expect(response.body).toEqual({ status: "ok" });
   });
 
+  it("Given request instrumentation When GET /healthz is called Then the app reports a comparable observation", async () => {
+    const observations: unknown[] = [];
+    const { createApp } = await import("./app.js");
+    const testApp = createApp({
+      readinessCheck: async () => true,
+      requestInstrumentation: {
+        observeRequest: (observation) => observations.push(observation)
+      }
+    });
+
+    await request(testApp).get("/healthz").expect(200);
+
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      backend: "express",
+      version: "1.0.0",
+      method: "GET",
+      route: "/healthz",
+      outcome: "2xx",
+      latencyMs: expect.any(Number)
+    });
+  });
+
+  it("Given the default server app When GET /healthz is called Then it emits a structured request metric", async () => {
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { app: serverApp } = await import("./app.js");
+
+    await request(serverApp).get("/healthz").expect(200);
+
+    expect(consoleInfo).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(consoleInfo.mock.calls[0]?.[0]))).toMatchObject({
+      metric: "sso_http_request",
+      backend: "express",
+      version: "1.0.0",
+      method: "GET",
+      route: "/healthz",
+      outcome: "2xx",
+      latencyMs: expect.any(Number)
+    });
+    consoleInfo.mockRestore();
+  });
+
   it("Given the database readiness check succeeds When GET /readyz is called Then it returns ready status", async () => {
     const testApp = await importAppWithReadiness(async () => true);
 

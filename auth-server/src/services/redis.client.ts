@@ -12,6 +12,13 @@ const consumeIfValueScript = [
   "if value == ARGV[1] then redis.call('DEL', KEYS[1]); return value end",
   "return nil"
 ].join("\n");
+const incrementWithTtlScript = [
+  "local count = redis.call('INCR', KEYS[1])",
+  "if count == 1 or redis.call('TTL', KEYS[1]) < 0 then",
+  "  redis.call('EXPIRE', KEYS[1], ARGV[1])",
+  "end",
+  "return count"
+].join("\n");
 
 export type RedisTtlStoreClient = {
   readonly setIfAbsent: (key: string, value: string, ttlSeconds: number) => Promise<boolean>;
@@ -64,11 +71,14 @@ export const redisTtlStoreClient: RedisTtlStoreClient = {
     return typeof result === "string" ? result : null;
   }),
   incrementWithTtl: async (key, ttlSeconds) => withRedis(async () => {
-    const count = await redisClient.incr(key);
-    if (count === 1) {
-      await redisClient.expire(key, ttlSeconds);
+    const result = await redisClient.eval(incrementWithTtlScript, {
+      keys: [key],
+      arguments: [String(ttlSeconds)]
+    });
+    if (typeof result !== "number") {
+      throw new Error("Redis returned an invalid rate-limit count");
     }
-    return count;
+    return result;
   }),
   consume: async (key) => withRedis(async () => {
     const result = await redisClient.eval(consumeOnceScript, {
