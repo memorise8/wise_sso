@@ -1,12 +1,9 @@
 import { Router } from "express";
 import { requireRole } from "../middlewares/requireRole.js";
 import { verifyAccessToken } from "../middlewares/verifyAccessToken.js";
+import type { VerifyAccessTokenOptions } from "../middlewares/verifyAccessToken.js";
 
-export type ServiceServerAuthConfig = {
-  readonly issuer: string;
-  readonly audience: string;
-  readonly accessSecret: string;
-};
+export type ServiceServerAuthConfig = VerifyAccessTokenOptions;
 
 export const createMeRouter = (config: ServiceServerAuthConfig): Router => {
   const router = Router();

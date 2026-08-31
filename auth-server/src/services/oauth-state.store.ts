@@ -1,54 +1,86 @@
 import { randomBytes } from "node:crypto";
+import { z } from "zod";
 import type { Provider } from "./user.service.js";
+import { redisTtlStoreClient } from "./redis.client.js";
+import type { RedisTtlStoreClient } from "./redis.client.js";
 
 const OAUTH_STATE_BYTES = 32;
-const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const OAUTH_STATE_KEY_PREFIX = "wiseacct:oauth-state:";
+const MAX_STATE_GENERATION_ATTEMPTS = 3;
 
-type StoredOAuthState = {
-  readonly provider: Provider;
-  readonly expiresAtMs: number;
-};
+const oauthStateMetadataSchema = z.object({
+  clientId: z.string().min(1),
+  redirectUri: z.string().url(),
+  callerState: z.string().min(1).nullable(),
+  codeChallenge: z.string().min(1).nullable(),
+  codeChallengeMethod: z.literal("S256").nullable()
+}).strict();
+
+const oauthStateRecordSchema = oauthStateMetadataSchema.extend({
+  provider: z.enum(["google", "naver", "kakao"])
+}).strict();
+
+export type OAuthStateMetadata = z.infer<typeof oauthStateMetadataSchema>;
 
 export type OAuthStateStore = {
-  readonly create: (provider: Provider) => string;
-  readonly consume: (provider: Provider, state: string) => boolean;
-  readonly clear: () => void;
+  readonly create: (provider: Provider, metadata: OAuthStateMetadata) => Promise<string>;
+  readonly consume: (provider: Provider, state: string) => Promise<OAuthStateMetadata | null>;
 };
 
-const states = new Map<string, StoredOAuthState>();
+export class OAuthStateCreationError extends Error {
+  public constructor() {
+    super("Unable to generate a unique OAuth state");
+    this.name = "OAuthStateCreationError";
+  }
+}
 
-const pruneExpiredStates = (nowMs: number): void => {
-  for (const [state, storedState] of states.entries()) {
-    if (storedState.expiresAtMs <= nowMs) {
-      states.delete(state);
+const keyForState = (state: string): string => `${OAUTH_STATE_KEY_PREFIX}${state}`;
+
+const parseStoredState = (storedState: string): z.infer<typeof oauthStateRecordSchema> | null => {
+  try {
+    return oauthStateRecordSchema.safeParse(JSON.parse(storedState)).data ?? null;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      return null;
     }
+    throw error;
   }
 };
 
-export const oauthStateStore: OAuthStateStore = {
-  create: (provider) => {
-    const nowMs = Date.now();
-    pruneExpiredStates(nowMs);
-    const state = randomBytes(OAUTH_STATE_BYTES).toString("base64url");
-    states.set(state, {
-      provider,
-      expiresAtMs: nowMs + OAUTH_STATE_TTL_MS
-    });
-    return state;
+export const createOAuthStateStore = (redis: RedisTtlStoreClient): OAuthStateStore => ({
+  create: async (provider, metadata) => {
+    const serializedState = JSON.stringify({ provider, ...metadata });
+
+    for (let attempt = 0; attempt < MAX_STATE_GENERATION_ATTEMPTS; attempt += 1) {
+      const state = randomBytes(OAUTH_STATE_BYTES).toString("base64url");
+      const stored = await redis.setIfAbsent(keyForState(state), serializedState, OAUTH_STATE_TTL_SECONDS);
+      if (stored) {
+        return state;
+      }
+    }
+
+    throw new OAuthStateCreationError();
   },
-  consume: (provider, state) => {
-    const storedState = states.get(state);
+  consume: async (provider, state) => {
+    const storedState = await redis.consume(keyForState(state));
     if (!storedState) {
-      return false;
+      return null;
     }
 
-    states.delete(state);
-    return storedState.provider === provider && storedState.expiresAtMs > Date.now();
-  },
-  clear: () => {
-    states.clear();
-  }
-};
+    const parsedState = parseStoredState(storedState);
+    if (parsedState?.provider !== provider) {
+      return null;
+    }
 
-// TODO: Replace with a shared TTL store such as Redis before multi-instance production.
-// This in-memory store is lost on process restart and cannot validate states created by another instance.
+    return {
+      clientId: parsedState.clientId,
+      redirectUri: parsedState.redirectUri,
+      callerState: parsedState.callerState,
+      codeChallenge: parsedState.codeChallenge,
+      codeChallengeMethod: parsedState.codeChallengeMethod
+    };
+  }
+});
+
+export const oauthStateStore = createOAuthStateStore(redisTtlStoreClient);

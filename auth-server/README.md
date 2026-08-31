@@ -8,16 +8,19 @@ Google, Naver, Kakao OAuth와 회사 이메일/비밀번호 로그인을 하나�
 
 - A/B 서버는 DB를 공유하지 않습니다.
 - A서버는 auth DB를 읽지 않습니다.
-- B서버는 로그인, OAuth callback, 이메일 인증, 비밀번호 재설정, Access Token 발급, Refresh Token 저장/회전/폐기만 담당합니다.
-- A서버는 Access Token만 검증하고 Refresh Token을 저장하거나 처리하지 않습니다.
+- B서버는 로그인, OAuth callback, 이메일 인증, 비밀번호 재설정, handoff code, Access Token 발급, Refresh Token 저장/회전/폐기만 담당합니다.
+- 순수 relying-party A서버는 Access Token만 검증하고 Refresh Token을 저장하거나 처리하지 않습니다.
+- production TEMIS에서는 backend/BFF가 B서버의 handoff code를 교환하고 안전한 server-side session/refresh state를 관리합니다. TEMIS browser는 Refresh Token을 저장하지 않고, TEMIS BFF가 필요할 때만 Refresh Token을 server-side 저장소에 보관합니다.
 - `authUserId`는 서비스 데이터와 인증 사용자를 연결하는 link key입니다.
 - 서비스 데이터는 A서버 DB에만 저장합니다.
 
 ## A서버와 B서버 역할
 
-B서버(Auth Server)는 identity provider입니다. 사용자가 Google/Naver/Kakao 또는 이메일/비밀번호로 로그인하면 B서버가 JWT Access Token과 Refresh Token을 발급합니다. Refresh Token은 B서버 DB에 hash로만 저장되고, 재발급과 로그아웃도 B서버에서만 처리합니다.
+B서버(Auth Server)는 identity provider입니다. 사용자가 Google/Naver/Kakao 또는 이메일/비밀번호로 로그인하면 B서버가 JWT Access Token과 Refresh Token을 발급합니다. Refresh Token은 B서버 DB에 hash로만 저장되고, 재발급, 로그아웃, 강제 폐기도 B서버에서 처리합니다.
 
-A서버(Service Server)는 실제 제품 기능과 업무 데이터를 소유합니다. A서버는 요청의 `Authorization: Bearer <accessToken>` 값을 검증한 뒤 JWT `sub` claim을 `authUserId`로 사용합니다. A서버는 B서버의 `users`, `refresh_tokens`, `password_credentials`, `audit_logs` 같은 auth DB table을 조회하지 않습니다.
+A서버(Service Server)는 실제 제품 기능과 업무 데이터를 소유합니다. A서버는 요청의 Bearer Access Token 값을 검증한 뒤 JWT `sub` claim을 `authUserId`로 사용합니다. 문서나 로그에는 `Authorization` header 원문을 남기지 않습니다. A서버는 B서버의 `users`, `refresh_tokens`, `password_credentials`, `audit_logs` 같은 auth DB table을 조회하지 않습니다.
+
+TEMIS backend/BFF가 있는 production 구성에서는 BFF가 `POST /auth/exchange`와 `/auth/refresh`를 호출할 수 있습니다. 이 경우 BFF는 B서버 API client이면서 브라우저 session 경계입니다. 그 뒤의 TEMIS 업무 API와 `examples/service-server` 같은 순수 relying party는 계속 Access Token 검증만 담당합니다.
 
 ## B서버 DB 저장 범위
 
@@ -67,17 +70,27 @@ npm run prisma:generate
 
 `.env`는 운영 환경마다 별도로 관리하고 저장소에 커밋하지 않습니다.
 
+## Health / Readiness
+
+`GET /healthz`는 프로세스가 HTTP 요청을 받을 수 있는지만 확인하는 liveness probe입니다. DB URL, provider 설정, 사용자 수, secret 같은 운영 정보는 응답하지 않고 정상일 때 `{ "status": "ok" }`만 반환합니다.
+
+`GET /readyz`는 PostgreSQL readiness를 확인하는 probe입니다. DB 연결 또는 최소 query가 실패하면 `503`과 `{ "status": "unavailable" }`을 반환합니다. Kubernetes나 load balancer에서는 `/healthz`를 restart 판단에, `/readyz`를 traffic 연결 판단에 사용합니다.
+
 ## 환경변수 설정
 
 운영자가 제공해야 하는 값:
 
 ```text
+NODE_ENV
 DATABASE_URL
 PORT
-JWT_ACCESS_SECRET
 JWT_REFRESH_SECRET
 JWT_ISSUER
 JWT_AUDIENCE
+JWT_ACCESS_ALGORITHM
+JWT_ACCESS_PRIVATE_KEY
+JWT_ACCESS_PUBLIC_JWK
+JWT_ACCESS_KEY_ID
 ACCESS_TOKEN_EXPIRES_IN
 REFRESH_TOKEN_EXPIRES_IN_DAYS
 PASSWORD_MIN_LENGTH
@@ -85,7 +98,10 @@ COMPANY_ALLOWED_EMAIL_DOMAIN
 CORS_ALLOWED_ORIGINS
 AUTH_RATE_LIMIT_WINDOW_SECONDS
 AUTH_RATE_LIMIT_MAX_REQUESTS
+AUTH_CLIENTS_JSON
+REDIS_URL
 FRONTEND_REDIRECT_URL
+OAUTH_ENABLED_PROVIDERS
 MAIL_PROVIDER
 MAIL_FROM
 SMTP_HOST
@@ -112,8 +128,28 @@ KAKAO_REDIRECT_URI
 - 이메일 인증 token hash 저장과 만료/재사용 차단
 - password reset token hash 저장과 만료/재사용 차단
 - login/register/verification/reset/refresh/logout audit log 기록
+- relying client policy 검증: `clientId`, `audience`, exact `allowedRedirectUris`, CORS-only `allowedOrigins`, default role
 - CORS allowlist 적용
 - auth-sensitive endpoint rate limit 적용
+
+`AUTH_CLIENTS_JSON`은 B서버가 신뢰하는 relying client 목록입니다. 첫 번째 항목은 TEMIS 정책이어야 합니다.
+
+```json
+[
+  {
+    "clientId": "temis",
+    "audience": "temis",
+    "allowedRedirectUris": ["https://financenow.kr/auth/callback"],
+    "allowedOrigins": ["https://financenow.kr"],
+    "defaultRole": {
+      "serviceKey": "temis",
+      "name": "pending"
+    }
+  }
+]
+```
+
+`allowedRedirectUris`는 OAuth 후 B서버가 one-time handoff code를 보낼 정확한 TEMIS callback URL입니다. `allowedOrigins`는 브라우저 CORS origin만 의미합니다. 두 값을 서로 대체하지 않습니다.
 
 ## PostgreSQL 배포
 
@@ -183,9 +219,31 @@ Naver:  https://auth.example.com/auth/naver/callback
 Kakao:  https://auth.example.com/auth/kakao/callback
 ```
 
-Provider console의 redirect URI와 `.env`의 `GOOGLE_REDIRECT_URI`, `NAVER_REDIRECT_URI`, `KAKAO_REDIRECT_URI`가 정확히 같아야 합니다. `FRONTEND_REDIRECT_URL`은 OAuth 성공 후 브라우저가 돌아갈 A서비스 프론트엔드 callback URL입니다.
+Provider console의 redirect URI와 `.env`의 `GOOGLE_REDIRECT_URI`, `NAVER_REDIRECT_URI`, `KAKAO_REDIRECT_URI`가 정확히 같아야 합니다. 이 URI는 OAuth provider가 B서버 callback으로 돌아오는 주소입니다.
 
-OAuth callback은 raw Access Token이나 Refresh Token을 redirect URL query/fragment에 넣지 않습니다. B서버는 짧게 만료되는 one-time handoff code만 `FRONTEND_REDIRECT_URL?code=<code>`로 전달하고, 프론트엔드는 즉시 `POST /auth/exchange`로 token pair를 교환합니다.
+TEMIS callback 주소는 `AUTH_CLIENTS_JSON[0].allowedRedirectUris`에 정확히 등록합니다. 이 URI는 B서버가 OAuth 완료 후 one-time handoff code를 전달하는 relying-client redirect 주소입니다. Provider redirect URI와 TEMIS redirect URI, CORS origin은 서로 다른 보안 경계입니다.
+
+OAuth callback은 raw Access Token이나 Refresh Token을 redirect URL query/fragment에 넣지 않습니다. B서버는 짧게 만료되는 one-time handoff code와 caller state만 `<allowedRedirectUri>?code=<code>&state=<caller-state>`로 전달합니다. callback query는 `code`, `state`만 허용합니다. production TEMIS에서는 backend/BFF가 즉시 `POST /auth/exchange`로 code를 교환하고, 브라우저에는 자체 session cookie나 짧은 수명 상태만 노출합니다.
+
+`FRONTEND_REDIRECT_URL`은 로컬 portal fallback과 CORS origin 추가에 사용되는 legacy/default URL입니다. TEMIS production redirect authorization은 `AUTH_CLIENTS_JSON.allowedRedirectUris`가 결정합니다.
+
+`.env.example`은 실제 provider secret 없이도 `cp .env.example .env` 후 config parsing이 가능하도록 OAuth provider를 비활성화해 둡니다.
+
+```env
+OAUTH_ENABLED_PROVIDERS=""
+```
+
+사용할 OAuth provider는 `OAUTH_ENABLED_PROVIDERS`로 제한합니다. Google을 운영하려면 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`를 먼저 채운 뒤 아래처럼 활성화합니다. Google만 먼저 운영할 경우 Naver/Kakao client id와 secret은 비워둘 수 있습니다.
+
+```env
+OAUTH_ENABLED_PROVIDERS="google"
+```
+
+나중에 Naver/Kakao를 붙이면 provider console에서 client 값을 발급받은 뒤 아래처럼 확장합니다.
+
+```env
+OAUTH_ENABLED_PROVIDERS="google,naver,kakao"
+```
 
 ## Google Login Setup
 
@@ -218,28 +276,31 @@ Google Cloud Console에서 발급된 값을 `.env`에 넣습니다. secret 원�
 
 ```env
 GOOGLE_CLIENT_ID="<google-client-id>"
-GOOGLE_CLIENT_SECRET="<google-client-secret>"
+GOOGLE_CLIENT_SECRET="<google-secret>"
 GOOGLE_REDIRECT_URI="http://localhost:4000/auth/google/callback"
+OAUTH_ENABLED_PROVIDERS="google"
 ```
 
 운영 또는 Cloudflare 연결 후:
 
 ```env
 GOOGLE_CLIENT_ID="<google-client-id>"
-GOOGLE_CLIENT_SECRET="<google-client-secret>"
+GOOGLE_CLIENT_SECRET="<google-secret>"
 GOOGLE_REDIRECT_URI="https://auth.financenow.kr/auth/google/callback"
 JWT_ISSUER="https://auth.financenow.kr"
+OAUTH_ENABLED_PROVIDERS="google"
 ```
 
 테스트 흐름:
 
 ```text
-GET /auth/google
+TEMIS generates code_verifier and S256 code_challenge
+GET /auth/google?client_id=temis&redirect_uri=https%3A%2F%2Ffinancenow.kr%2Fauth%2Fcallback&state=<caller-state>&code_challenge=<s256>&code_challenge_method=S256
 -> Google 로그인/동의 화면
 -> GET /auth/google/callback
--> FRONTEND_REDIRECT_URL?code=<one-time-code>
--> POST /auth/exchange
--> Access Token / Refresh Token 발급
+-> https://financenow.kr/auth/callback?code=<one-time-handoff-code>&state=<caller-state>
+-> TEMIS backend/BFF POST /auth/exchange with clientId, redirectUri, code, codeVerifier
+-> BFF receives token pair and creates its own browser session boundary
 ```
 
 문제가 발생하면 먼저 아래를 확인합니다.
@@ -291,13 +352,30 @@ SMTP 운영자가 결정할 것:
 
 ## API
 
+공식 TEMIS 회원가입 진입 URL:
+
+```text
+https://auth.financenow.kr/signup
+```
+
+Public token metadata:
+
+```http
+GET /.well-known/jwks.json
+GET /.well-known/openid-configuration
+```
+
+`/.well-known/jwks.json`은 Access Token 검증에 필요한 public RSA signing key만 반환합니다. `/.well-known/openid-configuration`은 issuer, JWKS URI, `RS256`, `code` response type, 지원 claim 목록을 제공합니다.
+
 OAuth 로그인 시작:
 
 ```http
-GET /auth/google
-GET /auth/naver
-GET /auth/kakao
+GET /auth/google?client_id=temis&redirect_uri=<registered-redirect-uri>&state=<caller-state>&code_challenge=<s256-code-challenge>&code_challenge_method=S256
+GET /auth/naver?client_id=temis&redirect_uri=<registered-redirect-uri>&state=<caller-state>&code_challenge=<s256-code-challenge>&code_challenge_method=S256
+GET /auth/kakao?client_id=temis&redirect_uri=<registered-redirect-uri>&state=<caller-state>&code_challenge=<s256-code-challenge>&code_challenge_method=S256
 ```
+
+`client_id`는 `AUTH_CLIENTS_JSON`의 `clientId`와 일치해야 하고, `redirect_uri`는 해당 client의 `allowedRedirectUris` 중 하나와 byte-for-byte로 일치해야 합니다. `code_challenge_method`는 `S256`만 허용합니다.
 
 OAuth handoff code 교환:
 
@@ -306,11 +384,16 @@ POST /auth/exchange
 Content-Type: application/json
 
 {
-  "code": "<one-time-handoff-code>"
+  "clientId": "temis",
+  "redirectUri": "https://financenow.kr/auth/callback",
+  "code": "<one-time-handoff-code>",
+  "codeVerifier": "<original-pkce-verifier>"
 }
 ```
 
-성공 시 `{ "accessToken": "...", "refreshToken": "..." }`를 반환합니다. 누락, 만료, 유효하지 않은 code와 재사용된 code는 모두 generic `400`으로 거부합니다.
+`/auth/exchange` body는 camelCase만 허용합니다. `client_id`, `redirect_uri`, `code_verifier` 같은 snake_case field나 unknown field는 거부합니다.
+
+성공 시 호출자에게 Access Token과 Refresh Token field가 있는 token pair를 반환합니다. production TEMIS에서는 이 호출자가 backend/BFF입니다. TEMIS browser는 Refresh Token을 localStorage, sessionStorage, IndexedDB, cookie에 저장하지 않습니다. TEMIS BFF가 session 연장을 위해 Refresh Token이 필요하면 server-side session store 또는 secret store에만 보관합니다. 문서, 로그, ticket에는 token field 값을 붙여 넣지 않습니다. 누락, 만료, 유효하지 않은 code, 잘못된 `clientId`, 다른 `redirectUri`, 잘못된 PKCE verifier, 재사용된 code는 모두 generic `400`으로 거부합니다.
 
 회사 계정 가입:
 
@@ -389,33 +472,93 @@ Content-Type: application/json
 ```http
 POST /auth/refresh
 Content-Type: application/json
-
-{
-  "refreshToken": "<refresh-token>"
-}
 ```
+
+요청 body에는 TEMIS BFF 또는 B서버 server-side 저장소가 보관 중인 Refresh Token을 `refreshToken` field로 전달합니다. 브라우저 저장소나 문서에는 Refresh Token 값을 남기지 않습니다.
 
 로그아웃:
 
 ```http
 POST /auth/logout
 Content-Type: application/json
-
-{
-  "refreshToken": "<refresh-token>"
-}
 ```
+
+요청 body에는 폐기할 Refresh Token을 `refreshToken` field로 전달합니다. 이 값은 server-side 경계 안에서만 취급합니다.
 
 현재 사용자:
 
 ```http
 GET /users/me
-Authorization: Bearer <accessToken>
 ```
+
+요청에는 Bearer Access Token header가 필요합니다. 문서, 로그, ticket에는 header 원문이나 token 값을 남기지 않습니다.
+
+## User Status / Approval Flow
+
+사용자 상태는 B서버 DB의 `User.status`로 관리합니다.
+
+```text
+PENDING_EMAIL_VERIFICATION: 이메일/비밀번호 가입 직후 상태. 이메일 인증 전에는 token을 발급하지 않습니다.
+ACTIVE: token 발급, refresh rotation, /users/me, admin API 접근 조건을 통과할 수 있는 유일한 상태입니다.
+SUSPENDED: 운영자가 접근을 중단한 상태입니다. 새 token 발급과 refresh가 거부되고 refresh token이 폐기됩니다.
+DELETED: 삭제 처리 상태입니다. 새 token 발급과 refresh가 거부되고 refresh token이 폐기됩니다.
+```
+
+TEMIS 접근 권한은 role로 분리합니다. 기본 `AUTH_CLIENTS_JSON`은 새 사용자를 `temis:pending`으로 둡니다. 관리자가 승인하면 `temis:user`를 부여하고, 운영 bootstrap 또는 기존 admin이 필요한 계정에만 `temis:admin`을 부여합니다. `temis:pending`은 로그인/토큰 상태와 별개인 서비스 승인 대기 role입니다.
+
+첫 admin은 public API가 아니라 ops CLI로만 만듭니다.
+
+```bash
+cd auth-server
+npm run ops:grant-admin -- --email admin@example.com
+```
+
+CLI는 기존 `ACTIVE` 사용자만 대상으로 `temis:admin`을 부여하고, audit `reasonCode=OPS_BOOTSTRAP_ADMIN`을 기록하며, 대상 사용자의 기존 refresh token을 폐기합니다.
+
+## Admin APIs
+
+모든 admin API는 Bearer Access Token이 필요하고, 현재 DB 상태가 `ACTIVE`이며 DB role에 `temis:admin`이 있어야 합니다. 문서, 로그, ticket에는 header 원문을 남기지 않습니다. JWT 안에 오래된 admin claim이 있더라도 DB role이 제거되었으면 거부됩니다.
+
+```http
+GET /admin/users?page=1&pageSize=25&status=ACTIVE&email=user@example.com&role=temis:user
+PATCH /admin/users/:id/status
+POST /admin/users/:id/roles
+DELETE /admin/users/:id/roles/:roleId
+POST /admin/users/:id/revoke-sessions
+```
+
+Status 변경 body:
+
+```json
+{
+  "status": "SUSPENDED",
+  "reasonCode": "ADMIN_STATUS_CHANGE"
+}
+```
+
+Role 부여 body:
+
+```json
+{
+  "serviceKey": "temis",
+  "name": "user",
+  "reasonCode": "ADMIN_ROLE_ASSIGN"
+}
+```
+
+Role 삭제와 session revoke body:
+
+```json
+{
+  "reasonCode": "ADMIN_REQUEST"
+}
+```
+
+관리자는 자기 자신을 `SUSPENDED`/`DELETED`로 바꾸거나, 자기 `temis:admin` role을 제거하거나, 자기 session을 강제 폐기할 수 없습니다. `SUSPENDED`, `DELETED`, role 제거, password reset 성공, admin session revoke는 해당 사용자의 active refresh token을 모두 폐기합니다.
 
 ## Access Token 검증 흐름
 
-각 A서버는 Auth Server와 동일한 `JWT_ACCESS_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`를 안전하게 주입받아 Access Token을 검증합니다. 공유 secret 방식에서 public key 방식으로 바꾸는 경우에도 A서버 책임은 동일합니다. A서버는 token 검증만 하고 auth DB를 읽지 않습니다.
+각 A서버는 Auth Server의 public JWKS 또는 pinned PEM public key, `JWT_ISSUER`, `JWT_AUDIENCE`를 안전하게 주입받아 Access Token을 검증합니다. A서버는 `/.well-known/jwks.json` 또는 `/.well-known/openid-configuration`으로 public key metadata를 확인할 수 있지만, auth DB를 읽지 않습니다.
 
 Access Token payload 기준:
 
@@ -424,6 +567,8 @@ Access Token payload 기준:
   "sub": "auth_user_id",
   "email": "user@example.com",
   "name": "User Name",
+  "email_verified": true,
+  "type": "access",
   "roles": [
     {
       "serviceKey": "temis",
@@ -439,21 +584,25 @@ Access Token payload 기준:
 
 A서버 검증 규칙:
 
-- JWT signature가 유효해야 합니다.
+- JWT signature가 Auth Server public JWKS/public key로 유효해야 합니다.
+- JWT header `alg`는 `RS256`이어야 하며 HS256 token은 거부합니다.
 - `exp`가 지나지 않아야 합니다.
 - `iss`가 A서버가 신뢰하는 Auth Server 값이어야 합니다.
 - `aud`가 해당 서비스의 audience 값이어야 합니다.
+- `sub`, `roles`, `type` claim이 있어야 하고 `type`은 `access`여야 합니다. Refresh Token처럼 `type=refresh`인 token은 A서버 API에서 거부합니다.
+- `email_verified`는 AuthUser contract에 포함됩니다.
 - `sub` claim을 A서버의 `authUserId`로 사용합니다.
 
 요청 처리 흐름:
 
 1. 사용자가 B서버에서 로그인합니다.
-2. B서버가 Access Token과 Refresh Token을 발급합니다.
-3. 사용자가 A서버 API를 호출할 때 Access Token을 전달합니다.
-4. A서버가 signature, `exp`, `iss`, `aud`를 검증합니다.
-5. A서버가 JWT `sub`를 `authUserId`로 사용합니다.
-6. A서버가 `authUserId` 기준으로 `service_users`를 조회하거나 최초 접근 시 생성합니다.
-7. A서버가 자체 DB의 service data와 service permission으로 업무 요청을 처리합니다.
+2. B서버가 TEMIS backend/BFF로 one-time handoff code를 보냅니다.
+3. TEMIS backend/BFF가 `POST /auth/exchange`로 token pair를 교환하고 자체 browser session 경계를 만듭니다.
+4. 사용자가 A서버 API를 호출할 때 Access Token 또는 BFF가 위임한 짧은 수명 credential을 전달합니다.
+5. A서버가 signature, `exp`, `iss`, `aud`를 검증합니다.
+6. A서버가 JWT `sub`를 `authUserId`로 사용합니다.
+7. A서버가 `authUserId` 기준으로 `service_users`를 조회하거나 최초 접근 시 생성합니다.
+8. A서버가 자체 DB의 service data와 service permission으로 업무 요청을 처리합니다.
 
 ## A서버가 Refresh Token을 다루지 않는 이유
 
@@ -461,14 +610,16 @@ Refresh Token은 장기 인증 권한입니다. 저장, rotation, 폐기 책임�
 
 A서버가 Refresh Token을 저장하거나 처리하면 서비스별 DB마다 장기 인증 권한이 분산됩니다. 그러면 한 서비스 DB 유출이 전체 SSO session 탈취로 이어질 수 있고, 비밀번호 재설정이나 보안 사고 시 전체 refresh token 폐기를 일관되게 적용하기 어렵습니다.
 
-A서버는 짧은 수명의 Access Token만 검증합니다. Access Token이 만료되면 클라이언트가 B서버의 `/auth/refresh`를 호출해 새 token pair를 받습니다.
+A서버는 짧은 수명의 Access Token만 검증합니다. Access Token이 만료되면 production TEMIS backend/BFF가 B서버의 `/auth/refresh`를 호출해 새 token pair를 받고 자체 session 경계를 갱신합니다. TEMIS browser는 Refresh Token을 저장하지 않습니다. TEMIS BFF는 필요할 때만 Refresh Token을 server-side에 저장하고 브라우저에는 자체 session cookie나 짧은 수명 상태만 제공합니다. 순수 relying-party A서버 API는 refresh endpoint를 노출하거나 장기 토큰을 받지 않습니다.
 
 ## 여러 서비스가 하나의 SSO를 공유하는 구조
 
 ```text
-Browser -> B서버 /auth/google -> OAuth provider -> B서버 callback
-Browser <- B서버 Access Token + Refresh Token
-Browser -> A서버 temis API Authorization: Bearer <accessToken>
+Browser -> TEMIS login start -> B서버 /auth/google -> OAuth provider -> B서버 callback
+B서버 -> TEMIS backend/BFF callback?code=<one-time-handoff-code>&state=<caller-state>
+TEMIS backend/BFF -> B서버 POST /auth/exchange with PKCE verifier
+TEMIS backend/BFF -> browser session boundary
+Browser/BFF -> A서버 temis API with redacted Bearer access token
 A서버 -> aud=temis, iss=https://auth.example.com 검증
 A서버 -> service_users.authUserId = JWT sub 로 서비스 사용자 조회/생성
 ```
@@ -500,7 +651,19 @@ CORS_ALLOWED_ORIGINS=https://app.example.com,https://admin.example.com
 
 ## Audit Log Retention
 
-`audit_logs`는 register/login failure/login success/lockout/email verification/password reset/refresh/logout/security failure 같은 인증 보안 이벤트를 기록합니다.
+`audit_logs`는 register/login failure/login success/lockout/email verification/password reset/refresh/logout/admin/handoff/rate-limit 같은 인증 보안 이벤트를 기록합니다.
+
+주요 field:
+
+```text
+userId: 이벤트의 주 사용자. admin mutation에서는 targetUserId와 같습니다.
+actorUserId: admin 또는 ops actor. first-admin CLI는 null입니다.
+targetUserId: admin mutation 대상 사용자.
+eventType: register_request, auth_handoff_exchange_failure, admin_user_status_changed 등.
+outcome: request, success, failure.
+provider, serviceKey, ipAddress, userAgent, reasonCode
+detailsJson: route, role, clientId 같은 bounded metadata. token/code/password/secret/email key나 값은 redaction 대상입니다.
+```
 
 보관 정책 권장값:
 
@@ -527,20 +690,25 @@ verification token 원문, password reset token 원문, OAuth authorization code
 
 A서버 통합 체크리스트:
 
-- B서버와 같은 `JWT_ACCESS_SECRET` 또는 공개키 검증 설정을 주입합니다. 예시 A서버의 `AUTH_JWT_ACCESS_SECRET`은 누락되거나 `replace-access-secret` placeholder이면 시작 시 실패합니다.
+- Auth Server의 public JWKS 또는 pinned PEM public key 검증 설정을 주입합니다. 예시 A서버의 `AUTH_JWT_ACCESS_PUBLIC_JWKS` 또는 `AUTH_JWT_ACCESS_PUBLIC_KEY`는 둘 다 누락되거나 placeholder이면 시작 시 실패합니다.
 - `JWT_ISSUER`와 `JWT_AUDIENCE`를 서비스별로 고정합니다.
+- Access Token은 `RS256`, `type=access`, `sub`, `roles`, `iss`, `aud`, `exp`, `email_verified` contract를 만족해야 합니다.
 - JWT `sub`를 `authUserId`로 저장합니다.
 - 최초 접근 시 A서버 DB에 `service_users.authUserId` row를 생성합니다.
 - 서비스 데이터는 `serviceUserId`나 A서버 내부 key로 연결합니다.
-- Refresh Token endpoint는 프론트엔드가 B서버로 호출하게 두고 A서버 API에서는 받지 않습니다.
+- Refresh Token 처리는 production TEMIS backend/BFF 또는 B서버에만 둡니다. 순수 A서버 API에서는 장기 토큰을 받지 않습니다.
 - A서버 운영자에게 auth DB credential을 배포하지 않습니다.
 
 ## 운영 배포 체크리스트
 
 - HTTPS만 사용하고 OAuth redirect URI도 HTTPS로 등록합니다.
-- `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `SMTP_PASSWORD`, OAuth client secret은 secret store로 주입합니다.
+- `JWT_ACCESS_PRIVATE_KEY`, `JWT_REFRESH_SECRET`, `SMTP_PASSWORD`, OAuth client secret은 secret store로 주입합니다. Access Token public JWK에는 private JWK fields(`d`, `p`, `q` 등)를 포함하지 않습니다.
+- `AUTH_CLIENTS_JSON`의 `allowedRedirectUris`는 TEMIS callback URL과 정확히 일치시키고, `allowedOrigins`는 CORS origin으로만 사용합니다.
+- `/healthz`는 liveness probe, `/readyz`는 PostgreSQL readiness probe로 분리합니다.
+- 첫 admin은 `npm run ops:grant-admin -- --email <active-user-email>`로 bootstrap하고 public grant endpoint를 만들지 않습니다.
 - Access Token 만료시간은 짧게 유지합니다. 기본 예시는 `15m`입니다.
 - Refresh Token 원문은 DB에 저장하지 않고 hash만 저장합니다.
+- Refresh Token은 production TEMIS backend/BFF 또는 B서버의 server-side 저장소에만 두고, 브라우저 localStorage/sessionStorage/cookie에 직접 저장하지 않습니다.
 - 비밀번호 원문은 저장하지 않고 Argon2id hash만 저장합니다.
 - Email verification과 password reset token은 hash로만 저장합니다.
 - CORS는 운영 프론트엔드 도메인으로 제한합니다.
@@ -551,3 +719,45 @@ A서버 통합 체크리스트:
 - `helmet`을 기본 적용하지만, 프록시와 쿠키 정책을 사용하는 경우 추가 보안 헤더를 점검합니다.
 - `User.email`은 nullable이며, 같은 email이어도 provider가 다르면 자동 병합하지 않습니다. 이미 존재하는 email이면 새 사용자의 email은 `null`로 저장하고 `SocialAccount.providerEmail`에는 provider email을 보존합니다.
 - Refresh Token rotation이 적용되어 `/auth/refresh` 호출 시 기존 refresh token은 폐기되고 새 refresh token이 발급됩니다.
+- `SUSPENDED`, `DELETED`, role removal, password reset confirm, admin session revoke 이후에는 대상 사용자의 기존 refresh token으로 재발급할 수 없어야 합니다.
+
+## QA Setup
+
+로컬 QA는 B서버 디렉터리에서 수행합니다.
+
+```bash
+cd auth-server
+cp .env.example .env
+npm install
+npm run prisma:generate
+export AUTH_DB_ADMIN_PASSWORD='<replace-with-local-admin-password>'
+export AUTH_DB_PASSWORD='<replace-with-local-password>'
+docker compose up -d postgres redis
+export DATABASE_URL="postgresql://auth_user:${AUTH_DB_PASSWORD}@127.0.0.1:${AUTH_DB_PORT:-5432}/auth_db"
+export REDIS_URL="redis://127.0.0.1:${AUTH_REDIS_PORT:-6379}"
+npm run prisma:migrate:deploy
+npm test
+npm run build
+```
+
+`.env.example`은 host에서 Node를 실행하는 경로를 기준으로 `REDIS_URL="redis://127.0.0.1:6379"`를 사용합니다. Auth Server를 Compose network 안에서 실행하는 경우에만 `REDIS_URL="redis://redis:6379"`로 override합니다.
+
+Docker Compose 기본 port publish는 `AUTH_DB_HOST=127.0.0.1`, `AUTH_REDIS_HOST=127.0.0.1`를 사용해 PostgreSQL과 Redis를 host loopback에만 노출합니다. private interface에 의도적으로 노출해야 하는 운영 배포가 아니라면 이 host 값을 변경하지 않습니다.
+
+Admin approval flow QA fixture가 필요하면 PostgreSQL/Redis가 실행 중인 상태에서 아래를 실행합니다.
+
+```bash
+npm run qa:seed-temis-admin-flow
+set -a
+. ../.omo/evidence/temis-sso-p0-auth-hardening/qa-fixture.env
+set +a
+```
+
+운영 전 smoke check:
+
+```bash
+curl -i http://127.0.0.1:4000/healthz
+curl -i http://127.0.0.1:4000/readyz
+```
+
+`/healthz`는 Redis 연결 후 Node server가 listen 중이면 `200`을 반환합니다. `/readyz`는 PostgreSQL migration과 DB 연결이 준비된 뒤 `200`을 반환하고, DB가 준비되지 않았으면 `503`을 반환합니다.

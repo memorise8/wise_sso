@@ -1,0 +1,28 @@
+FROM node:22-alpine AS deps
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM deps AS build
+
+COPY tsconfig.json ./
+COPY prisma ./prisma
+COPY src ./src
+RUN npm run prisma:generate
+RUN npm run build
+RUN npm prune --omit=dev
+
+FROM node:22-alpine AS runtime
+
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/prisma ./prisma
+COPY public ./public
+
+EXPOSE 4000
+CMD ["node", "dist/src/server.js"]

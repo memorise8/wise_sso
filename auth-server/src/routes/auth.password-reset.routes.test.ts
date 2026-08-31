@@ -3,7 +3,6 @@ import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 process.env["DATABASE_URL"] = "postgresql://user:password@localhost:5432/auth_db";
-process.env["JWT_ACCESS_SECRET"] = "test-access-secret-long";
 process.env["JWT_REFRESH_SECRET"] = "test-refresh-secret-long";
 process.env["JWT_ISSUER"] = "https://auth.temis.co.kr";
 process.env["JWT_AUDIENCE"] = "temis";
@@ -48,7 +47,10 @@ vi.mock("../services/audit.service.js", () => ({
     passwordResetRequest: "password_reset_request",
     passwordResetConfirm: "password_reset_confirm",
     refresh: "refresh",
-    logout: "logout"
+    logout: "logout",
+    authHandoffExchangeSuccess: "auth_handoff_exchange_success",
+    authHandoffExchangeFailure: "auth_handoff_exchange_failure",
+    rateLimitExceeded: "rate_limit_exceeded"
   },
   recordAuthAuditEvent,
   recordLoginFailureAuditEvent

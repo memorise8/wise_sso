@@ -10,6 +10,7 @@ import {
 import { auditLogStore } from "../services/audit.store.js";
 import { confirmEmailVerification, requestEmailVerification } from "../services/email-verification.service.js";
 import { emailVerificationStore } from "../services/email-verification.store.js";
+import { authHandoffStore } from "../services/auth-handoff.store.js";
 import { createMailService } from "../services/mail.service.js";
 import { isPasswordAuthFailure, loginWithPassword, registerWithPassword } from "../services/password-auth.service.js";
 import { passwordAuthStore } from "../services/password-auth.store.js";
@@ -17,6 +18,8 @@ import { confirmPasswordReset, requestPasswordReset } from "../services/password
 import { passwordResetStore } from "../services/password-reset.store.js";
 import { revokeRefreshToken, rotateRefreshToken } from "../services/token.service.js";
 import { issueTokenPair } from "../services/token.service.js";
+import { createClientPolicyService } from "../services/client-policy.service.js";
+import { HttpError } from "../utils/httpError.js";
 
 const credentialsBodySchema = z.object({
   email: z.string().email(),
@@ -41,7 +44,31 @@ const passwordResetConfirmBodySchema = z.object({
 });
 
 const emailVerificationRequestBodySchema = z.object({
-  email: z.string().email()
+  email: z.string().email(),
+  clientId: z.string().min(1).optional(),
+  redirectUri: z.string().url().optional(),
+  state: z.string().min(1).optional(),
+  codeChallenge: z.string().regex(/^[A-Za-z0-9._~-]{43,128}$/).optional(),
+  codeChallengeMethod: z.literal("S256").optional()
+}).strict().superRefine((body, context) => {
+  const handoffFields = [
+    body.clientId,
+    body.redirectUri,
+    body.codeChallenge,
+    body.codeChallengeMethod
+  ];
+  const hasAnyHandoffField = handoffFields.some((value) => value !== undefined) || body.state !== undefined;
+  const hasRequiredHandoffFields = body.clientId !== undefined &&
+    body.redirectUri !== undefined &&
+    body.codeChallenge !== undefined &&
+    body.codeChallengeMethod !== undefined;
+
+  if (hasAnyHandoffField && !hasRequiredHandoffFields) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "clientId, redirectUri, codeChallenge, and codeChallengeMethod are required together for SSO handoff"
+    });
+  }
 });
 
 const emailVerificationConfirmBodySchema = z.object({
@@ -49,6 +76,7 @@ const emailVerificationConfirmBodySchema = z.object({
 });
 
 const mailService = createMailService();
+const clientPolicyService = createClientPolicyService(env.AUTH_CLIENTS_JSON);
 
 const passwordResetUrlBase = (): string => {
   const frontendUrl = new URL(env.FRONTEND_REDIRECT_URL);
@@ -191,10 +219,26 @@ export const confirmPasswordResetWithToken: RequestHandler = (request, response,
 export const requestEmailVerificationEmail: RequestHandler = (request, response, next) => {
   void (async () => {
     const body = emailVerificationRequestBodySchema.parse(request.body);
+    const client = body.clientId ? clientPolicyService.findClient(body.clientId) : null;
+    if (body.clientId && (!client || !clientPolicyService.isRedirectUriAllowed(body.clientId, body.redirectUri ?? ""))) {
+      throw new HttpError(400, "INVALID_CLIENT_REDIRECT_URI", "Invalid request");
+    }
     const result = await requestEmailVerification({
       store: emailVerificationStore,
       mailer: mailService,
-      input: body,
+      input: {
+        email: body.email,
+        ...(client && body.redirectUri && body.codeChallenge && body.codeChallengeMethod ? {
+          handoff: {
+            clientId: client.clientId,
+            audience: client.audience,
+            redirectUri: body.redirectUri,
+            state: body.state ?? null,
+            codeChallenge: body.codeChallenge,
+            codeChallengeMethod: body.codeChallengeMethod
+          }
+        } : {})
+      },
       verificationUrlBase: emailVerificationUrlBase()
     });
     await recordAuthAuditEvent(auditLogStore, {
@@ -221,7 +265,27 @@ export const confirmEmailVerificationWithToken: RequestHandler = (request, respo
         userId: result.userId,
         ...auditContextFromRequest(request)
       });
-      response.json({ status: result.status });
+      if (!result.handoff) {
+        response.json({ status: result.status });
+        return;
+      }
+
+      const redirectUrl = new URL(result.handoff.redirectUri);
+      redirectUrl.searchParams.set("code", await authHandoffStore.create({
+        clientId: result.handoff.clientId,
+        audience: result.handoff.audience,
+        redirectUri: result.handoff.redirectUri,
+        userId: result.userId,
+        loginMethod: "password",
+        codeChallenge: result.handoff.codeChallenge,
+        codeChallengeMethod: result.handoff.codeChallengeMethod,
+        state: result.handoff.state
+      }));
+      if (result.handoff.state) {
+        redirectUrl.searchParams.set("state", result.handoff.state);
+      }
+
+      response.json({ status: result.status, redirectUrl: redirectUrl.toString() });
     } catch (error) {
       await recordAuthAuditEvent(auditLogStore, {
         eventType: auditEventTypes.emailVerificationConfirm,

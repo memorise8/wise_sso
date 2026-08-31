@@ -2,20 +2,35 @@ import { describe, expect, it } from "vitest";
 import { HttpError } from "../utils/httpError.js";
 import { isPasswordAuthFailure, loginWithPassword, registerWithPassword } from "./password-auth.service.js";
 import type { PasswordAuthStore } from "./password-auth.service.js";
+import { userStatuses } from "./user-status.service.js";
+import type { UserStatusValue } from "./user-status.service.js";
 
 type TestPasswordAuthStore = PasswordAuthStore & {
   readonly activateUser: (userId: string) => Promise<void>;
+  readonly setUserStatus: (userId: string, status: UserStatusValue) => Promise<void>;
 };
 
 const createStore = (): TestPasswordAuthStore => {
-  const users = new Map<string, { readonly id: string; readonly email: string; readonly name: string | null; readonly status: string }>();
+  const users = new Map<string, { readonly id: string; readonly email: string; readonly name: string | null; readonly status: UserStatusValue }>();
   const credentials = new Map<string, {
     readonly userId: string;
     readonly passwordHash: string;
     readonly failedLoginCount: number;
     readonly lockedUntil: Date | null;
-    readonly userStatus: string;
+    readonly userStatus: UserStatusValue;
   }>();
+  const setUserStatus = async (userId: string, status: UserStatusValue): Promise<void> => {
+    for (const [email, user] of users) {
+      if (user.id === userId) {
+        users.set(email, { ...user, status });
+      }
+    }
+    for (const [email, credential] of credentials) {
+      if (credential.userId === userId) {
+        credentials.set(email, { ...credential, userStatus: status });
+      }
+    }
+  };
 
   return {
     findUserByEmail: async (email) => users.get(email.toLowerCase()) ?? null,
@@ -54,17 +69,9 @@ const createStore = (): TestPasswordAuthStore => {
       return user ? { id: user.id, email: user.email, name: user.name, roles: [] } : null;
     },
     activateUser: async (userId) => {
-      for (const [email, user] of users) {
-        if (user.id === userId) {
-          users.set(email, { ...user, status: "active" });
-        }
-      }
-      for (const [email, credential] of credentials) {
-        if (credential.userId === userId) {
-          credentials.set(email, { ...credential, userStatus: "active" });
-        }
-      }
-    }
+      await setUserStatus(userId, userStatuses.active);
+    },
+    setUserStatus
   };
 };
 
@@ -79,7 +86,7 @@ describe("password auth", () => {
     });
 
     const credential = await store.findCredentialByEmail("user@company.com");
-    expect(credential?.userStatus).toBe("pending_verification");
+    expect(credential?.userStatus).toBe(userStatuses.pendingEmailVerification);
     await expect(loginWithPassword(store, {
       email: "user@company.com",
       password: "correct-password-123"
@@ -93,6 +100,40 @@ describe("password auth", () => {
         reasonCode: "USER_INACTIVE"
       }
     });
+    expect((await store.findCredentialByEmail("user@company.com"))?.failedLoginCount).toBe(0);
+  });
+
+  it.each([
+    userStatuses.suspended,
+    userStatuses.deleted
+  ])("Given a %s company user When logging in Then the public error is generic and inactive audit context is kept", async (status) => {
+    const store = createStore();
+    const registered = await registerWithPassword(store, {
+      email: "user@company.com",
+      password: "correct-password-123",
+      name: "Company User"
+    });
+    await store.setUserStatus(registered.user.id, status);
+
+    await expect(loginWithPassword(store, {
+      email: "user@company.com",
+      password: "correct-password-123"
+    })).rejects.toMatchObject(new HttpError(401, "INVALID_CREDENTIALS", "Invalid email or password"));
+    try {
+      await loginWithPassword(store, {
+        email: "user@company.com",
+        password: "correct-password-123"
+      });
+      throw new Error("expected login to fail");
+    } catch (error) {
+      if (!isPasswordAuthFailure(error)) {
+        throw error;
+      }
+      expect(error.audit).toEqual({
+        userId: registered.user.id,
+        reasonCode: "USER_INACTIVE"
+      });
+    }
     expect((await store.findCredentialByEmail("user@company.com"))?.failedLoginCount).toBe(0);
   });
 
@@ -159,7 +200,7 @@ describe("password auth", () => {
   it("Given a locked company credential When logging in Then the public error is generic and audit context carries the user id", async () => {
     const users = new Map([[
       "user@company.com",
-      { id: "user-1", email: "user@company.com", name: null, status: "active" }
+      { id: "user-1", email: "user@company.com", name: null, status: userStatuses.active }
     ]]);
     const store: PasswordAuthStore = {
       findUserByEmail: async (email) => users.get(email.toLowerCase()) ?? null,
@@ -172,7 +213,7 @@ describe("password auth", () => {
         passwordHash: "$argon2id$v=19$m=19456,t=2,p=1$SdlW23hIuyR5YOcdnZi8wg$U6czHfbJGnRhZehGLUmnc9E06qyzWWjlouMxjSv3gTM",
         failedLoginCount: 5,
         lockedUntil: new Date(Date.now() + 60_000),
-        userStatus: "active"
+        userStatus: userStatuses.active
       }),
       markLoginSuccess: async () => undefined,
       markLoginFailure: async () => undefined,
@@ -186,14 +227,14 @@ describe("password auth", () => {
       });
       throw new Error("expected login to fail");
     } catch (error) {
-      expect(error).toMatchObject(new HttpError(401, "INVALID_CREDENTIALS", "Invalid email or password"));
-      expect(isPasswordAuthFailure(error)).toBe(true);
-      if (isPasswordAuthFailure(error)) {
-        expect(error.audit).toEqual({
-          userId: "user-1",
-          reasonCode: "ACCOUNT_LOCKED"
-        });
+      if (!isPasswordAuthFailure(error)) {
+        throw error;
       }
+      expect(error).toMatchObject(new HttpError(401, "INVALID_CREDENTIALS", "Invalid email or password"));
+      expect(error.audit).toEqual({
+        userId: "user-1",
+        reasonCode: "ACCOUNT_LOCKED"
+      });
     }
   });
 });

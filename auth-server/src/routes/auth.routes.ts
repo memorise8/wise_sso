@@ -24,13 +24,13 @@ const authRateLimit = createRateLimitMiddleware({
   message: "Too many authentication requests"
 });
 
-authRouter.get("/google", startOAuthLogin("google"));
-authRouter.get("/naver", startOAuthLogin("naver"));
-authRouter.get("/kakao", startOAuthLogin("kakao"));
+authRouter.get("/google", authRateLimit, startOAuthLogin("google"));
+authRouter.get("/naver", authRateLimit, startOAuthLogin("naver"));
+authRouter.get("/kakao", authRateLimit, startOAuthLogin("kakao"));
 
-authRouter.get("/google/callback", completeOAuthLogin("google"));
-authRouter.get("/naver/callback", completeOAuthLogin("naver"));
-authRouter.get("/kakao/callback", completeOAuthLogin("kakao"));
+authRouter.get("/google/callback", authRateLimit, completeOAuthLogin("google"));
+authRouter.get("/naver/callback", authRateLimit, completeOAuthLogin("naver"));
+authRouter.get("/kakao/callback", authRateLimit, completeOAuthLogin("kakao"));
 
 authRouter.post("/register", authRateLimit, registerWithCredentials);
 authRouter.post("/login", authRateLimit, loginWithCredentials);

@@ -1,4 +1,5 @@
 import { PrismaClient } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import type {
   CreateResetTokenInput,
   PasswordResetStore,
@@ -6,8 +7,21 @@ import type {
   ResetPasswordWithTokenResult,
   ResetPasswordWithTokenInput
 } from "./password-reset.service.js";
+import { revokeAllRefreshTokensForUser } from "./session-revocation.service.js";
 
 const prisma = new PrismaClient();
+
+type PasswordResetTransactionClient = Pick<Prisma.TransactionClient, "$queryRaw">;
+
+const lockUserForRefreshTokenRevocation = async (
+  client: PasswordResetTransactionClient,
+  userId: string
+): Promise<boolean> => {
+  const lockedUsers = await client.$queryRaw<readonly { readonly id: string }[]>`
+    SELECT "id" FROM "User" WHERE "id" = ${userId} FOR UPDATE
+  `;
+  return lockedUsers.length === 1;
+};
 
 export const passwordResetStore: PasswordResetStore = {
   findUserByEmail: async (email): Promise<PasswordResetUser | null> => {
@@ -15,7 +29,7 @@ export const passwordResetStore: PasswordResetStore = {
       where: { email },
       include: { user: true }
     });
-    if (!credential || credential.user.status !== "active") {
+    if (!credential || credential.user.status !== "ACTIVE") {
       return null;
     }
 
@@ -58,6 +72,11 @@ export const passwordResetStore: PasswordResetStore = {
         return null;
       }
 
+      const userLocked = await lockUserForRefreshTokenRevocation(transaction, resetToken.userId);
+      if (!userLocked) {
+        return null;
+      }
+
       await transaction.passwordCredential.update({
         where: { userId: resetToken.userId },
         data: {
@@ -67,12 +86,20 @@ export const passwordResetStore: PasswordResetStore = {
           passwordUpdatedAt: input.now
         }
       });
-      await transaction.refreshToken.updateMany({
-        where: {
-          userId: resetToken.userId,
-          revokedAt: null
-        },
-        data: { revokedAt: input.now }
+      await revokeAllRefreshTokensForUser({
+        revokeAllRefreshTokensForUser: async (revokeInput) => {
+          const revokeResult = await transaction.refreshToken.updateMany({
+            where: {
+              userId: revokeInput.userId,
+              revokedAt: null
+            },
+            data: { revokedAt: revokeInput.revokedAt }
+          });
+          return revokeResult.count;
+        }
+      }, {
+        userId: resetToken.userId,
+        revokedAt: input.now
       });
 
       return { userId: resetToken.userId };

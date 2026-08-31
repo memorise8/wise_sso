@@ -7,12 +7,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum UserStatus {
+  PENDING_EMAIL_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
 model User {
   id         String   @id @default(uuid())
   email      String?  @unique
+  emailVerified Boolean @default(false)
   name       String?
   profileUrl String?
-  status     String   @default("active")
+  status     UserStatus @default(ACTIVE)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -21,7 +29,9 @@ model User {
   refreshTokens           RefreshToken[]
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
-  auditLogs               AuditLog[]
+  auditLogs               AuditLog[] @relation("AuditUser")
+  actorAuditLogs          AuditLog[] @relation("AuditActor")
+  targetAuditLogs         AuditLog[] @relation("AuditTarget")
   roles                   UserRole[]
 }
 
@@ -56,6 +66,7 @@ model RefreshToken {
   id        String    @id @default(uuid())
   tokenHash String
   userId    String
+  audience  String    @default("temis")
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
@@ -64,12 +75,18 @@ model RefreshToken {
 }
 
 model EmailVerificationToken {
-  id        String    @id @default(uuid())
-  tokenHash String    @unique
-  userId    String
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime  @default(now())
+  id                         String    @id @default(uuid())
+  tokenHash                  String    @unique
+  userId                     String
+  expiresAt                  DateTime
+  usedAt                     DateTime?
+  handoffClientId            String?
+  handoffAudience            String?
+  handoffRedirectUri         String?
+  handoffState               String?
+  handoffCodeChallenge       String?
+  handoffCodeChallengeMethod String?
+  createdAt                  DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -92,20 +109,27 @@ model PasswordResetToken {
 }
 
 model AuditLog {
-  id         String   @id @default(uuid())
-  userId     String?
-  eventType  String
-  outcome    String
-  provider   String?
-  serviceKey String?
-  ipAddress  String?
-  userAgent  String?
-  reasonCode String?
-  createdAt  DateTime @default(now())
+  id           String   @id @default(uuid())
+  userId       String?
+  actorUserId  String?
+  targetUserId String?
+  eventType    String
+  outcome      String
+  provider     String?
+  serviceKey   String?
+  ipAddress    String?
+  userAgent    String?
+  reasonCode   String?
+  detailsJson  Json?    @db.JsonB
+  createdAt    DateTime @default(now())
 
-  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user       User? @relation("AuditUser", fields: [userId], references: [id], onDelete: SetNull)
+  actorUser  User? @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  targetUser User? @relation("AuditTarget", fields: [targetUserId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([actorUserId])
+  @@index([targetUserId])
   @@index([eventType])
   @@index([createdAt])
 }

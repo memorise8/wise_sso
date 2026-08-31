@@ -1,11 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { MailService } from "./mail.service.js";
+import type { UserStatusValue } from "./user-status.service.js";
 import { HttpError } from "../utils/httpError.js";
 
 export type EmailVerificationUser = {
   readonly id: string;
   readonly email: string | null;
-  readonly status: string;
+  readonly status: UserStatusValue;
 };
 
 export type EmailVerificationTokenRecord = {
@@ -13,6 +14,16 @@ export type EmailVerificationTokenRecord = {
   readonly userId: string;
   readonly expiresAt: Date;
   readonly usedAt: Date | null;
+  readonly handoff: EmailVerificationHandoff | null;
+};
+
+export type EmailVerificationHandoff = {
+  readonly clientId: string;
+  readonly audience: string;
+  readonly redirectUri: string;
+  readonly state: string | null;
+  readonly codeChallenge: string;
+  readonly codeChallengeMethod: "S256";
 };
 
 export type EmailVerificationStore = {
@@ -21,6 +32,7 @@ export type EmailVerificationStore = {
     readonly userId: string;
     readonly tokenHash: string;
     readonly expiresAt: Date;
+    readonly handoff: EmailVerificationHandoff | null;
   }) => Promise<void>;
   readonly findVerificationTokenByHash: (tokenHash: string) => Promise<EmailVerificationTokenRecord | null>;
   readonly markTokenUsedAndActivateUser: (input: {
@@ -37,10 +49,12 @@ export type EmailVerificationAccepted = {
 export type EmailVerificationConfirmed = {
   readonly status: "verified";
   readonly userId: string;
+  readonly handoff: EmailVerificationHandoff | null;
 };
 
 export type RequestEmailVerificationInput = {
   readonly email: string;
+  readonly handoff?: EmailVerificationHandoff;
 };
 
 export type ConfirmEmailVerificationInput = {
@@ -92,7 +106,8 @@ export const requestEmailVerification = async (
   await context.store.createVerificationToken({
     userId: user.id,
     tokenHash: hashToken(rawToken),
-    expiresAt: new Date(now.getTime() + tokenTtlMs)
+    expiresAt: new Date(now.getTime() + tokenTtlMs),
+    handoff: context.input.handoff ?? null
   });
   await context.mailer.sendEmailVerification({
     to: user.email,
@@ -120,5 +135,5 @@ export const confirmEmailVerification = async (
     throw invalidVerificationToken();
   }
 
-  return { status: "verified", userId: token.userId };
+  return { status: "verified", userId: token.userId, handoff: token.handoff };
 };
