@@ -1,0 +1,35 @@
+Phase 0 candidate image security scan
+generated_at=2026-08-30T15:35:10Z
+target_reference=wiseacct-sso-auth:phase0-061090c
+target_image_id=sha256:d0f04e0643bcc263fbaa729e1acdac9e27ab9033cec50b5788a84b8d1e4a31cf
+source_revision=061090c045bb6c3d3c0b8976d816a374b273b4b6
+source_inputs_sha256=b3d832c3141317a5016ebd72425762ac953fa2f7e2acfe74cb1ccda084635230
+
+scanner=trivy version=0.74.0
+scanner_image=ghcr.io/aquasecurity/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+vulnerability_db_version=2 updated_at=2026-08-30T13:05:01.49156526Z downloaded_at=2026-08-30T15:17:20.883092202Z
+java_db_version=1 updated_at=2026-08-30T01:07:49.364681226Z downloaded_at=2026-08-30T15:17:40.653165949Z
+
+target_transport=local-docker-save-archive
+database_seed_network=registry-access-without-target-image
+target_scan_network=none
+scanner_docker_socket=not-mounted
+scan_mode=offline
+scanners=vulnerability
+package_types=os,library
+severity_filter=HIGH,CRITICAL
+os=alpine version=3.24.1 packages=18
+language_target=node-pkg
+
+high_findings=0
+critical_findings=0
+result=PASS
+
+vulnerability_report=phase0-image-trivy-high-critical.json
+vulnerability_report_sha256=99a74134f20bf10d661ff3f4ddf02b951e2066567e1860c22af6139cae409152
+sbom=phase0-image-sbom.cdx.json
+sbom_format=CycloneDX spec_version=1.7 components=123
+sbom_sha256=29da2ab7a7a4e93b0546dab809aa19e50557d6c2aaf2f05ca74bb8593bd55dd5
+
+residual_note=The pinned Node binary reports embedded OpenSSL 3.5.7. The reviewed CVE-2026-14456 condition is QUIC-listener-specific and this Express service exposes no QUIC listener; Trivy reported no HIGH or CRITICAL finding for the binary. Track a digest-pinned Node base that embeds OpenSSL 3.5.8 or newer.
+scope_note=This result proves Trivy v0.74.0 findings for the exact immutable image and database timestamps above; it does not prove absence of every possible vulnerability.
