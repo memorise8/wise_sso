@@ -12,7 +12,9 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from wiseacct_sso import __version__
+from wiseacct_sso.api.dependencies import Phase4Services
 from wiseacct_sso.api.errors import error_response
+from wiseacct_sso.application.auth import RequestAuditContext
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _KNOWN_METHODS = {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
@@ -29,12 +31,51 @@ _PUBLIC_ROUTES = {
     "/verify-email",
     "/admin/dashboard",
     "/manage/dashboard",
+    "/auth/register",
+    "/auth/login",
+    "/auth/refresh",
+    "/auth/logout",
+    "/users/me",
 }
 _ASCII_LOWER_TRANSLATION = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 def _ascii_lower(value: str) -> str:
     return value.translate(_ASCII_LOWER_TRANSLATION)
+
+
+def _reject_json_constant(_value: str) -> None:
+    raise ValueError("invalid JSON constant")
+
+
+def _json_charset(content_type: str) -> str:
+    for parameter in content_type.split(";")[1:]:
+        name, separator, value = parameter.partition("=")
+        if separator and name.strip().lower() == "charset":
+            return value.strip().strip('"').lower()
+    return "utf-8"
+
+
+class UnsupportedJsonCharset(UnicodeError):
+    def __init__(self, charset: str) -> None:
+        super().__init__(charset)
+        self.charset = charset
+
+
+def _decode_json_body(body: bytes, charset: str) -> str:
+    normalized = charset.replace("_", "-")
+    if normalized == "utf-8":
+        return body.decode("utf-8")
+    if normalized in {"utf-16le", "utf-16-le"}:
+        return body.decode("utf-16-le")
+    if normalized in {"utf-16be", "utf-16-be"}:
+        return body.decode("utf-16-be")
+    if normalized == "utf-16":
+        if body.startswith((b"\xff\xfe", b"\xfe\xff")):
+            return body.decode("utf-16")
+        codec = "utf-16-be" if body.startswith(b"\x00") else "utf-16-le"
+        return body.decode(codec)
+    raise UnsupportedJsonCharset(charset)
 
 
 _CANONICAL_PUBLIC_ROUTES = {_ascii_lower(path): path for path in _PUBLIC_ROUTES}
@@ -58,6 +99,13 @@ _SECURITY_HEADERS = {
     "x-xss-protection": "0",
 }
 _ASSET_REDIRECT_MARKER = "x-wiseacct-internal-asset-redirect"
+_EXPRESS_JSON_LIMIT_BYTES = 100 * 1024
+_PHASE4_AUTH_ROUTES = {
+    "/auth/register",
+    "/auth/login",
+    "/auth/refresh",
+    "/auth/logout",
+}
 
 
 class SanitizedResponseAbort(RuntimeError):
@@ -241,6 +289,133 @@ class RequestInstrumentationMiddleware:
                 latencyMs=max(0.0, (time.perf_counter() - started_at) * 1000),
             )
             structlog.contextvars.clear_contextvars()
+
+
+class AuthRateLimitMiddleware:
+    """Run the Redis auth limiter before FastAPI parses or validates request bodies."""
+
+    def __init__(self, app: ASGIApp, *, services: Phase4Services) -> None:
+        self.app = app
+        self.services = services
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        raw_path_value = scope.get("raw_path")
+        raw_path = (
+            raw_path_value.decode("ascii", errors="surrogateescape")
+            if isinstance(raw_path_value, bytes)
+            else scope.get("path", "")
+        )
+        candidate = raw_path[:-1] if len(raw_path) > 1 and raw_path.endswith("/") else raw_path
+        canonical = _ascii_lower(candidate)
+        if scope.get("method") != "POST" or canonical not in _PHASE4_AUTH_ROUTES:
+            await self.app(scope, receive, send)
+            return
+        headers = Headers(scope=scope)
+        receive_for_app = receive
+        content_type = headers.get("content-type", "")
+        media_type = content_type.split(";", 1)[0].strip().lower()
+        is_json = media_type == "application/json"
+        if is_json:
+            content_length = headers.get("content-length")
+            if content_length is not None:
+                try:
+                    declared_length = int(content_length)
+                except ValueError:
+                    declared_length = 0
+                if declared_length > _EXPRESS_JSON_LIMIT_BYTES:
+                    await error_response(500, "INTERNAL_SERVER_ERROR", "Internal server error")(
+                        scope, receive, send
+                    )
+                    return
+
+            messages: list[Message] = []
+            body = bytearray()
+            disconnected = False
+            while True:
+                message = await receive()
+                messages.append(message)
+                if message["type"] == "http.disconnect":
+                    disconnected = True
+                    break
+                if message["type"] != "http.request":
+                    continue
+                chunk = message.get("body", b"")
+                if len(body) + len(chunk) > _EXPRESS_JSON_LIMIT_BYTES:
+                    await error_response(500, "INTERNAL_SERVER_ERROR", "Internal server error")(
+                        scope, receive, send
+                    )
+                    return
+                body.extend(chunk)
+                if not message.get("more_body", False):
+                    break
+
+            replay_index = 0
+
+            async def replay_receive() -> Message:
+                nonlocal replay_index
+                if replay_index < len(messages):
+                    message = messages[replay_index]
+                    replay_index += 1
+                    return message
+                return await receive()
+
+            receive_for_app = replay_receive
+            if disconnected:
+                await self.app(scope, receive_for_app, send)
+                return
+            if body:
+                try:
+                    classification_text = _decode_json_body(
+                        bytes(body), _json_charset(content_type)
+                    )
+                except UnsupportedJsonCharset:
+                    await error_response(500, "INTERNAL_SERVER_ERROR", "Internal server error")(
+                        scope, receive, send
+                    )
+                    return
+                except UnicodeError:
+                    await error_response(400, "INVALID_REQUEST", "Invalid request")(
+                        scope, receive, send
+                    )
+                    return
+                if classification_text.startswith("\ufeff"):
+                    classification_text = classification_text[1:]
+                stripped_text = classification_text.lstrip()
+                if not stripped_text or stripped_text[0] not in "{[":
+                    await error_response(400, "INVALID_REQUEST", "Invalid request")(
+                        scope, receive, send
+                    )
+                    return
+                try:
+                    json.loads(classification_text, parse_constant=_reject_json_constant)
+                except ValueError:
+                    await error_response(400, "INVALID_REQUEST", "Invalid request")(
+                        scope, receive, send
+                    )
+                    return
+
+        forwarded = headers.get("x-forwarded-for")
+        forwarded_address = forwarded.split(",", 1)[0].strip() if forwarded else None
+        client = scope.get("client")
+        client_address = client[0] if client is not None else "unknown"
+        retry_after = await self.services.enforce_rate_limit(
+            client_key=client_address,
+            route=raw_path,
+            method=scope.get("method", ""),
+            context=RequestAuditContext(
+                ip_address=forwarded_address or client_address,
+                user_agent=headers.get("user-agent"),
+            ),
+        )
+        if retry_after is not None:
+            response = error_response(429, "RATE_LIMITED", "Too many authentication requests")
+            response.headers["retry-after"] = str(retry_after)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive_for_app, send)
 
 
 class SecurityHeadersMiddleware:

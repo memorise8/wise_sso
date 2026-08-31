@@ -57,6 +57,32 @@ async def test_malformed_hash_is_a_generic_verification_failure() -> None:
     assert await passwords.verify_password("", "password") is False
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize("unpaired_surrogate", ["\ud800", "\udfff"])
+async def test_unpaired_utf16_surrogate_matches_node_replacement_character(
+    unpaired_surrogate: str,
+) -> None:
+    passwords = AsyncPasswordHasher()
+
+    encoded = await passwords.hash_password(f"before-{unpaired_surrogate}-after")
+
+    assert await passwords.verify_password(encoded, "before-\ufffd-after") is True
+    assert await passwords.verify_password(encoded, f"before-{unpaired_surrogate}-after") is True
+
+
+@pytest.mark.anyio
+async def test_valid_surrogate_pair_and_python_astral_character_interoperate() -> None:
+    passwords = AsyncPasswordHasher()
+    surrogate_pair = "before-\ud83d\ude00-after"
+    python_astral = f"before-{chr(0x1F600)}-after"
+
+    encoded_from_pair = await passwords.hash_password(surrogate_pair)
+    encoded_from_astral = await passwords.hash_password(python_astral)
+
+    assert await passwords.verify_password(encoded_from_pair, python_astral) is True
+    assert await passwords.verify_password(encoded_from_astral, surrogate_pair) is True
+
+
 class _ConcurrencyProbeHasher:
     def __init__(self) -> None:
         self.active = 0

@@ -10,8 +10,10 @@ from fastapi import FastAPI
 from sqlalchemy.engine import make_url
 
 from wiseacct_sso import __version__
+from wiseacct_sso.api.dependencies import Phase4Services
 from wiseacct_sso.api.errors import ExpressJsonResponse, install_error_handlers
 from wiseacct_sso.api.middleware import (
+    AuthRateLimitMiddleware,
     ExpressCorsMiddleware,
     GenericErrorMiddleware,
     KnownPathCompatibilityMiddleware,
@@ -22,10 +24,15 @@ from wiseacct_sso.api.middleware import (
 from wiseacct_sso.api.middleware import (
     RequestLogger as RequestLogger,
 )
+from wiseacct_sso.api.routes.auth import build_auth_router
 from wiseacct_sso.api.routes.system import build_system_router
+from wiseacct_sso.api.routes.users import build_users_router
 from wiseacct_sso.api.staticfiles import ImmutableStaticFiles
+from wiseacct_sso.application.auth import Phase4AuthService
 from wiseacct_sso.config import Settings, get_settings
+from wiseacct_sso.domain.auth import PasswordPolicy
 from wiseacct_sso.infrastructure.redis import RedisOptions, RedisStateStore
+from wiseacct_sso.infrastructure.security import AsyncPasswordHasher, JwtTokenCodec
 from wiseacct_sso.lifecycle import LifecycleHooks, create_lifespan
 from wiseacct_sso.logging import configure_logging
 from wiseacct_sso.persistence.database import Database
@@ -77,6 +84,7 @@ def create_app(
     readiness_check: ReadinessCheck = _not_ready,
     lifecycle_hooks: LifecycleHooks | None = None,
     request_logger: RequestLogger | None = None,
+    phase4_services: Phase4Services | None = None,
 ) -> FastAPI:
     configure_logging()
     application = FastAPI(
@@ -91,6 +99,7 @@ def create_app(
     )
     application.state.settings = settings
     application.state.telemetry_drop_count = 0
+    application.state.phase4_services = phase4_services
     logger: RequestLogger = request_logger or structlog.get_logger()
 
     def record_telemetry_drop() -> None:
@@ -114,6 +123,9 @@ def create_app(
             on_readiness_error=report_readiness_error,
         )
     )
+    if phase4_services is not None:
+        application.include_router(build_auth_router())
+        application.include_router(build_users_router())
     application.mount(
         "/assets",
         ImmutableStaticFiles(directory=_STATIC_ROOT / "assets"),
@@ -123,6 +135,8 @@ def create_app(
     # Starlette inserts each middleware at the front. Add from innermost to outermost
     # to preserve instrumentation → security → CORS → errors → path compatibility.
     application.add_middleware(KnownPathCompatibilityMiddleware)
+    if phase4_services is not None:
+        application.add_middleware(AuthRateLimitMiddleware, services=phase4_services)
     application.add_middleware(GenericErrorMiddleware)
     application.add_middleware(ExpressCorsMiddleware, allowed_origins=settings.cors_allowed_origins)
     application.add_middleware(SecurityHeadersMiddleware)
@@ -141,6 +155,30 @@ def create_runtime_app() -> FastAPI:
     database_url = _async_postgres_url(settings.database_url)
     resources = _RuntimeResources()
     application: FastAPI
+
+    def runtime_database() -> Database:
+        if resources.database is None:
+            raise RuntimeError("Runtime database is unavailable")
+        return resources.database
+
+    def runtime_redis() -> RedisStateStore:
+        if resources.redis is None:
+            raise RuntimeError("Runtime Redis is unavailable")
+        return resources.redis
+
+    phase4_services = Phase4AuthService(
+        database=runtime_database,
+        redis=runtime_redis,
+        passwords=AsyncPasswordHasher(),
+        tokens=JwtTokenCodec.from_settings(settings),
+        password_policy=PasswordPolicy(
+            min_length=settings.password_min_length,
+            allowed_email_domain=settings.company_allowed_email_domain or None,
+        ),
+        default_audience=settings.jwt_audience,
+        rate_limit_window_seconds=settings.auth_rate_limit_window_seconds,
+        rate_limit_max_requests=settings.auth_rate_limit_max_requests,
+    )
 
     async def close_resources(*, report_failure: bool) -> None:
         first_error: Exception | None = None
@@ -161,6 +199,7 @@ def create_runtime_app() -> FastAPI:
         resources.database = None
         application.state.redis_store = None
         application.state.database = None
+        application.state.phase4_services = None
         if report_failure and first_error is not None:
             raise RuntimeError("Runtime dependency shutdown failed") from None
 
@@ -178,6 +217,7 @@ def create_runtime_app() -> FastAPI:
             await resources.database.ping()
             stage = "redis_start"
             await resources.redis.start()
+            application.state.phase4_services = phase4_services
         except Exception as error:
             _report_runtime_dependency_failure(stage, error)
             await close_resources(report_failure=False)
@@ -196,6 +236,7 @@ def create_runtime_app() -> FastAPI:
         settings=settings,
         readiness_check=database_ready,
         lifecycle_hooks=LifecycleHooks(startup=startup, shutdown=shutdown),
+        phase4_services=phase4_services,
     )
     application.state.database = None
     application.state.redis_store = None
