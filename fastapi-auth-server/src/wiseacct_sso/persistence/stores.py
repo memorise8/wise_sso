@@ -5,19 +5,24 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.persistence.models import (
     AuditLog,
+    EmailVerificationToken,
     PasswordCredential,
+    PasswordResetToken,
     PendingPasswordCredential,
     RefreshToken,
     Role,
+    SocialAccount,
+    SubjectReservation,
     User,
     UserRole,
     UserStatus,
+    application_uuid,
 )
 
 
@@ -485,6 +490,566 @@ class LogoutStore:
             .values(revokedAt=revoked_at)
         )
         return None if stored is None else str(stored.userId)
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationEligibleUser:
+    id: str
+    email: str | None
+    status: UserStatus
+    has_pending_password_credential: bool
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationHandoff:
+    client_id: str
+    audience: str
+    redirect_uri: str
+    state: str | None
+    code_challenge: str
+    code_challenge_method: str = "S256"
+
+
+@dataclass(frozen=True, slots=True)
+class EmailVerificationTokenInsert:
+    id: str
+    user_id: str
+    token_hash: str
+    expires_at: datetime
+    created_at: datetime
+    handoff: VerificationHandoff | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmailVerificationTokenRecord:
+    id: str
+    user_id: str
+    expires_at: datetime
+    used_at: datetime | None
+    handoff: VerificationHandoff | None
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultRole:
+    service_key: str = "temis"
+    name: str = "user"
+
+
+DEFAULT_ROLE = DefaultRole()
+
+
+async def _seed_temis_and_assign_default_role(
+    connection: AsyncConnection,
+    *,
+    user_id: str,
+    default_role: DefaultRole,
+) -> None:
+    """Mirror the four Prisma role upserts, then its skip-duplicates assignment."""
+
+    for service_key, name in (
+        ("temis", "pending"),
+        ("temis", "user"),
+        ("temis", "admin"),
+        (default_role.service_key, default_role.name),
+    ):
+        await connection.execute(
+            postgresql_insert(Role)
+            .values(id=application_uuid(), serviceKey=service_key, name=name)
+            .on_conflict_do_nothing(index_elements=[Role.c.serviceKey, Role.c.name])
+        )
+
+    assigned_role = (
+        await connection.execute(
+            select(Role.c.id)
+            .where(
+                Role.c.serviceKey == default_role.service_key,
+                Role.c.name == default_role.name,
+            )
+            .limit(1)
+        )
+    ).one_or_none()
+    if assigned_role is None:
+        raise RuntimeError("default role upsert did not resolve a role")
+    await connection.execute(
+        postgresql_insert(UserRole)
+        .values(id=application_uuid(), userId=user_id, roleId=assigned_role.id)
+        .on_conflict_do_nothing(index_elements=[UserRole.c.userId, UserRole.c.roleId])
+    )
+
+
+class EmailVerificationStore:
+    """Email verification primitives in the exact Express statement order."""
+
+    async def find_eligible_user(
+        self, connection: AsyncConnection, *, email: str, now: datetime
+    ) -> VerificationEligibleUser | None:
+        row = (
+            await connection.execute(
+                select(
+                    User.c.id,
+                    User.c.email,
+                    User.c.status,
+                    PendingPasswordCredential.c.expiresAt.label("pendingExpiresAt"),
+                )
+                .select_from(
+                    User.outerjoin(
+                        PendingPasswordCredential,
+                        PendingPasswordCredential.c.userId == User.c.id,
+                    )
+                )
+                .where(User.c.email == email)
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        return VerificationEligibleUser(
+            id=str(row.id),
+            email=row.email,
+            status=UserStatus(row.status),
+            has_pending_password_credential=(
+                row.pendingExpiresAt is not None and row.pendingExpiresAt > now
+            ),
+        )
+
+    async def create_token(
+        self, connection: AsyncConnection, *, token: EmailVerificationTokenInsert
+    ) -> None:
+        handoff = token.handoff
+        result = await connection.execute(
+            insert(EmailVerificationToken).values(
+                id=token.id,
+                userId=token.user_id,
+                tokenHash=token.token_hash,
+                expiresAt=token.expires_at,
+                createdAt=token.created_at,
+                handoffClientId=None if handoff is None else handoff.client_id,
+                handoffAudience=None if handoff is None else handoff.audience,
+                handoffRedirectUri=None if handoff is None else handoff.redirect_uri,
+                handoffState=None if handoff is None else handoff.state,
+                handoffCodeChallenge=None if handoff is None else handoff.code_challenge,
+                handoffCodeChallengeMethod=(
+                    None if handoff is None else handoff.code_challenge_method
+                ),
+            )
+        )
+        _require_one(result.rowcount, "email verification token insert")
+
+    async def find_token(
+        self, connection: AsyncConnection, *, token_hash: str
+    ) -> EmailVerificationTokenRecord | None:
+        row = (
+            await connection.execute(
+                select(
+                    EmailVerificationToken.c.id,
+                    EmailVerificationToken.c.userId,
+                    EmailVerificationToken.c.expiresAt,
+                    EmailVerificationToken.c.usedAt,
+                    EmailVerificationToken.c.handoffClientId,
+                    EmailVerificationToken.c.handoffAudience,
+                    EmailVerificationToken.c.handoffRedirectUri,
+                    EmailVerificationToken.c.handoffState,
+                    EmailVerificationToken.c.handoffCodeChallenge,
+                    EmailVerificationToken.c.handoffCodeChallengeMethod,
+                )
+                .where(EmailVerificationToken.c.tokenHash == token_hash)
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        handoff = None
+        if (
+            row.handoffClientId
+            and row.handoffAudience
+            and row.handoffRedirectUri
+            and row.handoffCodeChallenge
+            and row.handoffCodeChallengeMethod == "S256"
+        ):
+            handoff = VerificationHandoff(
+                client_id=str(row.handoffClientId),
+                audience=str(row.handoffAudience),
+                redirect_uri=str(row.handoffRedirectUri),
+                state=row.handoffState,
+                code_challenge=str(row.handoffCodeChallenge),
+            )
+        return EmailVerificationTokenRecord(
+            id=str(row.id),
+            user_id=str(row.userId),
+            expires_at=row.expiresAt,
+            used_at=row.usedAt,
+            handoff=handoff,
+        )
+
+    async def confirm(
+        self,
+        connection: AsyncConnection,
+        *,
+        token_id: str,
+        user_id: str,
+        used_at: datetime,
+        default_role: DefaultRole = DEFAULT_ROLE,
+    ) -> str | None:
+        user = (
+            await connection.execute(
+                select(User.c.id, User.c.email, User.c.status).where(User.c.id == user_id).limit(1)
+            )
+        ).one_or_none()
+        pending = (
+            await connection.execute(
+                select(PendingPasswordCredential).where(
+                    PendingPasswordCredential.c.userId == user_id
+                )
+            )
+        ).one_or_none()
+        can_activate = (
+            user is not None and UserStatus(user.status) is UserStatus.PENDING_EMAIL_VERIFICATION
+        )
+        can_attach = pending is not None and pending.expiresAt > used_at
+        if not can_activate and not can_attach:
+            return None
+
+        consumed = await connection.execute(
+            update(EmailVerificationToken)
+            .where(
+                EmailVerificationToken.c.id == token_id,
+                EmailVerificationToken.c.userId == user_id,
+                EmailVerificationToken.c.usedAt.is_(None),
+                EmailVerificationToken.c.expiresAt > used_at,
+            )
+            .values(usedAt=used_at)
+        )
+        if consumed.rowcount != 1:
+            return None
+
+        if can_activate:
+            if user is None:
+                raise AssertionError("activation eligibility unexpectedly lost its user")
+            reservation = None
+            if user.email:
+                reservation_email = str(user.email).lower()
+                reservation = (
+                    await connection.execute(
+                        select(SubjectReservation.c.subjectId)
+                        .where(SubjectReservation.c.email == reservation_email)
+                        .limit(1)
+                    )
+                ).one_or_none()
+            reserved_id = None if reservation is None else str(reservation.subjectId)
+            if reserved_id and reserved_id != user_id:
+                existing_subject = (
+                    await connection.execute(
+                        select(User.c.id).where(User.c.id == reserved_id).limit(1)
+                    )
+                ).one_or_none()
+                if existing_subject is not None:
+                    return None
+            activated_id = reserved_id or user_id
+            activated = await connection.execute(
+                update(User)
+                .where(User.c.id == user_id, User.c.status == UserStatus.PENDING_EMAIL_VERIFICATION)
+                .values(
+                    **({"id": activated_id} if reserved_id else {}),
+                    status=UserStatus.ACTIVE,
+                    emailVerified=True,
+                    updatedAt=used_at,
+                )
+            )
+            if activated.rowcount != 1:
+                return None
+            await _seed_temis_and_assign_default_role(
+                connection, user_id=activated_id, default_role=default_role
+            )
+            return activated_id
+
+        if pending is None:
+            return None
+        created = await connection.execute(
+            insert(PasswordCredential).values(
+                id=application_uuid(),
+                userId=pending.userId,
+                email=pending.email,
+                passwordHash=pending.passwordHash,
+                createdAt=used_at,
+                updatedAt=used_at,
+                passwordUpdatedAt=used_at,
+            )
+        )
+        _require_one(created.rowcount, "pending password credential attach")
+        removed = await connection.execute(
+            delete(PendingPasswordCredential).where(PendingPasswordCredential.c.userId == user_id)
+        )
+        _require_one(removed.rowcount, "pending password credential delete")
+        return user_id
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordResetUser:
+    id: str
+    email: str
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordResetTokenInsert:
+    id: str
+    user_id: str
+    token_hash: str
+    expires_at: datetime
+    created_at: datetime
+
+
+class PasswordResetStore:
+    async def find_active_user(
+        self, connection: AsyncConnection, *, email: str
+    ) -> PasswordResetUser | None:
+        row = (
+            await connection.execute(
+                select(PasswordCredential.c.userId, PasswordCredential.c.email)
+                .select_from(
+                    PasswordCredential.join(User, PasswordCredential.c.userId == User.c.id)
+                )
+                .where(PasswordCredential.c.email == email, User.c.status == UserStatus.ACTIVE)
+                .limit(1)
+            )
+        ).one_or_none()
+        return None if row is None else PasswordResetUser(id=str(row.userId), email=str(row.email))
+
+    async def create_token(
+        self, connection: AsyncConnection, *, token: PasswordResetTokenInsert
+    ) -> None:
+        result = await connection.execute(
+            insert(PasswordResetToken).values(
+                id=token.id,
+                userId=token.user_id,
+                tokenHash=token.token_hash,
+                expiresAt=token.expires_at,
+                createdAt=token.created_at,
+            )
+        )
+        _require_one(result.rowcount, "password reset token insert")
+
+    async def confirm(
+        self,
+        connection: AsyncConnection,
+        *,
+        token_hash: str,
+        password_hash: str,
+        now: datetime,
+    ) -> str | None:
+        token = (
+            await connection.execute(
+                select(PasswordResetToken.c.id, PasswordResetToken.c.userId)
+                .where(
+                    PasswordResetToken.c.tokenHash == token_hash,
+                    PasswordResetToken.c.usedAt.is_(None),
+                    PasswordResetToken.c.expiresAt > now,
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        if token is None:
+            return None
+        consumed = await connection.execute(
+            update(PasswordResetToken)
+            .where(
+                PasswordResetToken.c.id == token.id,
+                PasswordResetToken.c.usedAt.is_(None),
+                PasswordResetToken.c.expiresAt > now,
+            )
+            .values(usedAt=now)
+        )
+        if consumed.rowcount != 1:
+            return None
+        locked = (
+            await connection.execute(
+                select(User.c.id).where(User.c.id == token.userId).with_for_update()
+            )
+        ).one_or_none()
+        if locked is None:
+            return None
+        updated = await connection.execute(
+            update(PasswordCredential)
+            .where(PasswordCredential.c.userId == token.userId)
+            .values(
+                passwordHash=password_hash,
+                failedLoginCount=0,
+                lockedUntil=None,
+                passwordUpdatedAt=now,
+                updatedAt=now,
+            )
+        )
+        _require_one(updated.rowcount, "password reset credential update")
+        await connection.execute(
+            update(RefreshToken)
+            .where(RefreshToken.c.userId == token.userId, RefreshToken.c.revokedAt.is_(None))
+            .values(revokedAt=now)
+        )
+        return str(token.userId)
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthProfileRecord:
+    provider: str
+    provider_user_id: str
+    email: str | None
+    email_verified: bool
+    name: str | None
+    profile_url: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthUserRecord:
+    id: str
+    email: str | None
+    email_verified: bool
+    name: str | None
+    profile_url: str | None
+    status: UserStatus
+
+
+class OAuthIdentityStore:
+    async def find_by_provider_id(
+        self,
+        connection: AsyncConnection,
+        *,
+        provider: str,
+        provider_user_id: str,
+    ) -> OAuthUserRecord | None:
+        row = (
+            await connection.execute(
+                select(
+                    User.c.id,
+                    User.c.email,
+                    User.c.emailVerified,
+                    User.c.name,
+                    User.c.profileUrl,
+                    User.c.status,
+                )
+                .select_from(SocialAccount.join(User, SocialAccount.c.userId == User.c.id))
+                .where(
+                    SocialAccount.c.provider == provider,
+                    SocialAccount.c.providerUserId == provider_user_id,
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        return None if row is None else self._record(row)
+
+    async def resolve_or_create(
+        self,
+        connection: AsyncConnection,
+        *,
+        profile: OAuthProfileRecord,
+        default_role: DefaultRole,
+        now: datetime,
+    ) -> OAuthUserRecord:
+        normalized_email = profile.email.strip().lower() if profile.email is not None else None
+        if normalized_email and profile.email_verified:
+            existing = (
+                await connection.execute(
+                    select(User).where(User.c.email == normalized_email).limit(1)
+                )
+            ).one_or_none()
+            if existing is not None:
+                if (
+                    UserStatus(existing.status) is UserStatus.PENDING_EMAIL_VERIFICATION
+                    and not existing.emailVerified
+                ):
+                    removed = await connection.execute(delete(User).where(User.c.id == existing.id))
+                    _require_one(removed.rowcount, "pending OAuth identity replacement delete")
+                elif UserStatus(existing.status) is UserStatus.ACTIVE and existing.emailVerified:
+                    linked = await connection.execute(
+                        insert(SocialAccount).values(
+                            id=application_uuid(),
+                            provider=profile.provider,
+                            providerUserId=profile.provider_user_id,
+                            providerEmail=normalized_email,
+                            userId=existing.id,
+                            createdAt=now,
+                        )
+                    )
+                    _require_one(linked.rowcount, "OAuth identity attach")
+                    return self._record(existing)
+
+        user_email = normalized_email
+        if user_email:
+            email_owner = (
+                await connection.execute(
+                    select(User.c.id).where(User.c.email == user_email).limit(1)
+                )
+            ).one_or_none()
+            if email_owner is not None:
+                user_email = None
+        reserved = None
+        if user_email:
+            reserved = (
+                await connection.execute(
+                    select(SubjectReservation.c.subjectId)
+                    .where(SubjectReservation.c.email == user_email)
+                    .limit(1)
+                )
+            ).one_or_none()
+        user_id = str(reserved.subjectId) if reserved is not None else application_uuid()
+        created = await connection.execute(
+            insert(User)
+            .values(
+                id=user_id,
+                email=user_email,
+                emailVerified=profile.email_verified,
+                name=profile.name,
+                profileUrl=profile.profile_url,
+                status=UserStatus.ACTIVE,
+                createdAt=now,
+                updatedAt=now,
+            )
+            .returning(
+                User.c.id,
+                User.c.email,
+                User.c.emailVerified,
+                User.c.name,
+                User.c.profileUrl,
+                User.c.status,
+            )
+        )
+        created_user = created.one_or_none()
+        if created_user is None:
+            raise RuntimeError("OAuth user insert did not return a user")
+        social = await connection.execute(
+            insert(SocialAccount).values(
+                id=application_uuid(),
+                provider=profile.provider,
+                providerUserId=profile.provider_user_id,
+                providerEmail=profile.email,
+                userId=user_id,
+                createdAt=now,
+            )
+        )
+        _require_one(social.rowcount, "OAuth social account insert")
+        await _seed_temis_and_assign_default_role(
+            connection, user_id=user_id, default_role=default_role
+        )
+        return self._record(created_user)
+
+    @staticmethod
+    def _record(row: object) -> OAuthUserRecord:
+        typed = cast(_OAuthUserRow, row)
+        return OAuthUserRecord(
+            id=str(typed.id),
+            email=typed.email,
+            email_verified=bool(typed.emailVerified),
+            name=typed.name,
+            profile_url=typed.profileUrl,
+            status=UserStatus(typed.status),
+        )
+
+
+class _OAuthUserRow(Protocol):
+    id: object
+    email: str | None
+    emailVerified: object
+    name: str | None
+    profileUrl: str | None
+    status: str | UserStatus
 
 
 @dataclass(frozen=True, slots=True)

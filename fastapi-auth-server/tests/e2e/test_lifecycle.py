@@ -91,6 +91,17 @@ class FakeRedisStore:
         return b"value"
 
 
+class FakeOAuthClient:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.close_error: Exception | None = None
+
+    async def close(self) -> None:
+        self.events.append("oauth.close")
+        if self.close_error is not None:
+            raise self.close_error
+
+
 def runtime_app_with(
     monkeypatch: pytest.MonkeyPatch,
     settings: Settings,
@@ -100,6 +111,7 @@ def runtime_app_with(
     monkeypatch.setattr(main_module, "get_settings", lambda: settings)
     monkeypatch.setattr(main_module, "_new_database", lambda _url: database)
     monkeypatch.setattr(main_module, "_new_redis_store", lambda _url: redis)
+    monkeypatch.setattr(main_module, "_new_oauth_client", lambda: FakeOAuthClient(database.events))
     return main_module.create_runtime_app()
 
 
@@ -227,6 +239,7 @@ async def test_runtime_startup_failure_cleans_partial_resources_without_details(
     assert events == [
         "database.ping",
         "redis.start",
+        "oauth.close",
         "redis.close",
         "database.close",
     ]
@@ -312,7 +325,7 @@ async def test_redis_post_start_outage_fails_operations_closed_but_not_readiness
 
 
 @pytest.mark.anyio
-async def test_runtime_shutdown_closes_redis_before_database(
+async def test_runtime_shutdown_closes_oauth_redis_and_database_in_order(
     synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events: list[str] = []
@@ -326,7 +339,39 @@ async def test_runtime_shutdown_closes_redis_before_database(
     async with running_client(app):
         pass
 
-    assert events[-2:] == ["redis.close", "database.close"]
+    assert events[-3:] == ["oauth.close", "redis.close", "database.close"]
+
+
+@pytest.mark.anyio
+async def test_runtime_rebinds_a_fresh_oauth_client_for_each_lifespan(
+    synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    created_clients: list[FakeOAuthClient] = []
+    monkeypatch.setattr(main_module, "get_settings", lambda: synthetic_settings)
+    monkeypatch.setattr(main_module, "_new_database", lambda _url: FakeDatabase(events))
+    monkeypatch.setattr(main_module, "_new_redis_store", lambda _url: FakeRedisStore(events))
+
+    def new_oauth_client() -> FakeOAuthClient:
+        client = FakeOAuthClient(events)
+        created_clients.append(client)
+        return client
+
+    monkeypatch.setattr(main_module, "_new_oauth_client", new_oauth_client)
+    app = main_module.create_runtime_app()
+
+    async with running_client(app):
+        assert len(created_clients) == 1
+        assert vars(app.state.phase4_services)["_oauth_client"] is created_clients[0]
+    assert app.state.phase4_services is None
+    async with running_client(app):
+        assert len(created_clients) == 2
+        assert vars(app.state.phase4_services)["_oauth_client"] is created_clients[1]
+    assert app.state.phase4_services is None
+
+    assert len(created_clients) == 2
+    assert created_clients[0] is not created_clients[1]
+    assert events.count("oauth.close") == 2
 
 
 @pytest.mark.anyio
@@ -345,7 +390,7 @@ async def test_runtime_cleanup_failure_is_sanitized_and_does_not_skip_database(
         async with running_client(app):
             pass
 
-    assert events[-2:] == ["redis.close", "database.close"]
+    assert events[-3:] == ["oauth.close", "redis.close", "database.close"]
     evidence = capsys.readouterr().err
     assert '"stage":"cleanup"' in evidence
     assert '"dependency":"redis"' in evidence

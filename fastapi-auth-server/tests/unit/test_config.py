@@ -1,11 +1,92 @@
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from wiseacct_sso.config import Settings
+from wiseacct_sso.config import RelyingClientPolicy, Settings
 
 ROOT = Path(__file__).parents[2]
+NODE_EXECUTABLE = shutil.which("node")
+
+REDIRECT_CANONICALIZATION_CASES = (
+    ("HTTPS://EXAMPLE.COM:443", "https://example.com/"),
+    ("http://EXAMPLE.COM:80/callback", "http://example.com/callback"),
+    (
+        "https://Example.COM:8443/a%2Fb?next=%2fkeep#Section",
+        "https://example.com:8443/a%2Fb?next=%2fkeep#Section",
+    ),
+    ("https://example.com/a b", "https://example.com/a%20b"),
+    ("https://b\u00fccher.example/callback", "https://xn--bcher-kva.example/callback"),
+    ("https://example.com/a/../b", "https://example.com/b"),
+    ("https://example.com/%2e%2e/callback", "https://example.com/callback"),
+    ("https://example.com/a/./b", "https://example.com/a/b"),
+    ("https://example.com/a/%2E/b", "https://example.com/a/b"),
+    ("https://example.com/a/%2E./b", "https://example.com/b"),
+    ("https://example.com/a/.%2e/b", "https://example.com/b"),
+    ("https://example.com/a//b", "https://example.com/a//b"),
+    ("https://example.com/a\\b", "https://example.com/a/b"),
+    ("https:example.com/callback", "https://example.com/callback"),
+    ("https:/example.com/callback", "https://example.com/callback"),
+    ("https:\\example.com\\callback", "https://example.com/callback"),
+    (
+        "https://user:pa ss@EXAMPLE.com:443/a b?q=a b#f g",
+        "https://user:pa%20ss@example.com/a%20b?q=a%20b#f%20g",
+    ),
+    (
+        "HTTP://[2001:0DB8:0:0:0:0:0:1]:80/a",
+        "http://[2001:db8::1]/a",
+    ),
+    (
+        "https://b\u00fccher.example/\uacbd\ub85c?q=\ud55c\uae00#\uc870\uac01",
+        "https://xn--bcher-kva.example/%EA%B2%BD%EB%A1%9C?q=%ED%95%9C%EA%B8%80#%EC%A1%B0%EA%B0%81",
+    ),
+    (
+        "https://example.com/a\\b?x=one\\two#f\\g",
+        "https://example.com/a/b?x=one\\two#f\\g",
+    ),
+    ("https://example.com/cb?", "https://example.com/cb?"),
+    ("https://example.com/cb#", "https://example.com/cb#"),
+    ("https://example.com/cb?#", "https://example.com/cb?#"),
+    ("http://127.1/callback", "http://127.0.0.1/callback"),
+    ("http://2130706433/callback", "http://127.0.0.1/callback"),
+    ("http://0x7f000001/callback", "http://127.0.0.1/callback"),
+    ("http://0177.0.0.1/callback", "http://127.0.0.1/callback"),
+    ("https://fa\u00df.de/callback", "https://xn--fa-hia.de/callback"),
+    (
+        "https://example.com/a?q='[]|^`{}\\\"<>",
+        "https://example.com/a?q=%27[]|^`{}\\%22%3C%3E",
+    ),
+    (
+        "https://example.com/a#'[]|^`{}\\\"<>",
+        "https://example.com/a#'[]|^%60{}\\%22%3C%3E",
+    ),
+    ("https://\uff45\uff58\uff41\uff4d\uff50\uff4c\uff45.com/a", "https://example.com/a"),
+    (
+        "https://\u4f8b\u3048\u3002\u30c6\u30b9\u30c8/a",
+        "https://xn--r8jz45g.xn--zckzah/a",
+    ),
+    (
+        "https://u[name]:p=ass@example.com/a",
+        "https://u%5Bname%5D:p%3Dass@example.com/a",
+    ),
+    ("https://%65xample.com/a", "https://example.com/a"),
+    ("https://%E4%BE%8B%E3%81%88.com/a", "https://xn--r8jz45g.com/a"),
+)
+
+
+def relying_client(redirect_uri: str) -> RelyingClientPolicy:
+    return RelyingClientPolicy.model_validate(
+        {
+            "clientId": "additional-client",
+            "audience": "additional-client",
+            "allowedRedirectUris": [redirect_uri],
+            "allowedOrigins": ["https://example.com"],
+            "defaultRole": {"serviceKey": "additional-client", "name": "pending"},
+        }
+    )
 
 
 def example_settings() -> Settings:
@@ -31,6 +112,33 @@ def test_settings_parse_checkpoint_environment() -> None:
     )
 
 
+@pytest.mark.parametrize(("raw", "expected"), REDIRECT_CANONICALIZATION_CASES)
+def test_relying_client_canonicalizes_redirect_uri(raw: str, expected: str) -> None:
+    assert relying_client(raw).allowed_redirect_uris == (expected,)
+
+
+@pytest.mark.skipif(NODE_EXECUTABLE is None, reason="Node.js is not installed")
+def test_redirect_uri_canonicalization_matches_node_url_oracle() -> None:
+    raw_values = [raw for raw, _ in REDIRECT_CANONICALIZATION_CASES]
+    assert NODE_EXECUTABLE is not None
+    completed = subprocess.run(  # noqa: S603 - fixed local Node binary and static script
+        [
+            NODE_EXECUTABLE,
+            "-e",
+            "const xs=JSON.parse(process.argv[1]);"
+            "process.stdout.write(JSON.stringify(xs.map(x => new URL(x).toString())));",
+            json.dumps(raw_values),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    node_values = json.loads(completed.stdout)
+
+    python_values = [relying_client(raw).allowed_redirect_uris[0] for raw in raw_values]
+    assert python_values == node_values
+
+
 def test_settings_reject_mismatched_jwk_kid() -> None:
     values = example_values()
     values["jwt_access_key_id"] = "different-key"
@@ -44,6 +152,55 @@ def test_settings_reject_invalid_cors_origin() -> None:
     values["cors_allowed_origins"] = ("https://example.invalid/path",)
 
     with pytest.raises(ValidationError, match="scheme, host"):
+        Settings.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ("http://127.1", "http://2130706433", "http://0x7f000001", "http://0177.0.0.1"),
+)
+def test_relying_client_rejects_noncanonical_numeric_ipv4_origin(origin: str) -> None:
+    with pytest.raises(ValidationError, match="scheme, host"):
+        RelyingClientPolicy.model_validate(
+            {
+                "clientId": "additional-client",
+                "audience": "additional-client",
+                "allowedRedirectUris": ["https://example.com/callback"],
+                "allowedOrigins": [origin],
+                "defaultRole": {"serviceKey": "additional-client", "name": "pending"},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    (
+        "http://example.123/callback",
+        "http://a.0x10/callback",
+        "http://08/callback",
+        "http://09/callback",
+        "https://a\u200db.example/callback",
+        "https://example%zz.com/callback",
+        "https://exa mple.com/callback",
+    ),
+)
+def test_relying_client_rejects_urls_rejected_by_node(redirect_uri: str) -> None:
+    with pytest.raises(ValidationError, match="valid URLs"):
+        relying_client(redirect_uri)
+
+
+def test_production_detects_numeric_ipv4_redirect_as_localhost() -> None:
+    values = example_values()
+    numeric_client = relying_client("http://127.1/callback")
+    values.update(
+        node_env="production",
+        jwt_refresh_secret="production-refresh-secret",
+        mail_provider="smtp",
+        smtp_host="smtp.example.com",
+        auth_clients=(*values["auth_clients"], numeric_client),  # type: ignore[misc]
+    )
+
+    with pytest.raises(ValidationError, match="localhost clients are forbidden"):
         Settings.model_validate(values)
 
 

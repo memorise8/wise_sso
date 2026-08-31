@@ -35,6 +35,17 @@ _PUBLIC_ROUTES = {
     "/auth/login",
     "/auth/refresh",
     "/auth/logout",
+    "/auth/exchange",
+    "/auth/password-reset/request",
+    "/auth/password-reset/confirm",
+    "/auth/email-verification/request",
+    "/auth/email-verification/confirm",
+    "/auth/google",
+    "/auth/google/callback",
+    "/auth/naver",
+    "/auth/naver/callback",
+    "/auth/kakao",
+    "/auth/kakao/callback",
     "/users/me",
 }
 _ASCII_LOWER_TRANSLATION = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
@@ -100,11 +111,28 @@ _SECURITY_HEADERS = {
 }
 _ASSET_REDIRECT_MARKER = "x-wiseacct-internal-asset-redirect"
 _EXPRESS_JSON_LIMIT_BYTES = 100 * 1024
-_PHASE4_AUTH_ROUTES = {
-    "/auth/register",
-    "/auth/login",
-    "/auth/refresh",
-    "/auth/logout",
+_RATE_LIMITED_AUTH_ROUTES = {
+    ("POST", "/auth/register"),
+    ("POST", "/auth/login"),
+    ("POST", "/auth/refresh"),
+    ("POST", "/auth/logout"),
+    ("POST", "/auth/exchange"),
+    ("POST", "/auth/password-reset/request"),
+    ("POST", "/auth/password-reset/confirm"),
+    ("POST", "/auth/email-verification/request"),
+    ("POST", "/auth/email-verification/confirm"),
+    ("GET", "/auth/google"),
+    ("HEAD", "/auth/google"),
+    ("GET", "/auth/google/callback"),
+    ("HEAD", "/auth/google/callback"),
+    ("GET", "/auth/naver"),
+    ("HEAD", "/auth/naver"),
+    ("GET", "/auth/naver/callback"),
+    ("HEAD", "/auth/naver/callback"),
+    ("GET", "/auth/kakao"),
+    ("HEAD", "/auth/kakao"),
+    ("GET", "/auth/kakao/callback"),
+    ("HEAD", "/auth/kakao/callback"),
 }
 
 
@@ -310,7 +338,8 @@ class AuthRateLimitMiddleware:
         )
         candidate = raw_path[:-1] if len(raw_path) > 1 and raw_path.endswith("/") else raw_path
         canonical = _ascii_lower(candidate)
-        if scope.get("method") != "POST" or canonical not in _PHASE4_AUTH_ROUTES:
+        method = scope.get("method", "")
+        if (method, canonical) not in _RATE_LIMITED_AUTH_ROUTES:
             await self.app(scope, receive, send)
             return
         headers = Headers(scope=scope)
@@ -404,7 +433,7 @@ class AuthRateLimitMiddleware:
         retry_after = await self.services.enforce_rate_limit(
             client_key=client_address,
             route=raw_path,
-            method=scope.get("method", ""),
+            method=method,
             context=RequestAuditContext(
                 ip_address=forwarded_address or client_address,
                 user_agent=headers.get("user-agent"),

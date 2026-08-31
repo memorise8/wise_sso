@@ -1,0 +1,33 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server
+configfile: pyproject.toml
+plugins: anyio-4.14.2, cov-7.1.0
+collecting ... collected 22 items
+
+tests/integration/test_phase5_auth_runtime.py::test_runtime_role_is_dml_only[asyncio] PASSED [  4%]
+tests/integration/test_phase5_auth_runtime.py::test_verification_request_is_hash_only_24h_and_mail_precedes_audit[asyncio] PASSED [  9%]
+tests/integration/test_phase5_auth_runtime.py::test_verification_twenty_way_has_one_activation_and_default_role[asyncio] PASSED [ 13%]
+tests/integration/test_phase5_auth_runtime.py::test_verification_attaches_pending_password[asyncio] PASSED [ 18%]
+tests/integration/test_phase5_auth_runtime.py::test_verification_activation_conflict_commits_token_consumption[asyncio] PASSED [ 22%]
+tests/integration/test_phase5_auth_runtime.py::test_password_reset_missing_user_result_commits_token_consumption[asyncio] PASSED [ 27%]
+tests/integration/test_phase5_auth_runtime.py::test_password_reset_hash_only_1h_and_twenty_way_single_success[asyncio] PASSED [ 31%]
+tests/integration/test_phase5_auth_runtime.py::test_live_oauth_state_ttl_wrong_provider_consumes_and_replay_fails[asyncio] PASSED [ 36%]
+tests/integration/test_phase5_auth_runtime.py::test_handoff_hashed_key_ttl_binding_and_twenty_way_raw_cas[asyncio] PASSED [ 40%]
+tests/integration/test_phase5_auth_runtime.py::test_node_python_redis_json_interoperability[asyncio] PASSED [ 45%]
+tests/integration/test_phase5_auth_runtime.py::test_oauth_identity_attach_pending_replacement_and_reserved_subject[asyncio] PASSED [ 50%]
+tests/integration/test_phase5_auth_runtime.py::test_same_provider_identity_race_has_one_committed_owner[asyncio] PASSED [ 54%]
+tests/integration/test_phase5_auth_runtime.py::test_express_fastapi_mixed_oauth_identity_races[asyncio] PASSED [ 59%]
+tests/integration/test_phase5_auth_runtime.py::test_exchange_consumes_before_token_issue_failure[asyncio] PASSED [ 63%]
+tests/integration/test_phase5_auth_runtime.py::test_local_starttls_fake_smtp_success_and_rejection[asyncio-success] PASSED [ 68%]
+tests/integration/test_phase5_auth_runtime.py::test_local_starttls_fake_smtp_success_and_rejection[asyncio-reject] PASSED [ 72%]
+tests/integration/test_phase5_auth_runtime.py::test_local_fake_smtp_timeout_and_missing_starttls_fail_closed[asyncio-timeout] PASSED [ 77%]
+tests/integration/test_phase5_auth_runtime.py::test_local_fake_smtp_timeout_and_missing_starttls_fail_closed[asyncio-no-starttls] PASSED [ 81%]
+tests/integration/test_phase5_auth_runtime.py::test_local_implicit_tls_resend_smtp_boundaries[asyncio-implicit-success] PASSED [ 86%]
+tests/integration/test_phase5_auth_runtime.py::test_local_implicit_tls_resend_smtp_boundaries[asyncio-implicit-reject] PASSED [ 90%]
+tests/integration/test_phase5_auth_runtime.py::test_local_implicit_tls_resend_smtp_boundaries[asyncio-implicit-timeout] PASSED [ 95%]
+tests/integration/test_phase5_auth_runtime.py::test_local_self_signed_oauth_provider_tls_failure_is_fail_closed[asyncio] PASSED [100%]
+
+- generated xml file: /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server/evidence/phase5/phase5-junit.xml -
+============================= 22 passed in 13.18s ==============================

@@ -1,10 +1,12 @@
 import base64
 import binascii
+import ipaddress
 import json
 import re
+import unicodedata
 from functools import lru_cache
 from typing import Annotated, Literal, Self
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote_to_bytes, urlsplit
 
 from pydantic import (
     BaseModel,
@@ -58,6 +60,191 @@ def _absolute_http_url(value: str, label: str) -> str:
     return value
 
 
+def _canonical_redirect_uri(value: str) -> str:
+    """Canonicalize configured redirects like the common WHATWG URL cases.
+
+    Express normalizes these values with ``new URL(value).toString()`` while
+    loading its client policy.  Python's URL parser intentionally implements a
+    different standard, so this keeps the compatibility surface explicit and
+    limited to absolute HTTP(S) redirects.
+    """
+
+    special_input = _escape_special_userinfo(_special_http_url_input(value))
+    _absolute_http_url(special_input, "allowedRedirectUris")
+    parsed = urlsplit(special_input)
+    hostname = parsed.hostname
+    if hostname is None:  # Guarded by _absolute_http_url; keeps typing precise.
+        raise ValueError("allowedRedirectUris entries must be valid URLs")
+
+    canonical_host = _canonical_hostname(hostname, "allowedRedirectUris")
+    if ":" in canonical_host:
+        canonical_host = f"[{canonical_host}]"
+
+    userinfo = ""
+    if parsed.username is not None:
+        userinfo = quote(parsed.username, safe="%!$&'()*+,-._~")
+        if parsed.password is not None:
+            userinfo += ":" + quote(parsed.password, safe="%!$&'()*+,-._~")
+        userinfo += "@"
+
+    default_port = 443 if parsed.scheme.lower() == "https" else 80
+    port = parsed.port
+    port_suffix = f":{port}" if port is not None and port != default_port else ""
+    path = quote(_remove_url_dot_segments(parsed.path or "/"), safe="/%:@!$&'()*+,;=-._~")
+    query = quote(parsed.query, safe="/%?:@!$&()*+,;=-._~\\[]|^`{}")
+    fragment = quote(parsed.fragment, safe="/%?:@!$&'()*+,;=-._~\\[]|^{}")
+    before_fragment, raw_fragment_marker, _ = special_input.partition("#")
+    query_marker = "?" if "?" in before_fragment else ""
+    fragment_marker = "#" if raw_fragment_marker else ""
+    return (
+        f"{parsed.scheme.lower()}://{userinfo}{canonical_host}{port_suffix}{path}"
+        f"{query_marker}{query}{fragment_marker}{fragment}"
+    )
+
+
+def _special_http_url_input(value: str) -> str:
+    """Normalize WHATWG special-scheme separators before stdlib parsing."""
+
+    text = value.strip("\t\n\r ")
+    match = re.match(r"(?i)^(https?):", text)
+    if match is None:
+        return text
+    scheme = match.group(1).lower()
+    remainder = text[match.end() :]
+    separator_positions = [position for marker in "?#" if (position := remainder.find(marker)) >= 0]
+    split_at = min(separator_positions, default=len(remainder))
+    special_part = remainder[:split_at].replace("\\", "/")
+    suffix = remainder[split_at:]
+    return f"{scheme}://{special_part.lstrip('/')}{suffix}"
+
+
+def _escape_special_userinfo(value: str) -> str:
+    scheme_separator = value.find("://")
+    if scheme_separator < 0:
+        return value
+    authority_start = scheme_separator + 3
+    authority_end = min(
+        (position for marker in "/?#" if (position := value.find(marker, authority_start)) >= 0),
+        default=len(value),
+    )
+    authority = value[authority_start:authority_end]
+    if "@" not in authority:
+        return value
+    userinfo, separator, host = authority.rpartition("@")
+    escaped_userinfo = userinfo.replace("[", "%5B").replace("]", "%5D")
+    return value[:authority_start] + escaped_userinfo + separator + host + value[authority_end:]
+
+
+def _canonical_hostname(hostname: str, label: str) -> str:
+    try:
+        if "%" in hostname:
+            if re.search(r"%(?![0-9a-fA-F]{2})", hostname):
+                raise ValueError("invalid host percent escape")
+            hostname = unquote_to_bytes(hostname).decode("utf-8")
+        if ":" in hostname:
+            return ipaddress.IPv6Address(hostname).compressed
+        if re.search(r"[\x00-\x20#%/:<>?@\[\\\]^|]", hostname):
+            raise ValueError("invalid hostname code point")
+        ipv4 = _whatwg_ipv4(hostname)
+        if ipv4 is not None:
+            return str(ipaddress.IPv4Address(ipv4))
+        return _whatwg_domain_to_ascii(hostname)
+    except (UnicodeError, ValueError) as error:
+        raise ValueError(f"{label} entries must be valid URLs") from error
+
+
+def _whatwg_domain_to_ascii(hostname: str) -> str:
+    labels: list[str] = []
+    mapped_hostname = (
+        unicodedata.normalize("NFKC", hostname)
+        .replace("\u3002", ".")
+        .replace("\uff0e", ".")
+        .replace("\uff61", ".")
+    )
+    for label in mapped_hostname.split("."):
+        normalized = unicodedata.normalize("NFC", label).lower()
+        if "\u200c" in normalized or "\u200d" in normalized:
+            raise ValueError("invalid joiner in hostname")
+        try:
+            labels.append(normalized.encode("ascii").decode("ascii"))
+        except UnicodeEncodeError:
+            labels.append("xn--" + normalized.encode("punycode").decode("ascii"))
+    return ".".join(labels)
+
+
+def _whatwg_ipv4(hostname: str) -> int | None:
+    parts = hostname.split(".")
+    if parts[-1] == "":
+        parts.pop()
+    if not parts:
+        return None
+    last_number = _whatwg_ipv4_number(parts[-1])
+    if last_number is None and re.fullmatch(r"[0-9]+", parts[-1]) is None:
+        return None
+    numbers = [_whatwg_ipv4_number(part) for part in parts]
+    if any(number is None for number in numbers):
+        raise ValueError("invalid IPv4 address")
+    if len(numbers) > 4:
+        raise ValueError("invalid IPv4 address")
+
+    parsed_numbers = [number for number in numbers if number is not None]
+    if any(number > 255 for number in parsed_numbers[:-1]):
+        raise ValueError("invalid IPv4 address")
+    last_limit = 256 ** (5 - len(parsed_numbers))
+    if parsed_numbers[-1] >= last_limit:
+        raise ValueError("invalid IPv4 address")
+
+    address = parsed_numbers[-1]
+    for index, number in enumerate(parsed_numbers[:-1]):
+        address += number * (256 ** (3 - index))
+    return address
+
+
+def _whatwg_ipv4_number(value: str) -> int | None:
+    if not value:
+        return None
+    radix = 10
+    digits = value
+    if value.lower().startswith("0x"):
+        radix = 16
+        digits = value[2:]
+    elif len(value) >= 2 and value.startswith("0"):
+        radix = 8
+        digits = value[1:]
+    if not digits:
+        return 0
+    valid_digits = {
+        8: r"[0-7]+",
+        10: r"[0-9]+",
+        16: r"[0-9a-fA-F]+",
+    }
+    if re.fullmatch(valid_digits[radix], digits) is None:
+        return None
+    return int(digits, radix)
+
+
+def _remove_url_dot_segments(path: str) -> str:
+    """Apply WHATWG's percent-aware single- and double-dot path handling."""
+
+    segments = path.split("/")
+    result: list[str] = []
+    final_index = len(segments) - 1
+    for index, segment in enumerate(segments):
+        normalized = segment.lower()
+        if normalized in {".", "%2e"}:
+            if index == final_index:
+                result.append("")
+            continue
+        if normalized in {"..", ".%2e", "%2e.", "%2e%2e"}:
+            if len(result) > 1:
+                result.pop()
+            if index == final_index:
+                result.append("")
+            continue
+        result.append(segment)
+    return "/".join(result) or "/"
+
+
 def _origin(value: str, label: str) -> str:
     _absolute_http_url(value, label)
     parsed = urlsplit(value)
@@ -66,7 +253,8 @@ def _origin(value: str, label: str) -> str:
         raise ValueError(f"{label} entries must be valid URLs")
     default_port = 443 if parsed.scheme == "https" else 80
     port = parsed.port
-    host = f"[{hostname}]" if ":" in hostname else hostname
+    canonical_hostname = _canonical_hostname(hostname, label)
+    host = f"[{canonical_hostname}]" if ":" in canonical_hostname else canonical_hostname
     canonical = f"{parsed.scheme}://{host}"
     if port is not None and port != default_port:
         canonical = f"{canonical}:{port}"
@@ -81,7 +269,8 @@ def _origin_from_url(value: str) -> str:
     if hostname is None:
         raise ValueError("URL must contain a hostname")
     default_port = 443 if parsed.scheme == "https" else 80
-    host = f"[{hostname}]" if ":" in hostname else hostname
+    canonical_hostname = _canonical_hostname(hostname, "URL")
+    host = f"[{canonical_hostname}]" if ":" in canonical_hostname else canonical_hostname
     port = parsed.port
     suffix = f":{port}" if port is not None and port != default_port else ""
     return f"{parsed.scheme}://{host}{suffix}"
@@ -215,7 +404,7 @@ class RelyingClientPolicy(BaseModel):
     @field_validator("allowed_redirect_uris")
     @classmethod
     def validate_redirects(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        return tuple(_absolute_http_url(value, "allowedRedirectUris") for value in values)
+        return tuple(_canonical_redirect_uri(value) for value in values)
 
     @field_validator("allowed_origins")
     @classmethod

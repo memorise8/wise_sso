@@ -96,12 +96,37 @@ class RedisOptions:
 
 
 def sha256_hex(value: str | bytes) -> str:
-    raw = value.encode("utf-8") if isinstance(value, str) else value
+    raw = node_utf8_bytes(value) if isinstance(value, str) else value
     return sha256(raw).hexdigest()
 
 
+def node_utf8_bytes(value: str) -> bytes:
+    """Encode a JavaScript string as Node does before hashing or Redis transport."""
+
+    normalized: list[str] = []
+    index = 0
+    while index < len(value):
+        code_point = ord(value[index])
+        if 0xD800 <= code_point <= 0xDBFF:
+            if index + 1 < len(value):
+                low_surrogate = ord(value[index + 1])
+                if 0xDC00 <= low_surrogate <= 0xDFFF:
+                    normalized.append(
+                        chr(0x10000 + ((code_point - 0xD800) << 10) + low_surrogate - 0xDC00)
+                    )
+                    index += 2
+                    continue
+            normalized.append("\ufffd")
+        elif 0xDC00 <= code_point <= 0xDFFF:
+            normalized.append("\ufffd")
+        else:
+            normalized.append(value[index])
+        index += 1
+    return "".join(normalized).encode("utf-8")
+
+
 def oauth_state_key(state: str) -> bytes:
-    return OAUTH_STATE_KEY_PREFIX + state.encode("utf-8")
+    return OAUTH_STATE_KEY_PREFIX + node_utf8_bytes(state)
 
 
 def auth_handoff_key(code: str) -> bytes:
