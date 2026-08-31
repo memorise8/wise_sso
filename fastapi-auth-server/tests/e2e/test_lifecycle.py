@@ -9,9 +9,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+import wiseacct_sso.main as main_module
 from wiseacct_sso.config import Settings
+from wiseacct_sso.infrastructure.redis import RedisUnavailableError
 from wiseacct_sso.lifecycle import LifecycleHooks
-from wiseacct_sso.main import RequestLogger, create_app
+from wiseacct_sso.main import RequestLogger, _async_postgres_url, create_app
 
 ROOT = Path(__file__).parents[2]
 
@@ -44,6 +46,61 @@ class RecordingLogger:
     def warning(self, event: str, **event_kw: object) -> object:
         self.events.append((event, event_kw))
         return None
+
+
+class FakeDatabase:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.available = True
+        self.ping_calls = 0
+        self.close_error: Exception | None = None
+
+    async def ping(self) -> None:
+        self.ping_calls += 1
+        self.events.append("database.ping")
+        if not self.available:
+            raise ConnectionError("database unavailable")
+
+    async def close(self) -> None:
+        self.events.append("database.close")
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class FakeRedisStore:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.start_error: Exception | None = None
+        self.close_error: Exception | None = None
+        self.available = True
+
+    async def start(self) -> None:
+        self.events.append("redis.start")
+        if self.start_error is not None:
+            raise self.start_error
+
+    async def close(self) -> None:
+        self.events.append("redis.close")
+        if self.close_error is not None:
+            raise self.close_error
+
+    async def get_raw(self, _key: bytes) -> bytes | None:
+        self.events.append("redis.get_raw")
+        if not self.available:
+            raise RedisUnavailableError("get_raw")
+        return b"value"
+
+
+def runtime_app_with(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    database: FakeDatabase,
+    redis: FakeRedisStore,
+) -> FastAPI:
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "_new_database", lambda _url: database)
+    monkeypatch.setattr(main_module, "_new_redis_store", lambda _url: redis)
+    return main_module.create_runtime_app()
 
 
 @pytest.mark.anyio
@@ -147,6 +204,163 @@ async def test_lifespan_runs_startup_and_graceful_shutdown_hooks(
 
     assert app.state.accepting_requests is False
     assert events == ["startup", "shutdown"]
+
+
+@pytest.mark.anyio
+async def test_runtime_startup_failure_cleans_partial_resources_without_details(
+    synthetic_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+    database = FakeDatabase(events)
+    redis = FakeRedisStore(events)
+    redis.start_error = ConnectionError("redis://credential@private-host")
+    redis.close_error = RuntimeError("redis://cleanup-secret@private-host")
+    app = runtime_app_with(monkeypatch, synthetic_settings, database, redis)
+
+    with pytest.raises(RuntimeError, match=r"^Runtime dependency startup failed$") as failure:
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert "credential" not in str(failure.value)
+    assert events == [
+        "database.ping",
+        "redis.start",
+        "redis.close",
+        "database.close",
+    ]
+    assert app.state.accepting_requests is False
+    assert app.state.database is None
+    assert app.state.redis_store is None
+    evidence = capsys.readouterr().err
+    assert '"stage":"redis_start"' in evidence
+    assert '"error_type":"ConnectionError"' in evidence
+    assert '"stage":"cleanup"' in evidence
+    assert '"dependency":"redis"' in evidence
+    assert '"error_type":"RuntimeError"' in evidence
+    assert "credential" not in evidence
+    assert "cleanup-secret" not in evidence
+    assert "private-host" not in evidence
+
+
+@pytest.mark.anyio
+async def test_database_startup_failure_reports_only_stage_and_type(
+    synthetic_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+    database = FakeDatabase(events)
+    database.available = False
+    app = runtime_app_with(
+        monkeypatch,
+        synthetic_settings,
+        database,
+        FakeRedisStore(events),
+    )
+
+    with pytest.raises(RuntimeError, match=r"^Runtime dependency startup failed$"):
+        async with app.router.lifespan_context(app):
+            pass
+
+    evidence = capsys.readouterr().err
+    assert '"stage":"database_ping"' in evidence
+    assert '"error_type":"ConnectionError"' in evidence
+    assert "database unavailable" not in evidence
+
+
+@pytest.mark.anyio
+async def test_runtime_readiness_tracks_database_outage_and_recovery_only(
+    synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    database = FakeDatabase(events)
+    redis = FakeRedisStore(events)
+    app = runtime_app_with(monkeypatch, synthetic_settings, database, redis)
+
+    async with running_client(app) as client:
+        assert (await client.get("/readyz")).status_code == 200
+        database.available = False
+        unavailable = await client.get("/readyz")
+        database.available = True
+        recovered = await client.get("/readyz")
+
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"status": "unavailable"}
+    assert recovered.status_code == 200
+    assert recovered.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_redis_post_start_outage_fails_operations_closed_but_not_readiness(
+    synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    database = FakeDatabase(events)
+    redis = FakeRedisStore(events)
+    app = runtime_app_with(monkeypatch, synthetic_settings, database, redis)
+
+    async with running_client(app) as client:
+        redis.available = False
+        with pytest.raises(RedisUnavailableError):
+            await app.state.redis_store.get_raw(b"auth-state")
+        ready = await client.get("/readyz")
+
+    assert ready.status_code == 200
+    assert ready.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_runtime_shutdown_closes_redis_before_database(
+    synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    app = runtime_app_with(
+        monkeypatch,
+        synthetic_settings,
+        FakeDatabase(events),
+        FakeRedisStore(events),
+    )
+
+    async with running_client(app):
+        pass
+
+    assert events[-2:] == ["redis.close", "database.close"]
+
+
+@pytest.mark.anyio
+async def test_runtime_cleanup_failure_is_sanitized_and_does_not_skip_database(
+    synthetic_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+    database = FakeDatabase(events)
+    redis = FakeRedisStore(events)
+    redis.close_error = ConnectionError("redis://secret@cleanup-host")
+    app = runtime_app_with(monkeypatch, synthetic_settings, database, redis)
+
+    with pytest.raises(RuntimeError, match=r"^Runtime dependency shutdown failed$"):
+        async with running_client(app):
+            pass
+
+    assert events[-2:] == ["redis.close", "database.close"]
+    evidence = capsys.readouterr().err
+    assert '"stage":"cleanup"' in evidence
+    assert '"dependency":"redis"' in evidence
+    assert '"error_type":"ConnectionError"' in evidence
+    assert "secret" not in evidence
+    assert "cleanup-host" not in evidence
+
+
+def test_runtime_normalizes_only_postgresql_urls_without_leaking_password() -> None:
+    normalized = _async_postgres_url("postgres://user:p%40ss@db.internal:5432/sso")
+
+    assert normalized == "postgresql+asyncpg://user:p%40ss@db.internal:5432/sso"
+    with pytest.raises(ValueError, match="must use PostgreSQL") as failure:
+        _async_postgres_url("mysql://user:do-not-report@db.internal/sso")
+    assert "do-not-report" not in str(failure.value)
 
 
 def test_runtime_factory_fails_fast_without_required_environment() -> None:

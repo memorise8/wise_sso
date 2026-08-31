@@ -22,6 +22,7 @@ def create_lifespan(
 ) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.accepting_requests = False
         await hooks.startup()
         app.state.accepting_requests = True
         try:
