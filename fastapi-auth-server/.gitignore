@@ -1,0 +1,11 @@
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Only the synthetic template is tracked. Local FastAPI env files stay untracked.
+.env*
+!.env.example
