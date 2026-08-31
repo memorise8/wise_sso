@@ -43,9 +43,16 @@ def test_request_metric_is_strictly_allowlisted() -> None:
             "metric": "sso_http_request",
             "backend": "fastapi",
             "route": "/healthz",
+            "latencyMs": 1.25,
+            "request_id": "must-not-become-a-metric-label",
             "query": "token=must-not-appear",
             "user_email": "must-not-appear@example.invalid",
         },
     )
 
-    assert event == {"metric": "sso_http_request", "backend": "fastapi", "route": "/healthz"}
+    assert event == {
+        "metric": "sso_http_request",
+        "backend": "fastapi",
+        "route": "/healthz",
+        "latencyMs": 1.25,
+    }

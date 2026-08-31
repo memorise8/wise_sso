@@ -24,4 +24,4 @@ RUN groupadd --system --gid 10001 fastapi-sso \
 USER fastapi-sso
 EXPOSE 4001
 
-CMD ["uvicorn", "wiseacct_sso.main:create_runtime_app", "--factory", "--app-dir", "src", "--host", "0.0.0.0", "--port", "4001"]
+CMD ["uvicorn", "wiseacct_sso.main:create_runtime_app", "--factory", "--app-dir", "src", "--host", "0.0.0.0", "--port", "4001", "--no-proxy-headers", "--no-server-header", "--no-access-log"]

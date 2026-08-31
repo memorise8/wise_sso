@@ -22,12 +22,11 @@ _SENSITIVE_FRAGMENTS = (
 _ALLOWED_METRIC_KEYS = {
     "backend",
     "event",
-    "latency_ms",
+    "latencyMs",
     "level",
     "method",
     "metric",
     "outcome",
-    "request_id",
     "route",
     "timestamp",
     "version",
