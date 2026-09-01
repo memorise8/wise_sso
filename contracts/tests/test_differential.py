@@ -32,8 +32,12 @@ def jwt(payload: dict[str, Any]) -> str:
 
 class StubServer:
     def __init__(self, routes: dict[str, tuple[int, dict[str, str], Any]]):
+        self.requests = []
+        requests = self.requests
+
         class Handler(BaseHTTPRequestHandler):
             def handle_request(handler_self):
+                requests.append(handler_self.path)
                 status, headers, body = routes.get(
                     handler_self.path,
                     (404, {"content-type": "application/json"}, {"error": "missing"}),
@@ -105,11 +109,51 @@ class RedirectServer:
         self.thread.join()
 
 
+class SlowBodyServer:
+    def __init__(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler_self) -> None:
+                handler_self.send_response(200)
+                handler_self.send_header("content-type", "application/json")
+                handler_self.end_headers()
+                threading.Event().wait(0.2)
+                try:
+                    handler_self.wfile.write(b'{"status":"ok"}')
+                except BrokenPipeError:
+                    pass
+
+            def log_message(self, _format, *_args):
+                return
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        host, port = self.server.server_address
+        return f"http://{host}:{port}"
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_args):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+
 class FakeAdapter:
     def __init__(self):
         self.teardowns = []
+        self.preflights = []
+        self.setups = []
+
+    def preflight(self, fixture):
+        self.preflights.append(fixture)
 
     def setup(self, fixture):
+        self.setups.append(fixture)
         header = jwt_segment({"alg": "HS384", "typ": "JWT"})
         claims = jwt_segment({
             "sub": "00000000-0000-4000-8000-000000000001",
@@ -290,6 +334,7 @@ class DifferentialSuiteTests(unittest.TestCase):
         response = {"/auth/refresh": (401, {"content-type": "application/json"}, {"error": {"code": "INVALID_REFRESH_TOKEN", "message": "Invalid refresh token"}})}
         baseline_adapter = FakeAdapter()
         candidate_adapter = FakeAdapter()
+        records: list[dict[str, Any]] = []
         with StubServer(response) as baseline, StubServer(response) as candidate:
             with contextlib.redirect_stdout(io.StringIO()):
                 failures = differential.run_suite(
@@ -298,10 +343,33 @@ class DifferentialSuiteTests(unittest.TestCase):
                     scenario,
                     baseline_adapter=baseline_adapter,
                     candidate_adapter=candidate_adapter,
+                    records=records,
+                    baseline_preflight="express",
+                    candidate_preflight="fastapi",
                 )
         self.assertEqual(failures, [])
+        self.assertEqual(baseline_adapter.preflights, ["express"])
+        self.assertEqual(candidate_adapter.preflights, ["fastapi"])
         self.assertEqual(baseline_adapter.teardowns, ["active-user-refresh-hs384"])
         self.assertEqual(candidate_adapter.teardowns, ["active-user-refresh-hs384"])
+        for runtime in ("baseline", "candidate"):
+            phases = [item["phase"] for item in records[0][runtime]["fixtureLifecycle"]]
+            self.assertEqual(phases, [
+                "preflight",
+                "setup",
+                "fixture-assertion",
+                "scenario-snapshot-before",
+                "step",
+                "scenario-snapshot-after",
+                "scenario-state-assertion",
+                "teardown",
+            ])
+            self.assertEqual(records[0][runtime]["evidence"]["state"]["assertionsPassed"], True)
+            self.assertEqual(len(records[0][runtime]["evidence"]["state"]["snapshotDigests"]), 2)
+        self.assertEqual(records[0]["comparisonEvidence"]["stateAssertionsPlanned"], True)
+        self.assertEqual(records[0]["comparisonEvidence"]["stateAssertedIndependently"], True)
+        self.assertEqual(records[0]["comparisonEvidence"]["jwtAssertionsPlanned"], False)
+        self.assertEqual(records[0]["comparisonEvidence"]["jwtAssertedIndependently"], False)
 
     def test_equivalent_dynamic_responses_pass(self):
         scenarios = [{
@@ -348,6 +416,12 @@ class DifferentialSuiteTests(unittest.TestCase):
         self.assertEqual(failures, [])
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["comparison"], {"equal": True})
+        self.assertEqual(records[0]["comparisonCategory"], "equivalent")
+        self.assertEqual(records[0]["attempt"], 1)
+        self.assertEqual(records[0]["retryCount"], 0)
+        self.assertEqual(records[0]["baseline"]["outcome"], "pass")
+        self.assertEqual(records[0]["candidate"]["outcome"], "pass")
+        self.assertEqual(records[0]["baseline"]["completedStepCount"], 1)
         self.assertEqual(records[0]["provenance"], {"runId": "synthetic-run", "seed": "7"})
         self.assertIn("normalizedResponses", records[0]["baseline"])
         self.assertIn("normalizedResponses", records[0]["candidate"])
@@ -480,6 +554,184 @@ class DifferentialSuiteTests(unittest.TestCase):
                 failures = differential.run_suite(baseline.url, candidate.url, scenarios)
         self.assertEqual(len(failures), 1)
         self.assertIn("expected 'ok', got 'degraded'", failures[0])
+
+    def test_runtime_failures_are_independent_and_both_sides_are_attempted(self):
+        scenarios = [{
+            "id": "independent",
+            "request": {"method": "GET", "path": "/healthz"},
+            "expect": {"status": 200, "json": {"status": "ok"}},
+        }]
+        bad = {"/healthz": (200, {"content-type": "application/json"}, {"status": "bad"})}
+        good = {"/healthz": (200, {"content-type": "application/json"}, {"status": "ok"})}
+        records: list[dict[str, Any]] = []
+        with StubServer(bad) as baseline, StubServer(good) as candidate:
+            with contextlib.redirect_stderr(io.StringIO()):
+                failures = differential.run_suite(
+                    baseline.url, candidate.url, scenarios, records=records
+                )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(records[0]["baseline"]["outcome"], "fail")
+        self.assertEqual(records[0]["candidate"]["outcome"], "pass")
+        self.assertEqual(records[0]["candidate"]["completedStepCount"], 1)
+        self.assertEqual(records[0]["comparison"], {"equal": None})
+        self.assertEqual(records[0]["comparisonCategory"], "baseline-runtime-failure")
+
+    def test_teardown_is_not_attempted_after_preflight_failure(self):
+        class FailingPreflightAdapter(FakeAdapter):
+            def preflight(self, fixture):
+                super().preflight(fixture)
+                raise differential.ContractFailure("synthetic preflight failure")
+
+        scenario = [{
+            "id": "preflight-failure",
+            "fixture": "synthetic-fixture",
+            "request": {"method": "GET", "path": "/unused"},
+            "expect": {"status": 200, "json": {"status": "ok"}},
+        }]
+        baseline_adapter = FailingPreflightAdapter()
+        candidate_adapter = FailingPreflightAdapter()
+        records: list[dict[str, Any]] = []
+        with contextlib.redirect_stderr(io.StringIO()):
+            failures = differential.run_suite(
+                "http://baseline.invalid",
+                "http://candidate.invalid",
+                scenario,
+                baseline_adapter=baseline_adapter,
+                candidate_adapter=candidate_adapter,
+                records=records,
+                baseline_preflight="express",
+                candidate_preflight="fastapi",
+            )
+        self.assertEqual(len(failures), 2)
+        self.assertEqual(baseline_adapter.teardowns, [])
+        self.assertEqual(candidate_adapter.teardowns, [])
+        self.assertEqual(records[0]["comparisonCategory"], "both-runtime-failure")
+        for runtime in ("baseline", "candidate"):
+            self.assertEqual(records[0][runtime]["attempt"], 1)
+            self.assertEqual(records[0][runtime]["retryCount"], 0)
+            self.assertEqual(records[0][runtime]["fixtureLifecycle"], [
+                {"phase": "preflight", "outcome": "fail"},
+            ])
+
+    def test_setup_failure_is_cleaned_up_after_successful_preflight(self):
+        class FailingSetupAdapter(FakeAdapter):
+            def setup(self, fixture):
+                self.setups.append(fixture)
+                raise differential.ContractFailure("synthetic setup failure")
+
+        scenario = [{
+            "id": "setup-failure",
+            "fixture": "synthetic-fixture",
+            "request": {"method": "GET", "path": "/unused"},
+            "expect": {"status": 200, "json": {"status": "ok"}},
+        }]
+        adapter = FailingSetupAdapter()
+        good = {"/unused": (200, {"content-type": "application/json"}, {"status": "ok"})}
+        records: list[dict[str, Any]] = []
+        with StubServer(good) as candidate:
+            with contextlib.redirect_stderr(io.StringIO()):
+                failures = differential.run_suite(
+                    "http://baseline.invalid",
+                    candidate.url,
+                    scenario,
+                    baseline_adapter=adapter,
+                    candidate_adapter=FakeAdapter(),
+                    records=records,
+                    baseline_preflight="express",
+                )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(adapter.teardowns, ["synthetic-fixture"])
+        self.assertEqual(
+            [item["phase"] for item in records[0]["baseline"]["fixtureLifecycle"]],
+            ["preflight", "setup", "teardown"],
+        )
+
+    def test_legacy_adapter_without_preflight_remains_compatible(self):
+        class LegacyAdapter:
+            def __init__(self):
+                self.teardowns = []
+
+            def setup(self, fixture):
+                return {}
+
+            def snapshot(self, probe):
+                return {}
+
+            def teardown(self, fixture):
+                self.teardowns.append(fixture)
+
+        scenario = [{
+            "id": "legacy-adapter",
+            "fixture": "synthetic-fixture",
+            "request": {"method": "GET", "path": "/healthz"},
+            "expect": {"status": 200, "json": {"status": "ok"}},
+        }]
+        good = {"/healthz": (200, {"content-type": "application/json"}, {"status": "ok"})}
+        baseline_adapter = LegacyAdapter()
+        candidate_adapter = LegacyAdapter()
+        with StubServer(good) as baseline, StubServer(good) as candidate:
+            failures = differential.run_suite(
+                baseline.url,
+                candidate.url,
+                scenario,
+                baseline_adapter=baseline_adapter,
+                candidate_adapter=candidate_adapter,
+            )
+        self.assertEqual(failures, [])
+        self.assertEqual(baseline_adapter.teardowns, ["synthetic-fixture"])
+        self.assertEqual(candidate_adapter.teardowns, ["synthetic-fixture"])
+
+    def test_http_read_timeout_does_not_prevent_candidate_attempt(self):
+        scenario = [{
+            "id": "read-timeout",
+            "request": {"method": "GET", "path": "/healthz"},
+            "expect": {"status": 200, "json": {"status": "ok"}},
+        }]
+        good = {"/healthz": (200, {"content-type": "application/json"}, {"status": "ok"})}
+        records: list[dict[str, Any]] = []
+        with SlowBodyServer() as baseline, StubServer(good) as candidate:
+            with contextlib.redirect_stderr(io.StringIO()):
+                failures = differential.run_suite(
+                    baseline.url, candidate.url, scenario, timeout=0.02, records=records
+                )
+        self.assertEqual(len(failures), 1)
+        self.assertIn("HTTP response read timed out", failures[0])
+        self.assertEqual(candidate.requests, ["/healthz"])
+        self.assertEqual(records[0]["baseline"]["outcome"], "fail")
+        self.assertEqual(records[0]["candidate"]["outcome"], "pass")
+        self.assertEqual(records[0]["comparisonCategory"], "baseline-runtime-failure")
+
+    def test_adapter_timeout_expired_does_not_prevent_candidate_attempt(self):
+        class TimingOutSetupAdapter(FakeAdapter):
+            def setup(self, fixture):
+                self.setups.append(fixture)
+                raise subprocess.TimeoutExpired(["synthetic-adapter", "setup"], 1)
+
+        scenario = [{
+            "id": "adapter-timeout",
+            "fixture": "synthetic-fixture",
+            "request": {"method": "GET", "path": "/healthz"},
+            "expect": {"status": 200, "json": {"status": "ok"}},
+        }]
+        good = {"/healthz": (200, {"content-type": "application/json"}, {"status": "ok"})}
+        baseline_adapter = TimingOutSetupAdapter()
+        records: list[dict[str, Any]] = []
+        with StubServer(good) as candidate:
+            with contextlib.redirect_stderr(io.StringIO()):
+                failures = differential.run_suite(
+                    "http://baseline.invalid",
+                    candidate.url,
+                    scenario,
+                    baseline_adapter=baseline_adapter,
+                    candidate_adapter=FakeAdapter(),
+                    records=records,
+                )
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(candidate.requests, ["/healthz"])
+        self.assertEqual(baseline_adapter.teardowns, ["synthetic-fixture"])
+        self.assertEqual(records[0]["baseline"]["outcome"], "fail")
+        self.assertEqual(records[0]["candidate"]["outcome"], "pass")
+        self.assertEqual(records[0]["comparisonCategory"], "baseline-runtime-failure")
 
     def test_unknown_scenario_selection_fails(self):
         with self.assertRaisesRegex(differential.ContractFailure, "unknown scenario"):

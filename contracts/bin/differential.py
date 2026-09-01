@@ -95,14 +95,21 @@ def call(base_url: str, request_spec: dict[str, Any], timeout: float) -> HttpRes
             response = request.build_opener(_NoRedirectHandler()).open(req, timeout=timeout)
     except error.HTTPError as exc:
         response = exc
-    except error.URLError as exc:
-        raise ContractFailure(f"request to {url} failed: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise ContractFailure("HTTP request timed out") from exc
+    except OSError as exc:
+        raise ContractFailure("HTTP request failed") from exc
 
-    with response:
-        raw = response.read()
-        response_headers = {key.lower(): value for key, value in response.headers.items()}
-        body = _decode_json(raw, response_headers.get("content-type", ""))
-        return HttpResult(status=response.status, headers=response_headers, body=body)
+    try:
+        with response:
+            raw = response.read()
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+            body = _decode_json(raw, response_headers.get("content-type", ""))
+            return HttpResult(status=response.status, headers=response_headers, body=body)
+    except TimeoutError as exc:
+        raise ContractFailure("HTTP response read timed out") from exc
+    except OSError as exc:
+        raise ContractFailure("HTTP response read failed") from exc
 
 
 def _base64url_json(segment: str, path: str) -> Any:
@@ -290,18 +297,21 @@ class FixtureAdapter:
 
     def invoke(self, command: str, name: str) -> Any:
         env = {**os.environ, **self.environment, "CONTRACT_BASE_URL": self.base_url}
-        completed = subprocess.run(
-            [str(self.executable), command, name],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            env=env,
-        )
-        if completed.returncode != 0:
-            raise ContractFailure(
-                f"adapter {command} {name!r} failed ({completed.returncode}): {completed.stderr.strip()}"
+        try:
+            completed = subprocess.run(
+                [str(self.executable), command, name],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ContractFailure(f"adapter {command} timed out") from exc
+        except (subprocess.SubprocessError, OSError) as exc:
+            raise ContractFailure(f"adapter {command} invocation failed") from exc
+        if completed.returncode != 0:
+            raise ContractFailure(f"adapter {command} failed with exit code {completed.returncode}")
         try:
             return json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
@@ -312,6 +322,9 @@ class FixtureAdapter:
         if not isinstance(result, dict):
             raise ContractFailure("adapter setup must return a JSON object")
         return result
+
+    def preflight(self, fixture: str) -> None:
+        self.invoke("preflight", fixture)
 
     def snapshot(self, probe: str) -> Any:
         return self.invoke("snapshot", probe)
@@ -520,6 +533,194 @@ def parse_provenance(items: list[str] | None) -> dict[str, str]:
     return validate_provenance(provenance)
 
 
+def _value_digest(value: Any) -> str:
+    payload = json.dumps(
+        _evidence_value(value), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _runtime_evidence(scenario: dict[str, Any], steps: list[dict[str, Any]]) -> dict[str, Any]:
+    state_count = len(scenario.get("stateAssertions", [])) + sum(
+        len(step.get("stateAssertions", [])) for step in steps
+    )
+    jwt_count = sum(
+        1
+        for step in steps
+        for assertion in step.get("assertions", [])
+        if assertion.get("type") == "jwt-rs256-jwks"
+    )
+    return {
+        "http": {"attemptedStepCount": 0, "contractPassed": None},
+        "state": {"assertionCount": state_count, "assertionsPassed": None, "snapshotDigests": []},
+        "jwt": {"assertionCount": jwt_count, "assertionsPassed": None},
+    }
+
+
+def _run_runtime(
+    runtime: str,
+    base_url: str,
+    scenario: dict[str, Any],
+    timeout: float,
+    adapter: FixtureAdapter | None,
+    preflight_name: str | None,
+) -> tuple[dict[str, Any], list[str]]:
+    fixture_name = scenario.get("fixture")
+    steps = scenario.get("steps") or [{
+        "request": scenario["request"],
+        "expect": scenario["expect"],
+        "assertions": scenario.get("assertions", []),
+    }]
+    fixture: dict[str, Any] = {}
+    captures: dict[str, Any] = {}
+    responses: list[dict[str, Any]] = []
+    lifecycle: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    failure_messages: list[str] = []
+    evidence = _runtime_evidence(scenario, steps)
+    phase = "initialization"
+    preflight_passed = preflight_name is None
+    setup_started = False
+
+    def event(name: str, outcome: str, **details: Any) -> None:
+        lifecycle.append({"phase": name, "outcome": outcome, **details})
+
+    def fail(failure_phase: str, exc: ContractFailure) -> None:
+        message = str(exc)
+        errors.append({
+            "kind": "contract-failure",
+            "phase": failure_phase,
+            "sha256": hashlib.sha256(message.encode("utf-8")).hexdigest(),
+        })
+        failure_messages.append(f"{runtime}: {message}")
+
+    try:
+        if fixture_name:
+            if adapter is None:
+                raise ContractFailure("fixture scenario requires a runtime adapter")
+            if preflight_name is not None:
+                phase = "preflight"
+                adapter.preflight(preflight_name)
+                preflight_passed = True
+                event(phase, "pass")
+            phase = "setup"
+            setup_started = True
+            fixture = adapter.setup(fixture_name)
+            event(phase, "pass")
+            if "fixtureExpect" in scenario:
+                phase = "fixture-assertion"
+                match(fixture, resolve_fixture(scenario["fixtureExpect"], fixture), f"$.{runtime}Fixture")
+                event(phase, "pass")
+
+        before_probe = scenario.get("stateProbe")
+        runtime_before = None
+        if before_probe:
+            phase = "scenario-snapshot-before"
+            if adapter is None:
+                raise ContractFailure("state probe requires a runtime adapter")
+            runtime_before = adapter.snapshot(before_probe)
+            evidence["state"]["snapshotDigests"].append({
+                "position": "scenario-before", "sha256": _value_digest(runtime_before)
+            })
+            event(phase, "pass", probe=before_probe)
+
+        for step_index, step in enumerate(steps):
+            step_number = step_index + 1
+            step_probe = step.get("stateProbe")
+            step_before = None
+            if step_probe:
+                phase = "step-snapshot-before"
+                if adapter is None:
+                    raise ContractFailure("step state probe requires a runtime adapter")
+                step_before = adapter.snapshot(step_probe)
+                evidence["state"]["snapshotDigests"].append({
+                    "position": f"step-{step_number}-before", "sha256": _value_digest(step_before)
+                })
+                event(phase, "pass", probe=step_probe, step=step_number)
+
+            phase = "http-request"
+            runtime_request = resolve_runtime(step["request"], fixture, captures)
+            evidence["http"]["attemptedStepCount"] += 1
+            result = call(base_url, runtime_request, timeout)
+            phase = "http-contract"
+            runtime_expect = resolve_runtime(step["expect"], fixture, captures)
+            responses.append(normalize_response(result, runtime_expect, captures))
+            phase = "response-assertion"
+            assert_response(base_url, result, step.get("assertions", []), fixture, captures, timeout)
+            event("step", "pass", step=step_number)
+
+            if step_probe:
+                phase = "step-snapshot-after"
+                step_after = adapter.snapshot(step_probe) if adapter else None
+                evidence["state"]["snapshotDigests"].append({
+                    "position": f"step-{step_number}-after", "sha256": _value_digest(step_after)
+                })
+                event(phase, "pass", probe=step_probe, step=step_number)
+                phase = "step-state-assertion"
+                assert_state(step_before, step_after, step.get("stateAssertions", []))
+                event(phase, "pass", step=step_number)
+
+        if before_probe:
+            phase = "scenario-snapshot-after"
+            runtime_after = adapter.snapshot(before_probe) if adapter else None
+            evidence["state"]["snapshotDigests"].append({
+                "position": "scenario-after", "sha256": _value_digest(runtime_after)
+            })
+            event(phase, "pass", probe=before_probe)
+            phase = "scenario-state-assertion"
+            assert_state(runtime_before, runtime_after, scenario.get("stateAssertions", []))
+            event(phase, "pass")
+
+        evidence["http"]["contractPassed"] = True
+        if evidence["state"]["assertionCount"]:
+            evidence["state"]["assertionsPassed"] = True
+        if evidence["jwt"]["assertionCount"]:
+            evidence["jwt"]["assertionsPassed"] = True
+    except ContractFailure as exc:
+        event(phase, "fail")
+        fail(phase, exc)
+        if phase in {"http-request", "http-contract", "response-assertion"}:
+            evidence["http"]["contractPassed"] = False
+        if "state-assertion" in phase and evidence["state"]["assertionCount"]:
+            evidence["state"]["assertionsPassed"] = False
+        if phase == "response-assertion" and evidence["jwt"]["assertionCount"]:
+            evidence["jwt"]["assertionsPassed"] = False
+    except subprocess.SubprocessError:
+        event(phase, "fail")
+        fail(phase, ContractFailure(f"adapter operation failed during {phase}"))
+    except OSError:
+        event(phase, "fail")
+        fail(phase, ContractFailure(f"runtime operation failed during {phase}"))
+    finally:
+        if fixture_name and adapter is not None and preflight_passed and setup_started:
+            try:
+                adapter.teardown(fixture_name)
+                event("teardown", "pass")
+            except ContractFailure as exc:
+                event("teardown", "fail")
+                fail("teardown", exc)
+            except subprocess.SubprocessError:
+                event("teardown", "fail")
+                fail("teardown", ContractFailure("adapter operation failed during teardown"))
+            except OSError:
+                event("teardown", "fail")
+                fail("teardown", ContractFailure("runtime operation failed during teardown"))
+
+    record = {
+        "attempt": 1,
+        "retryCount": 0,
+        "outcome": "pass" if not errors else "fail",
+        "plannedStepCount": len(steps),
+        "completedStepCount": len(responses),
+        "normalizedResponses": responses,
+        "fixtureLifecycle": lifecycle,
+        "evidence": evidence,
+    }
+    if errors:
+        record["errors"] = errors
+    return record, failure_messages
+
+
 def run_suite(
     baseline_url: str,
     candidate_url: str,
@@ -529,97 +730,49 @@ def run_suite(
     candidate_adapter: FixtureAdapter | None = None,
     records: list[dict[str, Any]] | None = None,
     provenance: dict[str, str] | None = None,
+    baseline_preflight: str | None = None,
+    candidate_preflight: str | None = None,
 ) -> list[str]:
     provenance = validate_provenance(provenance or {})
     failures: list[str] = []
     for scenario in scenarios:
         failures_before_scenario = len(failures)
         scenario_id = scenario["id"]
-        fixture_name = scenario.get("fixture")
-        baseline_fixture: dict[str, Any] = {}
-        candidate_fixture: dict[str, Any] = {}
-        baseline_responses: list[dict[str, Any]] = []
-        candidate_responses: list[dict[str, Any]] = []
         scenario_error: str | None = None
         comparison_equal: bool | None = None
-        try:
-            if fixture_name:
-                if not baseline_adapter or not candidate_adapter:
-                    raise ContractFailure("fixture scenario requires both --baseline-adapter and --candidate-adapter")
-                baseline_fixture = baseline_adapter.setup(fixture_name)
-                candidate_fixture = candidate_adapter.setup(fixture_name)
-                if "fixtureExpect" in scenario:
-                    match(
-                        baseline_fixture,
-                        resolve_fixture(scenario["fixtureExpect"], baseline_fixture),
-                        "$.baselineFixture",
-                    )
-                    match(
-                        candidate_fixture,
-                        resolve_fixture(scenario["fixtureExpect"], candidate_fixture),
-                        "$.candidateFixture",
-                    )
-            before_probe = scenario.get("stateProbe")
-            baseline_before = baseline_adapter.snapshot(before_probe) if before_probe and baseline_adapter else None
-            candidate_before = candidate_adapter.snapshot(before_probe) if before_probe and candidate_adapter else None
-            baseline_captures: dict[str, Any] = {}
-            candidate_captures: dict[str, Any] = {}
-            steps = scenario.get("steps") or [{
-                "request": scenario["request"],
-                "expect": scenario["expect"],
-                "assertions": scenario.get("assertions", []),
-            }]
-            for step in steps:
-                step_probe = step.get("stateProbe")
-                baseline_step_before = baseline_adapter.snapshot(step_probe) if step_probe and baseline_adapter else None
-                candidate_step_before = candidate_adapter.snapshot(step_probe) if step_probe and candidate_adapter else None
+        baseline_record, baseline_failures = _run_runtime(
+            "baseline", baseline_url, scenario, timeout, baseline_adapter, baseline_preflight
+        )
+        candidate_record, candidate_failures = _run_runtime(
+            "candidate", candidate_url, scenario, timeout, candidate_adapter, candidate_preflight
+        )
+        for runtime_failure in [*baseline_failures, *candidate_failures]:
+            failures.append(f"{scenario_id}: {runtime_failure}")
+            print(f"FAIL {scenario_id}: {runtime_failure}", file=sys.stderr)
 
-                baseline_request = resolve_runtime(step["request"], baseline_fixture, baseline_captures)
-                candidate_request = resolve_runtime(step["request"], candidate_fixture, candidate_captures)
-                baseline_result = call(baseline_url, baseline_request, timeout)
-                candidate_result = call(candidate_url, candidate_request, timeout)
-                baseline_expect = resolve_runtime(step["expect"], baseline_fixture, baseline_captures)
-                candidate_expect = resolve_runtime(step["expect"], candidate_fixture, candidate_captures)
-                baseline_responses.append(normalize_response(baseline_result, baseline_expect, baseline_captures))
-                candidate_responses.append(normalize_response(candidate_result, candidate_expect, candidate_captures))
-                assertions = step.get("assertions", [])
-                assert_response(baseline_url, baseline_result, assertions, baseline_fixture, baseline_captures, timeout)
-                assert_response(candidate_url, candidate_result, assertions, candidate_fixture, candidate_captures, timeout)
-
-                if step_probe:
-                    baseline_step_after = baseline_adapter.snapshot(step_probe) if baseline_adapter else None
-                    candidate_step_after = candidate_adapter.snapshot(step_probe) if candidate_adapter else None
-                    step_state_assertions = step.get("stateAssertions", [])
-                    assert_state(baseline_step_before, baseline_step_after, step_state_assertions)
-                    assert_state(candidate_step_before, candidate_step_after, step_state_assertions)
-
-            if before_probe:
-                baseline_after = baseline_adapter.snapshot(before_probe) if baseline_adapter else None
-                candidate_after = candidate_adapter.snapshot(before_probe) if candidate_adapter else None
-                state_assertions = scenario.get("stateAssertions", [])
-                assert_state(baseline_before, baseline_after, state_assertions)
-                assert_state(candidate_before, candidate_after, state_assertions)
-            comparison_equal = baseline_responses == candidate_responses
+        baseline_passed = baseline_record["outcome"] == "pass"
+        candidate_passed = candidate_record["outcome"] == "pass"
+        if baseline_passed and candidate_passed:
+            comparison_equal = baseline_record["normalizedResponses"] == candidate_record["normalizedResponses"]
+            comparison_category = "equivalent" if comparison_equal else "http-response-mismatch"
             if not comparison_equal:
-                raise ContractFailure(
-                    "normalized responses differ\n"
-                    f"  baseline: {json.dumps(baseline_responses, sort_keys=True)}\n"
-                    f"  candidate: {json.dumps(candidate_responses, sort_keys=True)}"
+                scenario_error = "normalized responses differ"
+                failure = (
+                    f"{scenario_id}: normalized responses differ\n"
+                    f"  baseline: {json.dumps(baseline_record['normalizedResponses'], sort_keys=True)}\n"
+                    f"  candidate: {json.dumps(candidate_record['normalizedResponses'], sort_keys=True)}"
                 )
-        except ContractFailure as exc:
-            scenario_error = str(exc)
-            failures.append(f"{scenario_id}: {exc}")
-            print(f"FAIL {scenario_id}: {exc}", file=sys.stderr)
-        finally:
-            if fixture_name:
-                for adapter in (baseline_adapter, candidate_adapter):
-                    if adapter:
-                        try:
-                            adapter.teardown(fixture_name)
-                        except ContractFailure as exc:
-                            scenario_error = scenario_error or f"teardown failed: {exc}"
-                            failures.append(f"{scenario_id}: teardown failed: {exc}")
-                            print(f"FAIL {scenario_id}: teardown failed: {exc}", file=sys.stderr)
+                failures.append(failure)
+                print(f"FAIL {failure}", file=sys.stderr)
+        elif not baseline_passed and not candidate_passed:
+            comparison_category = "both-runtime-failure"
+        elif not baseline_passed:
+            comparison_category = "baseline-runtime-failure"
+        else:
+            comparison_category = "candidate-runtime-failure"
+        if baseline_failures or candidate_failures:
+            scenario_error = "runtime contract failure"
+
         if records is not None:
             record: dict[str, Any] = {
                 "schemaVersion": 1,
@@ -627,16 +780,35 @@ def run_suite(
                 "scenarioId": scenario_id,
                 "outcome": "pass" if scenario_error is None else "fail",
                 "provenance": provenance or {},
-                "baseline": {"normalizedResponses": baseline_responses},
-                "candidate": {"normalizedResponses": candidate_responses},
+                "attempt": 1,
+                "retryCount": 0,
+                "plannedStepCount": baseline_record["plannedStepCount"],
+                "baseline": baseline_record,
+                "candidate": candidate_record,
                 "comparison": {"equal": comparison_equal},
+                "comparisonCategory": comparison_category,
+                "comparisonEvidence": {
+                    "httpCompared": baseline_passed and candidate_passed,
+                    "stateAssertionsPlanned": bool(
+                        baseline_record["evidence"]["state"]["assertionCount"]
+                        and candidate_record["evidence"]["state"]["assertionCount"]
+                    ),
+                    "stateAssertedIndependently": (
+                        baseline_record["evidence"]["state"]["assertionsPassed"] is True
+                        and candidate_record["evidence"]["state"]["assertionsPassed"] is True
+                    ),
+                    "jwtAssertionsPlanned": bool(
+                        baseline_record["evidence"]["jwt"]["assertionCount"]
+                        and candidate_record["evidence"]["jwt"]["assertionCount"]
+                    ),
+                    "jwtAssertedIndependently": (
+                        baseline_record["evidence"]["jwt"]["assertionsPassed"] is True
+                        and candidate_record["evidence"]["jwt"]["assertionsPassed"] is True
+                    ),
+                },
             }
             if scenario_error is not None:
-                error_kind = (
-                    "normalized-responses-differ"
-                    if scenario_error.startswith("normalized responses differ")
-                    else "contract-failure"
-                )
+                error_kind = "normalized-responses-differ" if comparison_category == "http-response-mismatch" else "runtime-failure"
                 record["error"] = {
                     "kind": error_kind,
                     "sha256": hashlib.sha256(scenario_error.encode("utf-8")).hexdigest(),
@@ -658,6 +830,8 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--candidate-adapter", type=Path, help="fixture adapter executable for candidate state")
     result.add_argument("--baseline-adapter-config", type=Path, help="untracked JSON environment for the baseline adapter")
     result.add_argument("--candidate-adapter-config", type=Path, help="untracked JSON environment for the candidate adapter")
+    result.add_argument("--baseline-adapter-preflight", metavar="NAME", help="opt in to one baseline adapter preflight command before fixture setup")
+    result.add_argument("--candidate-adapter-preflight", metavar="NAME", help="opt in to one candidate adapter preflight command before fixture setup")
     result.add_argument("--jsonl", type=Path, help="optional machine-readable scenario result output")
     result.add_argument(
         "--provenance",
@@ -692,6 +866,8 @@ def main(argv: list[str] | None = None) -> int:
             candidate_adapter,
             records,
             parse_provenance(args.provenance),
+            args.baseline_adapter_preflight,
+            args.candidate_adapter_preflight,
         )
         if args.jsonl:
             write_jsonl(args.jsonl, records or [])
