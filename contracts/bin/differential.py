@@ -15,14 +15,28 @@ import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib import error, parse, request
-
 
 CONTRACTS_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_SCENARIOS = CONTRACTS_DIR / "scenarios" / "public.json"
 PREDICATE_KEY = "$predicate"
 ALLOW_EXTRA_KEY = "$allowExtra"
+SAFE_PROVENANCE_KEYS = {
+    "baselineImageDigest",
+    "baselineRuntime",
+    "candidateImageDigest",
+    "candidateRuntime",
+    "corpusHash",
+    "harnessRevision",
+    "runId",
+    "scenarioHash",
+    "schedule",
+    "seed",
+    "sourceRevision",
+    "startedAt",
+    "topology",
+}
 
 
 class ContractFailure(Exception):
@@ -34,6 +48,21 @@ class HttpResult:
     status: int
     headers: dict[str, str]
     body: Any
+
+
+class _NoRedirectHandler(request.HTTPRedirectHandler):
+    """Return redirects to the caller instead of following them."""
+
+    def redirect_request(
+        self,
+        req: request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        return None
 
 
 def _decode_json(raw: bytes, content_type: str) -> Any:
@@ -60,7 +89,10 @@ def call(base_url: str, request_spec: dict[str, Any], timeout: float) -> HttpRes
 
     req = request.Request(url, data=data, headers=headers, method=method)
     try:
-        response = request.urlopen(req, timeout=timeout)
+        if request_spec.get("followRedirects", True):
+            response = request.urlopen(req, timeout=timeout)
+        else:
+            response = request.build_opener(_NoRedirectHandler()).open(req, timeout=timeout)
     except error.HTTPError as exc:
         response = exc
     except error.URLError as exc:
@@ -386,7 +418,9 @@ def load_scenarios(path: Path, selected: set[str] | None = None) -> list[dict[st
     document = json.loads(path.read_text(encoding="utf-8"))
     if document.get("version") != 1 or not isinstance(document.get("scenarios"), list):
         raise ContractFailure(f"{path}: unsupported or invalid scenario document")
-    scenarios = document["scenarios"]
+    if any(not isinstance(scenario, dict) for scenario in document["scenarios"]):
+        raise ContractFailure(f"{path}: every scenario must be a JSON object")
+    scenarios = cast(list[dict[str, Any]], document["scenarios"])
     ids = [scenario.get("id") for scenario in scenarios]
     if any(not isinstance(item, str) or not item for item in ids) or len(ids) != len(set(ids)):
         raise ContractFailure(f"{path}: scenario ids must be unique non-empty strings")
@@ -407,6 +441,85 @@ def load_adapter_environment(path: Path | None) -> dict[str, str]:
     return document
 
 
+def _evidence_value(value: Any, key: str | None = None) -> Any:
+    """Return a stable evidence value without persisting bearer material."""
+    sensitive_keys = {
+        "authorizationcode",
+        "authorization",
+        "clientsecret",
+        "code",
+        "codeverifier",
+        "cookie",
+        "idtoken",
+        "oauthcode",
+        "oauthstate",
+        "password",
+        "privatekey",
+        "secret",
+        "setcookie",
+        "state",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "verifier",
+    }
+    normalized_key = "".join(character for character in (key or "").lower() if character.isalnum())
+    contains_sensitive_marker = any(
+        marker in normalized_key for marker in ("password", "secret", "privatekey")
+    )
+    if (normalized_key in sensitive_keys or contains_sensitive_marker) and isinstance(value, str):
+        if value.startswith("<sha256:") and value.endswith(">"):
+            digest = value[len("<sha256:"):-1]
+            if len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
+                return value
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        return f"<sha256:{digest}>"
+    if isinstance(value, dict):
+        return {item_key: _evidence_value(item, item_key) for item_key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return [_evidence_value(item) for item in value]
+    return value
+
+
+def canonical_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Create a recursively ordered, JSON-serializable evidence record."""
+    return cast(dict[str, Any], _evidence_value(record))
+
+
+def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    """Write deterministic one-record-per-line evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "".join(
+        json.dumps(canonical_record(record), sort_keys=True, separators=(",", ":")) + "\n"
+        for record in records
+    )
+    path.write_text(payload, encoding="utf-8")
+
+
+def validate_provenance(provenance: dict[str, str]) -> dict[str, str]:
+    for key, value in provenance.items():
+        if not isinstance(key, str) or not isinstance(value, str) or not key or not value:
+            raise ContractFailure("provenance fields must be non-empty strings")
+        lowered_key = key.lower()
+        if any(marker in lowered_key for marker in ("password", "secret", "credential", "token", "cookie", "authorization")):
+            raise ContractFailure(f"provenance key {key!r} is secret-shaped and is not allowed")
+        if key not in SAFE_PROVENANCE_KEYS:
+            raise ContractFailure(f"unknown provenance key {key!r}")
+    return dict(provenance)
+
+
+def parse_provenance(items: list[str] | None) -> dict[str, str]:
+    provenance: dict[str, str] = {}
+    for item in items or []:
+        key, separator, value = item.partition("=")
+        if not separator or not key or not value:
+            raise ContractFailure("--provenance must use a non-empty KEY=VALUE")
+        if key in provenance:
+            raise ContractFailure(f"duplicate provenance key {key!r}")
+        provenance[key] = value
+    return validate_provenance(provenance)
+
+
 def run_suite(
     baseline_url: str,
     candidate_url: str,
@@ -414,7 +527,10 @@ def run_suite(
     timeout: float = 5.0,
     baseline_adapter: FixtureAdapter | None = None,
     candidate_adapter: FixtureAdapter | None = None,
+    records: list[dict[str, Any]] | None = None,
+    provenance: dict[str, str] | None = None,
 ) -> list[str]:
+    provenance = validate_provenance(provenance or {})
     failures: list[str] = []
     for scenario in scenarios:
         failures_before_scenario = len(failures)
@@ -422,6 +538,10 @@ def run_suite(
         fixture_name = scenario.get("fixture")
         baseline_fixture: dict[str, Any] = {}
         candidate_fixture: dict[str, Any] = {}
+        baseline_responses: list[dict[str, Any]] = []
+        candidate_responses: list[dict[str, Any]] = []
+        scenario_error: str | None = None
+        comparison_equal: bool | None = None
         try:
             if fixture_name:
                 if not baseline_adapter or not candidate_adapter:
@@ -444,8 +564,6 @@ def run_suite(
             candidate_before = candidate_adapter.snapshot(before_probe) if before_probe and candidate_adapter else None
             baseline_captures: dict[str, Any] = {}
             candidate_captures: dict[str, Any] = {}
-            baseline_responses: list[dict[str, Any]] = []
-            candidate_responses: list[dict[str, Any]] = []
             steps = scenario.get("steps") or [{
                 "request": scenario["request"],
                 "expect": scenario["expect"],
@@ -481,13 +599,15 @@ def run_suite(
                 state_assertions = scenario.get("stateAssertions", [])
                 assert_state(baseline_before, baseline_after, state_assertions)
                 assert_state(candidate_before, candidate_after, state_assertions)
-            if baseline_responses != candidate_responses:
+            comparison_equal = baseline_responses == candidate_responses
+            if not comparison_equal:
                 raise ContractFailure(
                     "normalized responses differ\n"
                     f"  baseline: {json.dumps(baseline_responses, sort_keys=True)}\n"
                     f"  candidate: {json.dumps(candidate_responses, sort_keys=True)}"
                 )
         except ContractFailure as exc:
+            scenario_error = str(exc)
             failures.append(f"{scenario_id}: {exc}")
             print(f"FAIL {scenario_id}: {exc}", file=sys.stderr)
         finally:
@@ -497,8 +617,31 @@ def run_suite(
                         try:
                             adapter.teardown(fixture_name)
                         except ContractFailure as exc:
+                            scenario_error = scenario_error or f"teardown failed: {exc}"
                             failures.append(f"{scenario_id}: teardown failed: {exc}")
                             print(f"FAIL {scenario_id}: teardown failed: {exc}", file=sys.stderr)
+        if records is not None:
+            record: dict[str, Any] = {
+                "schemaVersion": 1,
+                "kind": "differential-scenario",
+                "scenarioId": scenario_id,
+                "outcome": "pass" if scenario_error is None else "fail",
+                "provenance": provenance or {},
+                "baseline": {"normalizedResponses": baseline_responses},
+                "candidate": {"normalizedResponses": candidate_responses},
+                "comparison": {"equal": comparison_equal},
+            }
+            if scenario_error is not None:
+                error_kind = (
+                    "normalized-responses-differ"
+                    if scenario_error.startswith("normalized responses differ")
+                    else "contract-failure"
+                )
+                record["error"] = {
+                    "kind": error_kind,
+                    "sha256": hashlib.sha256(scenario_error.encode("utf-8")).hexdigest(),
+                }
+            records.append(record)
         if len(failures) == failures_before_scenario:
             print(f"PASS {scenario_id}")
     return failures
@@ -515,6 +658,13 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--candidate-adapter", type=Path, help="fixture adapter executable for candidate state")
     result.add_argument("--baseline-adapter-config", type=Path, help="untracked JSON environment for the baseline adapter")
     result.add_argument("--candidate-adapter-config", type=Path, help="untracked JSON environment for the candidate adapter")
+    result.add_argument("--jsonl", type=Path, help="optional machine-readable scenario result output")
+    result.add_argument(
+        "--provenance",
+        action="append",
+        metavar="KEY=VALUE",
+        help="result provenance field (repeatable; for example runId or sourceRevision)",
+    )
     return result
 
 
@@ -532,6 +682,7 @@ def main(argv: list[str] | None = None) -> int:
             args.candidate,
             load_adapter_environment(args.candidate_adapter_config),
         ) if args.candidate_adapter else None
+        records: list[dict[str, Any]] | None = [] if args.jsonl else None
         failures = run_suite(
             args.baseline,
             args.candidate,
@@ -539,7 +690,11 @@ def main(argv: list[str] | None = None) -> int:
             args.timeout,
             baseline_adapter,
             candidate_adapter,
+            records,
+            parse_provenance(args.provenance),
         )
+        if args.jsonl:
+            write_jsonl(args.jsonl, records or [])
     except (ContractFailure, OSError, json.JSONDecodeError) as exc:
         print(f"ERROR {exc}", file=sys.stderr)
         return 2

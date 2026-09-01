@@ -11,6 +11,247 @@
     "dependencies": ["psql", "Python standard-library TCP/RESP"],
     "safety": "loopback-only, test-named PostgreSQL database, acknowledged isolated Redis DB >= 1, dev mail acknowledgement"
   },
+  "phase7FlowStatusSemantics": {
+    "scope": "executable-contract-corpus-only",
+    "qualification": "not-assessed",
+    "complete": "All independent-runtime contract cases currently defined for the flow are executable. This never means Phase 7 qualification, replacement readiness, or production approval.",
+    "partial": "Some deterministic contract cases are executable, but listed corpus, topology, concurrency, or sample-count gaps remain.",
+    "planMapping": "phase7FlowGroups are asset-oriented coverage labels. phase7ApprovedCoreFlows separately preserves the approved qualification order and must not be inferred from group position."
+  },
+  "phase7ApprovedCoreFlows": [
+    {
+      "order": 1,
+      "id": "password-direct-login-token",
+      "name": "Password direct login/token",
+      "status": "partial",
+      "scenarios": ["session.login-logout-replay"],
+      "gaps": [
+        "Unsupported: the approved per-runtime repeated-sample threshold and full access/refresh claim and persistence assertions remain outstanding."
+      ]
+    },
+    {
+      "order": 2,
+      "id": "password-handoff-exchange",
+      "name": "Password handoff/exchange",
+      "status": "partial",
+      "scenarios": ["auth.login-issues-verifiable-token"],
+      "gaps": [
+        "Unsupported: mixed-runtime handoff production/consumption orderings, replay races, and the approved repeated-sample threshold remain outstanding."
+      ]
+    },
+    {
+      "order": 3,
+      "id": "email-verification-attach-handoff-exchange",
+      "name": "Email verification/attach/handoff/exchange",
+      "status": "partial",
+      "scenarios": [
+        "recovery.email-verification-request",
+        "email-verification.confirm-rejects-invalid-request"
+      ],
+      "gaps": [
+        "Unsupported: dev-mail token capture, successful verification, account attachment, handoff/exchange, mixed-runtime ordering, and repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 4,
+      "id": "password-reset-session-revoke",
+      "name": "Password reset/session revoke",
+      "status": "partial",
+      "scenarios": [
+        "recovery.password-reset-request",
+        "recovery.password-reset-confirm-rejects-invalid-request",
+        "session.login-logout-replay"
+      ],
+      "gaps": [
+        "Unsupported: successful reset confirmation, reset-triggered session revocation, mixed-runtime ordering, and repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 5,
+      "id": "oauth-google",
+      "name": "Google",
+      "status": "partial",
+      "scenarios": ["oauth.google-start-requires-pkce"],
+      "gaps": [
+        "Unsupported: deterministic Google provider redirect/callback, account linking, handoff/exchange, replay, mixed-runtime ordering, and repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 6,
+      "id": "oauth-naver",
+      "name": "Naver",
+      "status": "partial",
+      "scenarios": ["oauth.naver-start-requires-pkce"],
+      "gaps": [
+        "Unsupported: deterministic Naver provider redirect/callback, account linking, handoff/exchange, replay, mixed-runtime ordering, and repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 7,
+      "id": "oauth-kakao",
+      "name": "Kakao",
+      "status": "partial",
+      "scenarios": ["oauth.kakao-start-requires-pkce"],
+      "gaps": [
+        "Unsupported: deterministic Kakao provider redirect/callback, account linking, handoff/exchange, replay, mixed-runtime ordering, and repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 8,
+      "id": "refresh-logout-race",
+      "name": "Refresh/logout race",
+      "status": "partial",
+      "scenarios": [
+        "security.refresh-none-algorithm",
+        "security.refresh-hs256-rotation",
+        "security.refresh-hs384-algorithm",
+        "security.refresh-hs512-algorithm",
+        "session.login-logout-replay",
+        "session.logout-rejects-invalid-refresh"
+      ],
+      "gaps": [
+        "Unsupported: mixed-runtime refresh/logout orderings, deterministic concurrent race schedules, and the approved repeated-sample threshold remain outstanding."
+      ]
+    },
+    {
+      "order": 9,
+      "id": "admin-status-role-session-audit",
+      "name": "Admin status/role/session/audit",
+      "status": "partial",
+      "scenarios": [
+        "admin.status-mutation",
+        "admin.directory-requires-bearer",
+        "admin.audit-requires-bearer"
+      ],
+      "gaps": [
+        "Unsupported: role assignment/removal, explicit session revocation, authorized audit assertions, mixed-runtime ordering, and repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 10,
+      "id": "global-rate-limit",
+      "name": "Global rate-limit",
+      "status": "unsupported",
+      "scenarios": [],
+      "gaps": [
+        "Unsupported: no deterministic global rate-limit corpus, shared-counter topology, window-boundary schedule, or approved repeated-sample evidence exists yet."
+      ]
+    }
+  ],
+  "phase7FlowGroups": [
+    {
+      "id": "public-oidc",
+      "status": "partial",
+      "scenarios": [
+        "public.health",
+        "public.ready",
+        "public.openid-configuration",
+        "public.jwks",
+        "public.not-found"
+      ],
+      "gaps": [
+        "Unsupported: this supporting public-surface group is not one of the ten approved qualifying core flows and has no repeated-sample qualification evidence."
+      ]
+    },
+    {
+      "id": "registration",
+      "status": "partial",
+      "scenarios": ["registration.rejects-invalid-request"],
+      "gaps": [
+        "Unsupported: successful registration needs a deterministic unique-user fixture, a user-state probe, and mail isolation assertions."
+      ]
+    },
+    {
+      "id": "email-verification",
+      "status": "partial",
+      "scenarios": [
+        "recovery.email-verification-request",
+        "email-verification.confirm-rejects-invalid-request"
+      ],
+      "gaps": [
+        "Unsupported: successful confirmation needs a deterministic dev-mail token capture and verified-user state probe."
+      ]
+    },
+    {
+      "id": "login-handoff-exchange-me",
+      "status": "partial",
+      "scenarios": [
+        "auth.login-issues-verifiable-token",
+        "session.login-logout-replay",
+        "session.me-requires-bearer"
+      ],
+      "gaps": [
+        "Unsupported: an authenticated /users/me assertion needs a runner-supported Bearer header derived from the captured access token."
+      ]
+    },
+    {
+      "id": "refresh",
+      "status": "partial",
+      "scenarios": [
+        "security.refresh-none-algorithm",
+        "security.refresh-hs256-rotation",
+        "security.refresh-hs384-algorithm",
+        "security.refresh-hs512-algorithm"
+      ],
+      "gaps": [
+        "Unsupported: mixed-runtime E-to-F and F-to-E rotation, deterministic replay races, and the approved per-runtime repeated-sample threshold remain outside this corpus."
+      ]
+    },
+    {
+      "id": "logout-session",
+      "status": "partial",
+      "scenarios": [
+        "session.login-logout-replay",
+        "session.me-requires-bearer",
+        "session.logout-rejects-invalid-refresh"
+      ],
+      "gaps": [
+        "Unsupported: mixed-runtime logout/replay orderings, concurrent logout races, and the approved per-runtime repeated-sample threshold remain outside this corpus."
+      ]
+    },
+    {
+      "id": "password-reset",
+      "status": "partial",
+      "scenarios": [
+        "recovery.password-reset-request",
+        "recovery.password-reset-confirm-rejects-invalid-request"
+      ],
+      "gaps": [
+        "Unsupported: successful reset confirmation needs deterministic dev-mail token capture and credential/revocation state probes."
+      ]
+    },
+    {
+      "id": "oauth-three-provider",
+      "status": "partial",
+      "scenarios": [
+        "oauth.google-start-requires-pkce",
+        "oauth.naver-start-requires-pkce",
+        "oauth.kakao-start-requires-pkce"
+      ],
+      "gaps": [
+        "Unsupported: provider redirects, callbacks, account linking, handoff exchange, and replay require deterministic fake Google, Naver, and Kakao endpoints."
+      ]
+    },
+    {
+      "id": "admin-mutations",
+      "status": "partial",
+      "scenarios": ["admin.status-mutation"],
+      "gaps": [
+        "Unsupported: role assignment/removal and session revocation need fixture paths for target users and roles plus dedicated state probes."
+      ]
+    },
+    {
+      "id": "admin-directory-audit",
+      "status": "partial",
+      "scenarios": [
+        "admin.directory-requires-bearer",
+        "admin.audit-requires-bearer"
+      ],
+      "gaps": [
+        "Unsupported: authorized pagination, filtering, ordering, and audit redaction need deterministic list fixtures and normalized collection matching."
+      ]
+    }
+  ],
   "validations": [
     { "snapshot": "snapshots/http.json", "schema": "schemas/http-snapshots.schema.json" },
     { "snapshot": "snapshots/http.json#/health", "schema": "schemas/http-response.schema.json" },
@@ -92,11 +333,15 @@
         "GET /users/me"
       ],
       "scenarios": [
+        "registration.rejects-invalid-request",
         "security.refresh-none-algorithm",
         "security.refresh-hs256-rotation",
         "security.refresh-hs384-algorithm",
         "security.refresh-hs512-algorithm",
-        "auth.login-issues-verifiable-token"
+        "auth.login-issues-verifiable-token",
+        "session.login-logout-replay",
+        "session.me-requires-bearer",
+        "session.logout-rejects-invalid-refresh"
       ],
       "schemas": ["schemas/jwt-access-claims.schema.json", "schemas/auth-state.schema.json"],
       "snapshots": ["snapshots/jwt-access.json", "snapshots/state.json"],
@@ -120,7 +365,11 @@
         "GET /auth/kakao/callback",
         "POST /auth/exchange"
       ],
-      "scenarios": [],
+      "scenarios": [
+        "oauth.google-start-requires-pkce",
+        "oauth.naver-start-requires-pkce",
+        "oauth.kakao-start-requires-pkce"
+      ],
       "schemas": ["schemas/auth-state.schema.json", "schemas/jwt-access-claims.schema.json"],
       "snapshots": ["snapshots/state.json", "snapshots/jwt-access.json"],
       "evidence": [
@@ -139,7 +388,12 @@
         "POST /auth/email-verification/request",
         "POST /auth/email-verification/confirm"
       ],
-      "scenarios": ["recovery.password-reset-request", "recovery.email-verification-request"],
+      "scenarios": [
+        "recovery.password-reset-request",
+        "recovery.password-reset-confirm-rejects-invalid-request",
+        "recovery.email-verification-request",
+        "email-verification.confirm-rejects-invalid-request"
+      ],
       "schemas": ["schemas/auth-state.schema.json"],
       "snapshots": ["snapshots/state.json"],
       "evidence": [
@@ -160,7 +414,11 @@
         "DELETE /admin/users/:id/roles/:roleId",
         "POST /admin/users/:id/revoke-sessions"
       ],
-      "scenarios": ["admin.status-mutation"],
+      "scenarios": [
+        "admin.status-mutation",
+        "admin.directory-requires-bearer",
+        "admin.audit-requires-bearer"
+      ],
       "schemas": ["schemas/jwt-access-claims.schema.json", "schemas/auth-state.schema.json"],
       "snapshots": ["snapshots/jwt-access.json", "snapshots/state.json"],
       "evidence": [

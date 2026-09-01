@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "registration.rejects-invalid-request",
+      "request": { "method": "POST", "path": "/auth/register", "json": {} },
+      "expect": {
+        "status": 400,
+        "json": { "error": { "code": "INVALID_REQUEST", "message": "Invalid request" } }
+      }
+    },
+    {
+      "id": "email-verification.confirm-rejects-invalid-request",
+      "request": { "method": "POST", "path": "/auth/email-verification/confirm", "json": {} },
+      "expect": {
+        "status": 400,
+        "json": { "error": { "code": "INVALID_REQUEST", "message": "Invalid request" } }
+      }
+    },
+    {
+      "id": "session.me-requires-bearer",
+      "request": { "method": "GET", "path": "/users/me" },
+      "expect": {
+        "status": 401,
+        "json": { "error": { "code": "UNAUTHORIZED", "message": "Bearer access token is required" } }
+      }
+    },
+    {
+      "id": "session.logout-rejects-invalid-refresh",
+      "request": {
+        "method": "POST",
+        "path": "/auth/logout",
+        "json": { "refreshToken": "contract-invalid-refresh-token" }
+      },
+      "expect": {
+        "status": 401,
+        "json": { "error": { "code": "INVALID_REFRESH_TOKEN", "message": "Invalid refresh token" } }
+      }
+    },
+    {
+      "id": "recovery.password-reset-confirm-rejects-invalid-request",
+      "request": { "method": "POST", "path": "/auth/password-reset/confirm", "json": {} },
+      "expect": {
+        "status": 400,
+        "json": { "error": { "code": "INVALID_REQUEST", "message": "Invalid request" } }
+      }
+    },
+    {
+      "id": "oauth.google-start-requires-pkce",
+      "request": { "method": "GET", "path": "/auth/google" },
+      "expect": {
+        "status": 400,
+        "json": { "error": { "code": "INVALID_REQUEST", "message": "Invalid request" } }
+      }
+    },
+    {
+      "id": "oauth.naver-start-requires-pkce",
+      "request": { "method": "GET", "path": "/auth/naver" },
+      "expect": {
+        "status": 400,
+        "json": { "error": { "code": "INVALID_REQUEST", "message": "Invalid request" } }
+      }
+    },
+    {
+      "id": "oauth.kakao-start-requires-pkce",
+      "request": { "method": "GET", "path": "/auth/kakao" },
+      "expect": {
+        "status": 400,
+        "json": { "error": { "code": "INVALID_REQUEST", "message": "Invalid request" } }
+      }
+    },
+    {
+      "id": "admin.directory-requires-bearer",
+      "request": { "method": "GET", "path": "/admin/users" },
+      "expect": {
+        "status": 401,
+        "json": { "error": { "code": "UNAUTHORIZED", "message": "Bearer access token is required" } }
+      }
+    },
+    {
+      "id": "admin.audit-requires-bearer",
+      "request": { "method": "GET", "path": "/admin/audit-logs" },
+      "expect": {
+        "status": 401,
+        "json": { "error": { "code": "UNAUTHORIZED", "message": "Bearer access token is required" } }
+      }
+    }
+  ]
+}

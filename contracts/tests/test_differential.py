@@ -13,8 +13,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-
+from typing import Any, cast
 
 RUNNER = Path(__file__).resolve().parents[1] / "bin" / "differential.py"
 SPEC = importlib.util.spec_from_file_location("contract_differential", RUNNER)
@@ -66,6 +65,41 @@ class StubServer:
         return self
 
     def __exit__(self, *_args):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+
+class RedirectServer:
+    def __init__(self) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(handler_self) -> None:
+                if handler_self.path == "/redirect":
+                    handler_self.send_response(302)
+                    handler_self.send_header("location", "/final")
+                    handler_self.end_headers()
+                    return
+                handler_self.send_response(200)
+                handler_self.send_header("content-type", "application/json")
+                handler_self.end_headers()
+                handler_self.wfile.write(b'{"status":"followed"}')
+
+            def log_message(self, _format: str, *_args: object) -> None:
+                return
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def url(self) -> str:
+        host, port = cast(tuple[str, int], self.server.server_address)
+        return f"http://{host}:{port}"
+
+    def __enter__(self) -> RedirectServer:
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_args: object) -> None:
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
@@ -215,6 +249,19 @@ def jwt_segment(value: dict[str, Any]) -> str:
 
 
 class DifferentialSuiteTests(unittest.TestCase):
+    def test_call_can_observe_redirect_without_following_it(self) -> None:
+        with RedirectServer() as server:
+            followed = differential.call(server.url, {"path": "/redirect"}, 1.0)
+            redirect = differential.call(
+                server.url,
+                {"path": "/redirect", "followRedirects": False},
+                1.0,
+            )
+        self.assertEqual((followed.status, followed.body), (200, {"status": "followed"}))
+        self.assertEqual(redirect.status, 302)
+        self.assertEqual(redirect.headers["location"], "/final")
+        self.assertIsNone(redirect.body)
+
     def test_fixture_scenario_uses_adapter_and_proves_no_state_change(self):
         scenario = [{
             "id": "wrong-alg",
@@ -275,6 +322,88 @@ class DifferentialSuiteTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(differential.run_suite(baseline.url, candidate.url, scenarios), [])
 
+    def test_records_keep_runtime_results_separate_and_are_deterministic(self) -> None:
+        scenarios = [{
+            "id": "token",
+            "request": {"method": "GET", "path": "/token"},
+            "expect": {
+                "status": 200,
+                "json": {"token": {"$capture": "token", "$predicate": "nonempty-string"}},
+            },
+        }]
+        routes = {"/token": (200, {"content-type": "application/json"}, {"token": "secret-bearer-value"})}
+        records: list[dict[str, Any]] = []
+        with (
+            StubServer(routes) as baseline,
+            StubServer(routes) as candidate,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            failures = differential.run_suite(
+                baseline.url,
+                candidate.url,
+                scenarios,
+                records=records,
+                provenance={"seed": "7", "runId": "synthetic-run"},
+            )
+        self.assertEqual(failures, [])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["comparison"], {"equal": True})
+        self.assertEqual(records[0]["provenance"], {"runId": "synthetic-run", "seed": "7"})
+        self.assertIn("normalizedResponses", records[0]["baseline"])
+        self.assertIn("normalizedResponses", records[0]["candidate"])
+        encoded = json.dumps(differential.canonical_record(records[0]), sort_keys=True)
+        self.assertNotIn("secret-bearer-value", encoded)
+        self.assertIn("<sha256:", encoded)
+
+    def test_jsonl_writer_is_canonical_and_provenance_is_validated(self) -> None:
+        records = [{
+            "z": 1,
+            "authorization": "Bearer synthetic",
+            "a": {"y": 2, "x": 1},
+            "password": "password-value",
+            "password_hash": "password-hash-value",
+            "client_secret": "client-secret-value",
+            "jwtSecret": "jwt-secret-value",
+            "oauth-code": "oauth-code-value",
+            "state": "oauth-state-value",
+            "code_verifier": "verifier-value",
+            "set_cookie": "session=cookie-value",
+        }]
+        canonical = differential.canonical_record(records[0])
+        self.assertEqual(differential.canonical_record(canonical), canonical)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "results.jsonl"
+            differential.write_jsonl(path, records)
+            first = path.read_text(encoding="utf-8")
+            differential.write_jsonl(path, records)
+            second = path.read_text(encoding="utf-8")
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith('{"a":{"x":1,"y":2},"authorization":"<sha256:'))
+        for plaintext in (
+            "Bearer synthetic",
+            "password-value",
+            "password-hash-value",
+            "client-secret-value",
+            "jwt-secret-value",
+            "oauth-code-value",
+            "oauth-state-value",
+            "verifier-value",
+            "cookie-value",
+        ):
+            self.assertNotIn(plaintext, first)
+        self.assertNotIn("<sha256:<sha256:", first)
+        self.assertEqual(differential.parse_provenance(["runId=a", "seed=7"]), {"runId": "a", "seed": "7"})
+        with self.assertRaisesRegex(differential.ContractFailure, "KEY=VALUE"):
+            differential.parse_provenance(["invalid"])
+        with self.assertRaisesRegex(differential.ContractFailure, "duplicate"):
+            differential.parse_provenance(["seed=1", "seed=2"])
+        with self.assertRaisesRegex(differential.ContractFailure, "secret-shaped"):
+            differential.parse_provenance(["clientSecret=not-for-evidence"])
+        with self.assertRaisesRegex(differential.ContractFailure, "unknown provenance"):
+            differential.parse_provenance(["operatorNote=free-form"])
+        with self.assertRaisesRegex(differential.ContractFailure, "secret-shaped"):
+            differential.run_suite("http://baseline", "http://candidate", [], provenance={"password": "x"})
+
     def test_mismatched_issuer_fails_even_when_both_are_urls(self):
         scenarios = [{
             "id": "issuer",
@@ -283,11 +412,19 @@ class DifferentialSuiteTests(unittest.TestCase):
         }]
         one = {"/discovery": (200, {"content-type": "application/json"}, {"issuer": "https://one.example.invalid"})}
         two = {"/discovery": (200, {"content-type": "application/json"}, {"issuer": "https://two.example.invalid"})}
+        records: list[dict[str, Any]] = []
         with StubServer(one) as baseline, StubServer(two) as candidate:
             with contextlib.redirect_stderr(io.StringIO()):
-                failures = differential.run_suite(baseline.url, candidate.url, scenarios)
+                failures = differential.run_suite(
+                    baseline.url,
+                    candidate.url,
+                    scenarios,
+                    records=records,
+                )
         self.assertEqual(len(failures), 1)
         self.assertIn("normalized responses differ", failures[0])
+        self.assertEqual(records[0]["comparison"], {"equal": False})
+        self.assertNotEqual(records[0]["baseline"], records[0]["candidate"])
 
     def test_mismatched_jwks_value_fails(self):
         scenarios = [{

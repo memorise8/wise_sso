@@ -12,12 +12,16 @@ adapter snapshot <probe-name>
 adapter teardown <fixture-name>
 ```
 
-The concrete Express adapter is `express_fixture.py`. It uses only black-box
-HTTP, the `psql` executable, and a dependency-free Python RESP client for Redis;
-it does not import or execute Express source. Run its safety check before a suite:
+The concrete Express adapter is `express_fixture.py`. The FastAPI candidate uses
+`fastapi_fixture.py`, which shares the canonical fixture/probe implementation
+and additionally verifies the Prisma-compatible schema before mutation. Both
+use only black-box HTTP, the `psql` executable, and a dependency-free Python
+RESP client for Redis; neither imports or executes application source. Run the
+applicable safety check before a suite:
 
 ```sh
 contracts/adapters/express_fixture.py preflight express
+contracts/adapters/fastapi_fixture.py preflight fastapi
 ```
 
 `CONTRACT_BASE_URL` contains the server URL. Every invocation writes exactly one
@@ -47,13 +51,15 @@ Required probes:
 - `email-verification-ledger`: `{ "unusedTokens": number }`
 - `target-user`: `{ "status": "ACTIVE" | "SUSPENDED" | ..., "auditEvents": number }`
 
-## Express adapter environment
+## Adapter environment
 
 All three service URLs must use loopback hosts. The PostgreSQL database name
 must contain a distinct `test`, `contract`, or `fixture` segment and cannot be
 `auth_db`. Redis database 0 is forbidden.
 
 - `CONTRACT_FIXTURE_MODE=1` — explicit destructive-fixture acknowledgement.
+- `CONTRACT_FASTAPI_RUNTIME=1` — additional acknowledgement required only by
+  `fastapi_fixture.py`; prevents accidentally selecting it for another runtime.
 - `CONTRACT_SERVER_MAIL_MODE=dev` — asserts the isolated server is configured
   with `MAIL_PROVIDER=dev`; the adapter refuses other values.
 - `CONTRACT_REDIS_ISOLATED_DB=1` — explicit acknowledgement that the selected
@@ -95,6 +101,6 @@ overrides `CONTRACT_BASE_URL` with the corresponding `--baseline` or
 
 Adapters must point at isolated fixture databases and Redis namespaces. They
 must not use production credentials or mutate a shared/production store. The
-runner deliberately does not provide a default database adapter because the
-FastAPI fixture environment does not exist yet; pretending to probe state would
-weaken the migration gate.
+runner deliberately does not provide default database credentials or service
+targets. The FastAPI adapter remains unusable until an isolated environment is
+explicitly supplied and its Prisma-compatible schema passes preflight.
