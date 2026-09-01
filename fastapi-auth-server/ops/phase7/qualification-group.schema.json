@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.local/schemas/phase7-qualification-group-v1.json",
+  "title": "WiseAcct Phase 7 qualification run group",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "groupId", "gates"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "groupId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "gates": {
+      "type": "array",
+      "maxItems": 7,
+      "items": {"$ref": "#/$defs/gate"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "path": {"type": "string", "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"},
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gateId", "topology", "runId", "evidencePath", "evidenceAggregateSha256",
+        "sourceRevision", "applicationTree", "schema", "lock", "config", "image",
+        "status", "sampleSatisfied", "readinessAssertionsSatisfied", "resultEvidencePath",
+        "resultEvidenceSha256", "cleanupEvidencePath",
+        "cleanupEvidenceSha256", "expressBeforePath", "expressBeforeSha256",
+        "expressAfterPath", "expressAfterSha256"
+      ],
+      "properties": {
+        "gateId": {"enum": ["independent-contract", "shared-state-core", "performance", "security", "chaos", "backup-restore", "local-rollback"]},
+        "topology": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "evidencePath": {"$ref": "#/$defs/path"},
+        "evidenceAggregateSha256": {"$ref": "#/$defs/sha256"},
+        "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+        "applicationTree": {"$ref": "#/$defs/sha256"},
+        "schema": {"$ref": "#/$defs/sha256"},
+        "lock": {"$ref": "#/$defs/sha256"},
+        "config": {"$ref": "#/$defs/sha256"},
+        "image": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "status": {"enum": ["PASS", "FAIL", "INCOMPLETE"]},
+        "sampleSatisfied": {"type": "boolean"},
+        "readinessAssertionsSatisfied": {"type": "boolean"},
+        "resultEvidencePath": {"$ref": "#/$defs/path"},
+        "resultEvidenceSha256": {"$ref": "#/$defs/sha256"},
+        "cleanupEvidencePath": {"$ref": "#/$defs/path"},
+        "cleanupEvidenceSha256": {"$ref": "#/$defs/sha256"},
+        "expressBeforePath": {"$ref": "#/$defs/path"},
+        "expressBeforeSha256": {"$ref": "#/$defs/sha256"},
+        "expressAfterPath": {"$ref": "#/$defs/path"},
+        "expressAfterSha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

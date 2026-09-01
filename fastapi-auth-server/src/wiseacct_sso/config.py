@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import ipaddress
 import json
 import re
@@ -25,12 +26,29 @@ _PLACEHOLDER_REFRESH_SECRETS = {
     "replace-refresh-secret",
     "synthetic-fastapi-refresh-secret-only",
 }
+_SYNTHETIC_ACCESS_KEY_ID = "synthetic-fastapi-key-1"
+_SYNTHETIC_ACCESS_KEY_FINGERPRINT = (
+    "4a046ff5f5ecb9af1f59a0ffec42b83c9b41f7174aa5006ed04b196548c6e920"
+)
 _TEMIS_REDIRECT_URIS = (
     "https://financenow.kr/auth/callback",
     "https://temis.me/auth/callback",
     "https://ti.temis.me/auth/callback",
 )
 _RSA_ENCRYPTION_OID = bytes.fromhex("2a864886f70d010101")
+
+
+def _rsa_public_key_fingerprint(modulus: int, exponent: int) -> str:
+    modulus_bytes = modulus.to_bytes((modulus.bit_length() + 7) // 8, "big")
+    exponent_bytes = exponent.to_bytes((exponent.bit_length() + 7) // 8, "big")
+    payload = (
+        b"RSA\0"
+        + len(modulus_bytes).to_bytes(4, "big")
+        + modulus_bytes
+        + len(exponent_bytes).to_bytes(4, "big")
+        + exponent_bytes
+    )
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _duration_seconds(value: str) -> int:
@@ -626,6 +644,12 @@ class Settings(BaseSettings):
             raise ValueError("MAIL_PROVIDER must not be dev in production")
         if self.jwt_refresh_secret in _PLACEHOLDER_REFRESH_SECRETS:
             raise ValueError("JWT_REFRESH_SECRET must not be a placeholder in production")
+        if (
+            self.jwt_access_key_id == _SYNTHETIC_ACCESS_KEY_ID
+            or _rsa_public_key_fingerprint(private_n, private_e)
+            == _SYNTHETIC_ACCESS_KEY_FINGERPRINT
+        ):
+            raise ValueError("synthetic JWT access signing credentials are forbidden in production")
         if self.mail_provider == "smtp" and not self.smtp_host:
             raise ValueError("SMTP_HOST is required when MAIL_PROVIDER=smtp in production")
         if self.mail_provider == "resend" and not (self.resend_api_key or self.resend_admin_key):

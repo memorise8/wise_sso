@@ -161,6 +161,10 @@ _SECURITY_HEADERS = {
 }
 _ASSET_REDIRECT_MARKER = "x-wiseacct-internal-asset-redirect"
 _EXPRESS_JSON_LIMIT_BYTES = 100 * 1024
+# Compressed JSON can be slightly larger than its decoded form for incompressible input.
+# Keep a separate finite wire limit so Content-Length and transfer framing cannot turn
+# the compatibility parser into an unbounded compressed-body buffer.
+_COMPRESSED_JSON_LIMIT_BYTES = 256 * 1024
 _RATE_LIMITED_AUTH_ROUTES = {
     ("POST", "/auth/register"),
     ("POST", "/auth/login"),
@@ -274,38 +278,78 @@ class JsonBodyTooLarge(ValueError):
     pass
 
 
+class _BoundedJsonInflater:
+    """Incrementally decode one request while bounding every attacker-controlled buffer."""
+
+    def __init__(self, content_encoding: str) -> None:
+        if content_encoding == "gzip":
+            self._window_bits = zlib.MAX_WBITS | 16
+        elif content_encoding == "deflate":
+            self._window_bits = zlib.MAX_WBITS
+        else:
+            raise UnsupportedJsonCharset(content_encoding)
+        self._content_encoding = content_encoding
+        self._decoder = zlib.decompressobj(self._window_bits)
+        self._chunks: list[bytes] = []
+        self._inflated_size = 0
+        self._finished = False
+
+    def feed(self, data: bytes) -> None:
+        if not data:
+            return
+        if self._finished:
+            # Express/zlib accepts trailing bytes after a deflate stream. They still
+            # count against the compressed-input limit in the caller.
+            if self._content_encoding == "deflate":
+                return
+            self._decoder = zlib.decompressobj(self._window_bits)
+            self._finished = False
+        remaining = data
+        while remaining:
+            output = self._decoder.decompress(
+                remaining,
+                (_EXPRESS_JSON_LIMIT_BYTES - self._inflated_size) + 1,
+            )
+            self._append(output)
+            if self._decoder.unconsumed_tail:
+                raise JsonBodyTooLarge
+            if not self._decoder.eof:
+                return
+            remaining = self._decoder.unused_data
+            if self._content_encoding == "deflate":
+                self._finished = True
+                return
+            if not remaining:
+                self._finished = True
+                return
+            self._decoder = zlib.decompressobj(self._window_bits)
+
+    def finish(self) -> bytes:
+        if not self._finished or not self._decoder.eof:
+            raise zlib.error("incomplete compressed body")
+        self._append(self._decoder.flush((_EXPRESS_JSON_LIMIT_BYTES - self._inflated_size) + 1))
+        return b"".join(self._chunks)
+
+    def _append(self, chunk: bytes) -> None:
+        self._inflated_size += len(chunk)
+        if self._inflated_size > _EXPRESS_JSON_LIMIT_BYTES:
+            raise JsonBodyTooLarge
+        if chunk:
+            self._chunks.append(chunk)
+
+
+def _json_wire_limit(content_encoding: str) -> int:
+    if content_encoding == "identity":
+        return _EXPRESS_JSON_LIMIT_BYTES
+    return _COMPRESSED_JSON_LIMIT_BYTES
+
+
 def _inflate_json_body(body: bytes, content_encoding: str) -> bytes:
     if content_encoding == "identity":
         return body
-    if content_encoding == "gzip":
-        window_bits = zlib.MAX_WBITS | 16
-    elif content_encoding == "deflate":
-        window_bits = zlib.MAX_WBITS
-    else:
-        raise UnsupportedJsonCharset(content_encoding)
-
-    remaining = body
-    chunks: list[bytes] = []
-    inflated_size = 0
-    while remaining:
-        decoder = zlib.decompressobj(window_bits)
-        chunk = decoder.decompress(
-            remaining,
-            (_EXPRESS_JSON_LIMIT_BYTES - inflated_size) + 1,
-        )
-        if decoder.unconsumed_tail:
-            raise JsonBodyTooLarge
-        chunk += decoder.flush()
-        if not decoder.eof:
-            raise zlib.error("incomplete compressed body")
-        inflated_size += len(chunk)
-        if inflated_size > _EXPRESS_JSON_LIMIT_BYTES:
-            raise JsonBodyTooLarge
-        chunks.append(chunk)
-        if content_encoding != "gzip" or not decoder.unused_data:
-            break
-        remaining = decoder.unused_data
-    return b"".join(chunks)
+    inflater = _BoundedJsonInflater(content_encoding)
+    inflater.feed(body)
+    return inflater.finish()
 
 
 async def _json_parser_error(
@@ -336,20 +380,23 @@ async def _express_json_receive(
         await _json_parser_error(scope, receive, send)
         return receive, False
 
+    wire_limit = _json_wire_limit(content_encoding)
     content_length = headers.get("content-length")
-    if content_encoding == "identity" and content_length is not None:
+    if content_length is not None:
         try:
             declared_length = int(content_length)
         except ValueError:
             declared_length = 0
-        if declared_length > _EXPRESS_JSON_LIMIT_BYTES:
+        if declared_length > wire_limit:
             await error_response(500, "INTERNAL_SERVER_ERROR", "Internal server error")(
                 scope, receive, send
             )
             return receive, False
 
     messages: list[Message] = []
-    body = bytearray()
+    body_chunks: list[bytes] = []
+    wire_size = 0
+    inflater = None if content_encoding == "identity" else _BoundedJsonInflater(content_encoding)
     disconnected = False
     while True:
         message = await receive()
@@ -360,18 +407,25 @@ async def _express_json_receive(
         if message["type"] != "http.request":
             continue
         chunk = message.get("body", b"")
-        if content_encoding == "identity" and len(body) + len(chunk) > _EXPRESS_JSON_LIMIT_BYTES:
+        wire_size += len(chunk)
+        if wire_size > wire_limit:
             await _json_parser_error(scope, receive, send)
             return receive, False
-        body.extend(chunk)
+        body_chunks.append(chunk)
+        if inflater is not None:
+            try:
+                inflater.feed(chunk)
+            except (JsonBodyTooLarge, zlib.error):
+                await _json_parser_error(scope, receive, send)
+                return receive, False
         if not message.get("more_body", False):
             break
 
     replay_messages = messages
-    classified_body = bytes(body)
-    if not disconnected and body:
+    classified_body = b"".join(body_chunks)
+    if not disconnected and wire_size:
         try:
-            classified_body = _inflate_json_body(classified_body, content_encoding)
+            classified_body = classified_body if inflater is None else inflater.finish()
         except (JsonBodyTooLarge, UnsupportedJsonCharset, zlib.error):
             await _json_parser_error(scope, receive, send)
             return receive, False
@@ -386,7 +440,7 @@ async def _express_json_receive(
             return message
         return await receive()
 
-    if disconnected or not body:
+    if disconnected or not wire_size:
         return replay_receive, True
     try:
         classification_text = _decode_json_body(classified_body, _json_charset(content_type))

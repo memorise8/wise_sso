@@ -178,3 +178,69 @@ the performance, security, chaos, backup/restore, rollback, refreeze, or cutover
 gates. It also does not prove deterministic database critical-section ordering,
 linearizability, or exhaustive race coverage; those claims require separately
 instrumented concurrency evidence and the approved full sample.
+
+## Qualification run-group finalizer
+
+`ops/phase7/finalize_qualification_group.py` is a local, read-only aggregation
+gate. It does not run a service, use Docker, contact production, or approve a
+replacement. Its input follows `ops/phase7/qualification-group.schema.json` and
+must name exactly these seven gate IDs once each:
+
+- `independent-contract`
+- `shared-state-core`
+- `performance`
+- `security`
+- `chaos`
+- `backup-restore`
+- `local-rollback`
+
+Every gate entry pins its topology and run ID, evidence-relative directory and
+deterministic aggregate SHA-256, source revision, application-tree/schema/lock/
+config identifiers, immutable image digest, status, sample/readiness assertions,
+cleanup evidence, and Express before/after evidence. Objects have exact fields;
+unknown fields and gate IDs are rejected. The manifest and every attached input
+must be regular non-symlink files, and every path is confined below the explicit
+repository evidence root. The evidence aggregate is SHA-256 over sorted records
+of `relative-path`, a NUL byte, the file SHA-256, and a newline.
+
+The manifest's status, sample, and readiness values are not authoritative by
+themselves. Each entry must also attach a hashed `gate-result.json` inside that
+same evidence bundle. That document has the exact fields `schemaVersion`,
+`gateId`, `runId`, `status`, `sampleSatisfied`,
+`readinessAssertionsSatisfied`, `cleanupComplete`,
+`expressSnapshotUnchanged`, and `overallReplacementReady`; no extras are
+accepted. Its identity and claims must match the manifest, its cleanup claim
+must match the attached cleanup file, and its Express claim must match the
+attached snapshot bytes. The result document must keep
+`overallReplacementReady=false`.
+
+Cleanup is also an exact gate contract, not an arbitrary list of passing labels.
+The independent and shared-state gates use their launcher-specific step sets.
+The five downstream gates use exactly `runtimeCleanup`, `databaseCleanup`,
+`redisCleanup`, `candidateResources`, `expressSnapshot`, and
+`privateTempRemove`. Missing, duplicate, or extra cleanup steps—including a
+fabricated `x=PASS`—cannot satisfy the finalizer.
+
+Run it from `fastapi-auth-server` with a separately prepared manifest:
+
+```sh
+./ops/phase7/finalize_qualification_group.py \
+  --manifest /absolute/path/to/private-run-group.json \
+  --evidence-root ./evidence
+```
+
+Exit `0` means only `status=PROVISIONAL_READY_FOR_REVIEW`: all seven gates say
+`PASS`, all sample and readiness assertions are true, every cleanup step passes,
+each Express snapshot pair is byte-identical, all attachment/aggregate hashes
+match, and the shared source/tree/schema/lock/config/image provenance group is
+identical. Even then the output deliberately keeps
+`overallReplacementReady=false`; human review, refreeze, and an independently
+authorized cutover decision remain outside this tool.
+
+Exit `1` emits a sanitized `status=INCOMPLETE` result for an otherwise valid
+group that has missing/non-passing gates, false assertions, failed cleanup or
+Express invariance, or mixed provenance. Exit `2` refuses malformed, unsafe, or
+hash-mismatched input. The currently recorded independent and shared-state runs
+cannot form a group: their source revisions differ, their full sample/readiness
+assertions remain false, and performance, security, chaos, backup/restore, and
+local rollback evidence is absent.

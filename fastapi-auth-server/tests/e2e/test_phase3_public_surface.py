@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 import subprocess
@@ -22,11 +23,13 @@ EXPRESS_PUBLIC = ROOT.parent / "auth-server" / "public"
 FASTAPI_STATIC = ROOT / "src" / "wiseacct_sso" / "static"
 STATIC_FILES = (
     "auth-portal.html",
-    "admin-dashboard.html",
     "assets/auth.css",
     "assets/auth.js",
     "assets/admin-dashboard.css",
-    "assets/admin-dashboard.js",
+)
+ADMIN_DASHBOARD_ASSET = "assets/admin-dashboard.js"
+ADMIN_DASHBOARD_XSS_ORACLE = (
+    Path(__file__).parents[1] / "helpers" / "admin_dashboard_xss_oracle.mjs"
 )
 SECURITY_HEADERS = {
     "content-security-policy": (
@@ -129,7 +132,8 @@ def test_static_copies_are_byte_identical_and_served_with_express_cache_contract
 
     dashboard = client.get("/manage/dashboard")
     assert dashboard.status_code == 200
-    assert dashboard.content == (EXPRESS_PUBLIC / "admin-dashboard.html").read_bytes()
+    assert dashboard.content == (FASTAPI_STATIC / "admin-dashboard.html").read_bytes()
+    assert b"/assets/admin-dashboard.js?v=20260901a" in dashboard.content
 
     for path, response in (("/login", portal), ("/manage/dashboard", dashboard)):
         assert response.headers["etag"]
@@ -161,6 +165,41 @@ def test_static_copies_are_byte_identical_and_served_with_express_cache_contract
     assert client.get("/ASSETS/auth.css").content == asset.content
     assert client.get("/assets/AUTH.CSS").status_code == 404
     assert client.get("/assets/%61uth.css").content == asset.content
+
+
+def test_fastapi_admin_dashboard_renders_api_fields_as_text(client: TestClient) -> None:
+    asset_path = FASTAPI_STATIC / ADMIN_DASHBOARD_ASSET
+    source = asset_path.read_text()
+    assert ".innerHTML" not in source
+
+    response = client.get(f"/{ADMIN_DASHBOARD_ASSET}")
+    assert response.status_code == 200
+    assert response.content == asset_path.read_bytes()
+
+    completed = subprocess.run(  # noqa: S603 - fixed repository test helper
+        ["node", str(ADMIN_DASHBOARD_XSS_ORACLE), str(asset_path)],  # noqa: S607
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rendered = json.loads(completed.stdout)
+
+    assert rendered["executedGlobals"] == []
+    assert not ({"SCRIPT", "IMG", "SVG", "IFRAME", "MATH"} & set(rendered["users"]["tags"]))
+    assert not ({"SCRIPT", "IMG", "SVG", "IFRAME", "MATH"} & set(rendered["audit"]["tags"]))
+    assert '<svg onload="globalThis.emailXss=1">' in rendered["users"]["texts"]
+    assert "<script>globalThis.nameXss=1</script>" in rendered["users"]["texts"]
+    assert '<img src=x onerror="globalThis.userIdXss=1">' in rendered["users"]["texts"]
+    assert any(
+        "roleServiceXss" in text and "roleNameXss" in text for text in rendered["users"]["texts"]
+    )
+    assert any(
+        "roleIdXss" in value for data in rendered["users"]["datasets"] for value in data.values()
+    )
+    assert '<img src=x onerror="globalThis.eventXss=1">' in rendered["audit"]["texts"]
+    assert any("outcomeXss" in text and "reasonXss" in text for text in rendered["audit"]["texts"])
+    assert '<iframe src="javascript:globalThis.auditUserXss=1">' in rendered["audit"]["texts"]
+    assert '<img src=x onerror="globalThis.targetXss=1">' in rendered["audit"]["texts"]
 
 
 @pytest.mark.parametrize("path", ["/assets", "/ASSETS"])

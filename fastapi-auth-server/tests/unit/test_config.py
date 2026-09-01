@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -98,6 +99,38 @@ def example_settings() -> Settings:
 
 def example_values() -> dict[str, object]:
     return example_settings().model_dump(by_alias=False)
+
+
+def replace_signing_key(values: dict[str, object], key_id: str) -> None:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_numbers = private_key.public_key().public_numbers()
+    values["jwt_access_private_key"] = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    values["jwt_access_public_jwk"] = {
+        "kty": "RSA",
+        "n": base64.urlsafe_b64encode(
+            public_numbers.n.to_bytes((public_numbers.n.bit_length() + 7) // 8, "big")
+        )
+        .rstrip(b"=")
+        .decode(),
+        "e": "AQAB",
+        "alg": "RS256",
+        "use": "sig",
+        "kid": key_id,
+    }
+    values["jwt_access_key_id"] = key_id
+
+
+def make_production_ready(values: dict[str, object]) -> None:
+    values.update(
+        node_env="production",
+        jwt_refresh_secret="production-refresh-secret",
+        mail_provider="smtp",
+        smtp_host="smtp.example.com",
+    )
 
 
 def test_settings_parse_checkpoint_environment() -> None:
@@ -246,6 +279,38 @@ def test_production_rejects_dev_mail_and_placeholder_secret() -> None:
 
     with pytest.raises(ValidationError):
         Settings.model_validate(values)
+
+
+def test_production_rejects_synthetic_access_key_fingerprint_with_different_key_id() -> None:
+    values = example_values()
+    make_production_ready(values)
+    public_jwk = dict(cast(dict[str, object], values["jwt_access_public_jwk"]))
+    public_jwk["kid"] = "production-key-1"
+    values["jwt_access_public_jwk"] = public_jwk
+    values["jwt_access_key_id"] = "production-key-1"
+
+    with pytest.raises(ValidationError, match="synthetic JWT access signing credentials"):
+        Settings.model_validate(values)
+
+
+def test_production_rejects_synthetic_access_key_id_with_different_key() -> None:
+    values = example_values()
+    make_production_ready(values)
+    replace_signing_key(values, "synthetic-fastapi-key-1")
+
+    with pytest.raises(ValidationError, match="synthetic JWT access signing credentials"):
+        Settings.model_validate(values)
+
+
+def test_production_accepts_nonfixture_access_key_and_key_id() -> None:
+    values = example_values()
+    make_production_ready(values)
+    replace_signing_key(values, "production-key-1")
+
+    settings = Settings.model_validate(values)
+
+    assert settings.node_env == "production"
+    assert settings.jwt_access_key_id == "production-key-1"
 
 
 def test_enabled_oauth_provider_requires_credentials() -> None:

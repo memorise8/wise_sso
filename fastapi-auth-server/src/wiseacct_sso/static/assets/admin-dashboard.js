@@ -65,9 +65,24 @@ const formatDate = (value) => new Intl.DateTimeFormat("ko-KR", {
 
 const roleLabel = (role) => `${role.serviceKey}:${role.name}`;
 
+const element = (tagName, { className, text } = {}) => {
+  const node = document.createElement(tagName);
+  if (className) {
+    node.className = className;
+  }
+  if (text !== undefined) {
+    node.textContent = String(text);
+  }
+  return node;
+};
+
 const renderEmptyUsers = (message) => {
   if (userTable) {
-    userTable.innerHTML = `<tr><td colspan="5" class="empty-cell">${message}</td></tr>`;
+    const row = element("tr");
+    const cell = element("td", { className: "empty-cell", text: message });
+    cell.colSpan = 5;
+    row.append(cell);
+    userTable.replaceChildren(row);
   }
 };
 
@@ -92,14 +107,27 @@ const setSummary = (message) => {
   }
 };
 
-const statusSelect = (user) => `
-  <label class="compact-label">
-    <span class="sr-only">상태 변경</span>
-    <select data-status-select="${user.id}">
-      ${userStatuses.map((status) => `<option value="${status}" ${status === user.status ? "selected" : ""}>${status}</option>`).join("")}
-    </select>
-  </label>
-`;
+const statusSelect = (user) => {
+  const label = element("label", { className: "compact-label" });
+  label.append(element("span", { className: "sr-only", text: "상태 변경" }));
+  const select = element("select");
+  select.dataset.statusSelect = String(user.id);
+  for (const status of userStatuses) {
+    const option = element("option", { text: status });
+    option.value = status;
+    option.selected = status === user.status;
+    select.append(option);
+  }
+  label.append(select);
+  return label;
+};
+
+const actionButton = (className, text, datasetName, datasetValue) => {
+  const button = element("button", { className, text });
+  button.type = "button";
+  button.dataset[datasetName] = String(datasetValue);
+  return button;
+};
 
 const renderUsers = (page) => {
   if (!userTable) {
@@ -111,34 +139,51 @@ const renderUsers = (page) => {
     return;
   }
 
-  userTable.innerHTML = page.items.map((user) => `
-    <tr>
-      <td>
-        <div class="user-main">
-          <span class="user-email">${user.email ?? "(email 없음)"}</span>
-          <span>${user.name ?? "이름 없음"}</span>
-          <span class="user-id">${user.id}</span>
-        </div>
-      </td>
-      <td><span class="badge" data-status="${user.status}">${user.status}</span></td>
-      <td>
-        <div class="role-list">
-          ${user.roles.length ? user.roles.map((role) => `
-            <button class="role-chip" type="button" data-remove-role="${user.id}" data-role-id="${role.id}">${roleLabel(role)} 제거</button>
-          `).join("") : "<span class=\"role-chip\">역할 없음</span>"}
-        </div>
-      </td>
-      <td>${formatDate(user.createdAt)}</td>
-      <td>
-        <div class="action-list">
-          ${statusSelect(user)}
-          <button class="secondary-button" type="button" data-add-user-role="${user.id}">user 부여</button>
-          <button class="secondary-button" type="button" data-add-admin-role="${user.id}">admin 부여</button>
-          <button class="danger-button" type="button" data-revoke="${user.id}">세션 폐기</button>
-        </div>
-      </td>
-    </tr>
-  `).join("");
+  const rows = page.items.map((user) => {
+    const row = element("tr");
+
+    const identityCell = element("td");
+    const identity = element("div", { className: "user-main" });
+    identity.append(
+      element("span", { className: "user-email", text: user.email ?? "(email 없음)" }),
+      element("span", { text: user.name ?? "이름 없음" }),
+      element("span", { className: "user-id", text: user.id })
+    );
+    identityCell.append(identity);
+
+    const statusCell = element("td");
+    const status = element("span", { className: "badge", text: user.status });
+    status.dataset.status = String(user.status);
+    statusCell.append(status);
+
+    const roleCell = element("td");
+    const roles = element("div", { className: "role-list" });
+    if (user.roles.length) {
+      for (const role of user.roles) {
+        const button = actionButton("role-chip", `${roleLabel(role)} 제거`, "removeRole", user.id);
+        button.dataset.roleId = String(role.id);
+        roles.append(button);
+      }
+    } else {
+      roles.append(element("span", { className: "role-chip", text: "역할 없음" }));
+    }
+    roleCell.append(roles);
+
+    const createdCell = element("td", { text: formatDate(user.createdAt) });
+    const actionCell = element("td");
+    const actions = element("div", { className: "action-list" });
+    actions.append(
+      statusSelect(user),
+      actionButton("secondary-button", "user 부여", "addUserRole", user.id),
+      actionButton("secondary-button", "admin 부여", "addAdminRole", user.id),
+      actionButton("danger-button", "세션 폐기", "revoke", user.id)
+    );
+    actionCell.append(actions);
+
+    row.append(identityCell, statusCell, roleCell, createdCell, actionCell);
+    return row;
+  });
+  userTable.replaceChildren(...rows);
   setSummary(`총 ${page.total}명 중 ${page.items.length}명 표시`);
 };
 
@@ -201,18 +246,21 @@ const renderAudit = (page) => {
     return;
   }
   if (!page.items.length) {
-    auditList.innerHTML = "<p class=\"empty-cell\">감사 로그가 없습니다.</p>";
+    auditList.replaceChildren(element("p", { className: "empty-cell", text: "감사 로그가 없습니다." }));
     return;
   }
 
-  auditList.innerHTML = page.items.map((item) => `
-    <article class="audit-item">
-      <strong>${item.eventType}</strong>
-      <span>${item.outcome}${item.reasonCode ? ` / ${item.reasonCode}` : ""}</span>
-      <span>${item.userId ?? item.targetUserId ?? "사용자 없음"}</span>
-      <time>${formatDate(item.createdAt)}</time>
-    </article>
-  `).join("");
+  const items = page.items.map((item) => {
+    const article = element("article", { className: "audit-item" });
+    article.append(
+      element("strong", { text: item.eventType }),
+      element("span", { text: `${item.outcome}${item.reasonCode ? ` / ${item.reasonCode}` : ""}` }),
+      element("span", { text: item.userId ?? item.targetUserId ?? "사용자 없음" }),
+      element("time", { text: formatDate(item.createdAt) })
+    );
+    return article;
+  });
+  auditList.replaceChildren(...items);
 };
 
 const loadAudit = async () => {
@@ -222,7 +270,10 @@ const loadAudit = async () => {
     renderAudit(page);
   } catch (error) {
     if (auditList) {
-      auditList.innerHTML = `<p class="empty-cell">${error instanceof Error ? error.message : "조회 실패"}</p>`;
+      auditList.replaceChildren(element("p", {
+        className: "empty-cell",
+        text: error instanceof Error ? error.message : "조회 실패"
+      }));
     }
     setNotice("error", error instanceof Error ? error.message : "조회 실패");
   } finally {
