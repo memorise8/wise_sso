@@ -112,12 +112,54 @@ The mixed failed-login schedule accepts a final failure count from 5 through
 request observes the lock, and an ingress-lifetime overlap cannot prove that all
 20 requests read the credential before the lock was written.
 
+## Evaluate Phase 7 performance evidence
+
+`performance/profile-v1.json` is the frozen, SHA-256-bound offline performance
+contract for the ten approved core flows. It requires ten epochs, alternating
+five Express-first and five FastAPI-first, with 20 excluded warmups and exactly
+100 measured trials per flow/runtime/epoch (80 success and 20 expected-failure
+trials). The committed load is open-loop at 20 requests/second, a 5,000 ms
+timeout, and at most 16 in flight. Overrides, retries, and outlier removal are
+not accepted, and any unexpected transport, timeout, malformed, 5xx, or aborted
+outcome in an otherwise complete sample is an absolute failure.
+
+Generate the deterministic 20,000-row measurement identity plan (not qualifying
+evidence), or evaluate a completed evidence document:
+
+```sh
+python3 contracts/bin/performance.py generate-plan --output /tmp/performance-plan.json
+python3 contracts/bin/performance.py evaluate \
+  --input /secure/untracked/performance-evidence.json \
+  --output /tmp/performance-result.json
+```
+
+The evaluator performs no HTTP or load generation. It validates exact sample
+identity/order/counts, warmup exclusion, reset proof, provenance and profile /
+manifest hashes before computing scheduled-to-completed nearest-rank p95. It
+binds every reset boundary to the next block's first scheduled timestamp and
+rejects the block unless every request from the preceding block has completed.
+It reports observed rows separately from rows accepted by all structural checks,
+so oversized or otherwise malformed submissions remain visible without making
+the result schema invalid; the observed counter is capped at the same numeric
+32 MiB boundary and records whether capping occurred. It
+uses integer comparisons for per-flow and aggregate p95 (FastAPI at most 120%
+of Express), comparative error increase (at most 10/1000 in addition to the
+zero-unexpected-outcome integrity gate), and login-success decrease (at most
+20/1000). Missing or malformed proof is `INCOMPLETE`; a complete threshold
+violation is `FAIL`; otherwise it is `PASS`. Every result retains
+`overallReplacementReady=false` and never authorizes traffic changes.
+Because reset, warmup, and provenance values are submitted claims that an
+offline evaluator cannot independently observe, results also retain
+`qualifyingEvidence=false` until a separately controlled launcher binds and
+attests those events. Evaluator input is capped at 32 MiB before JSON decoding.
+
 ## Files
 
 - `manifest.json` maps migration behavior to scenarios, schemas, snapshots, and
   current implementation evidence.
 - `scenarios/public.json` is the executable, non-mutating HTTP baseline.
 - `scenarios/shared-state-core-v1.json` is the approved mixed-runtime shared-store schedule matrix.
+- `performance/` contains the frozen Phase 7 performance profile and exact evidence/result schemas.
 - `schemas/` contains JSON Schema definitions for shared wire/state shapes.
 - `snapshots/` contains synthetic examples only. Values use reserved domains and
   obvious placeholders; they must never be replaced with production captures.

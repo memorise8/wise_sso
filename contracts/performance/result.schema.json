@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "result.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "suiteId", "status", "reasonCodes", "profileSha256", "manifestSha256", "validatedSampleCount", "observedSampleCount", "observedSampleCountCapped", "metrics", "qualifyingEvidence", "overallReplacementReady"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "suiteId": {"const": "phase7-performance-v1"},
+    "status": {"enum": ["PASS", "FAIL", "INCOMPLETE"]},
+    "reasonCodes": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}},
+    "profileSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "validatedSampleCount": {"type": "integer", "minimum": 0, "maximum": 20000},
+    "observedSampleCount": {"type": "integer", "minimum": 0, "maximum": 33554432},
+    "observedSampleCountCapped": {"type": "boolean"},
+    "metrics": {
+      "oneOf": [
+        {"type": "object", "maxProperties": 0},
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["flows", "aggregate", "loginSuccess"],
+          "properties": {
+            "flows": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["password-direct-login-token", "password-handoff-exchange", "email-verification-attach-handoff-exchange", "password-reset-session-revoke", "oauth-google", "oauth-naver", "oauth-kakao", "refresh-logout-race", "admin-status-role-session-audit", "global-rate-limit"],
+              "properties": {
+                "password-direct-login-token": {"$ref": "#/$defs/runtimeMetrics"},
+                "password-handoff-exchange": {"$ref": "#/$defs/runtimeMetrics"},
+                "email-verification-attach-handoff-exchange": {"$ref": "#/$defs/runtimeMetrics"},
+                "password-reset-session-revoke": {"$ref": "#/$defs/runtimeMetrics"},
+                "oauth-google": {"$ref": "#/$defs/runtimeMetrics"},
+                "oauth-naver": {"$ref": "#/$defs/runtimeMetrics"},
+                "oauth-kakao": {"$ref": "#/$defs/runtimeMetrics"},
+                "refresh-logout-race": {"$ref": "#/$defs/runtimeMetrics"},
+                "admin-status-role-session-audit": {"$ref": "#/$defs/runtimeMetrics"},
+                "global-rate-limit": {"$ref": "#/$defs/runtimeMetrics"}
+              }
+            },
+            "aggregate": {"$ref": "#/$defs/runtimeMetrics"},
+            "loginSuccess": {"$ref": "#/$defs/loginMetrics"}
+          }
+        }
+      ]
+    },
+    "qualifyingEvidence": {"const": false},
+    "overallReplacementReady": {"const": false}
+  },
+  "$defs": {
+    "metric": {"type": "object", "additionalProperties": false, "required": ["samples", "p95Ns", "errors"], "properties": {"samples": {"type": "integer", "minimum": 1}, "p95Ns": {"type": "integer", "minimum": 0}, "errors": {"type": "integer", "minimum": 0}}},
+    "runtimeMetrics": {"type": "object", "additionalProperties": false, "required": ["express", "fastapi"], "properties": {"express": {"$ref": "#/$defs/metric"}, "fastapi": {"$ref": "#/$defs/metric"}}},
+    "loginMetric": {"type": "object", "additionalProperties": false, "required": ["samples", "successes"], "properties": {"samples": {"type": "integer", "minimum": 1}, "successes": {"type": "integer", "minimum": 0}}},
+    "loginMetrics": {"type": "object", "additionalProperties": false, "required": ["express", "fastapi"], "properties": {"express": {"$ref": "#/$defs/loginMetric"}, "fastapi": {"$ref": "#/$defs/loginMetric"}}}
+  }
+}
