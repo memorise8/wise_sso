@@ -46,10 +46,27 @@ Required probes:
 
 - `refresh-ledger`: counts plus sorted `activeTokenHashes` and
   `revokedTokenHashes`, making any permissive rotation visible.
-- `auth-lifecycle`: `{ "activeRefreshTokens": number, "authHandoffKeys": number }`
+- `auth-lifecycle`: active refresh count, sorted active token hashes for internal
+  token-to-ledger linkage, and auth-handoff key count. The runner never publishes
+  the hashes.
 - `password-reset-ledger`: `{ "unusedTokens": number }`
 - `email-verification-ledger`: `{ "unusedTokens": number }`
 - `target-user`: `{ "status": "ACTIVE" | "SUSPENDED" | ..., "auditEvents": number }`
+- `shared-rate-limit`: sanitized shared Redis counter counts and positive TTLs;
+  raw keys and client addresses are never returned.
+- `failed-login-ledger`: failed-login count, whether the lock was set, and the
+  active refresh-token count for the synthetic active user.
+- `fixture-anonymous-audits`: count of only the anonymous `/auth/login`
+  rate-limit, `/auth/exchange` invalid-code, and refresh-failure audit shapes
+  plus the anonymous successful logout shape produced when refresh wins the
+  logout/refresh race. Teardown must reduce it to zero after every trial.
+
+The shared-state core runner uses one adapter/config because both runtimes must
+write the same disposable PostgreSQL database and Redis logical database. It
+overrides `CONTRACT_BASE_URL` only for adapter protocol compatibility; setup and
+the shared probes do not select separate stores per runtime. This topology is
+different from the independent-runtime differential gate, which requires two
+adapter configs and two isolated store pairs.
 
 ## Adapter environment
 

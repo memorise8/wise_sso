@@ -7,6 +7,7 @@ import argparse
 import ctypes
 import errno
 import os
+import re
 import stat
 import sys
 from pathlib import Path
@@ -34,19 +35,41 @@ CLEANUP_KEYS = {
     "privateTempRemove",
 }
 FORBIDDEN = ("postgresql://", "postgres://", "redis://", "private key", "password=")
+RESULT_KEYS = {
+    "status",
+    "launcherExit",
+    "gateVerdict",
+    "gateExit",
+    "integrity",
+    "cleanup",
+    "expressSnapshotUnchanged",
+    "zeroCandidateResources",
+    "privateTempRemoved",
+    "resultCount",
+    "concurrentTrialCount",
+    "mixedRuntimeOverlapCount",
+    "overlapMismatchCount",
+    "fullPhase7SampleSatisfied",
+    "overallReplacementReady",
+}
+PROVENANCE_KEYS = {"gitHead", "runId", "gateEvidenceSha256", "runtimeLauncherSha256"}
+RUN_ID = re.compile(r"[a-z0-9][a-z0-9_]{0,63}")
+GIT_SHA = re.compile(r"[0-9a-f]{40}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
 STEP_VALUES = {"PASS", "FAIL", "NOT_REQUIRED", "NOT_RUN", "PRESENT", "ERROR"}
 
 
 def key_values(path: Path) -> dict[str, str]:
-    pairs = [
-        line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines() if "=" in line
-    ]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if any(not line or "=" not in line for line in lines):
+        raise ValueError("evidence must contain only non-empty key-value lines")
+    pairs = [line.split("=", 1) for line in lines]
     if len(pairs) != len(dict(pairs)):
         raise ValueError("evidence keys must be unique")
     return dict(pairs)
 
 
-def validate_bundle(staging: Path) -> None:
+def validate_bundle(staging: Path, expected_run_id: str) -> None:
     entries = list(staging.iterdir())
     if {entry.name for entry in entries} != EXPECTED_FILES:
         raise ValueError("shared runtime evidence has an unexpected file set")
@@ -62,34 +85,76 @@ def validate_bundle(staging: Path) -> None:
 
     cleanup = key_values(staging / "cleanup.status")
     result = key_values(staging / "result.status")
+    provenance = key_values(staging / "provenance.txt")
     if set(cleanup) != CLEANUP_KEYS or any(value not in STEP_VALUES for value in cleanup.values()):
         raise ValueError("shared runtime evidence requires every exact cleanup step")
+    if set(result) != RESULT_KEYS:
+        raise ValueError("shared runtime result must contain the exact approved fields")
+    if set(provenance) != PROVENANCE_KEYS:
+        raise ValueError("shared runtime provenance must contain the exact approved fields")
     cleanup_expected = (
         "PASS" if all(value in {"PASS", "NOT_REQUIRED"} for value in cleanup.values()) else "FAIL"
     )
     snapshot_expected = "true" if cleanup["expressSnapshot"] == "PASS" else "false"
-    candidate_expected = {
-        "PASS": "true",
-        "PRESENT": "false",
-    }.get(cleanup["candidateResources"], "unknown")
+    candidate_expected = {"PASS": "true", "PRESENT": "false"}.get(
+        cleanup["candidateResources"], "unknown"
+    )
     private_expected = "true" if cleanup["privateTempRemove"] == "PASS" else "false"
     if (
         result.get("status") not in {"PASS", "FAIL"}
+        or not result.get("launcherExit", "").isdigit()
+        or result.get("integrity") not in {"PASS", "FAIL"}
         or result.get("cleanup") != cleanup_expected
         or result.get("expressSnapshotUnchanged") != snapshot_expected
         or result.get("zeroCandidateResources") != candidate_expected
         or result.get("privateTempRemoved") != private_expected
+        or result.get("fullPhase7SampleSatisfied") != "false"
         or result.get("overallReplacementReady") != "false"
     ):
-        raise ValueError("shared runtime aggregate evidence is inconsistent")
+        raise ValueError("shared runtime aggregate fields do not match cleanup evidence")
+    gate_passed = result.get("gateVerdict") == "PASS" and result.get("gateExit") == "0"
+    overlap_proven = (
+        result.get("resultCount") == "100"
+        and result.get("concurrentTrialCount") == "70"
+        and result.get("mixedRuntimeOverlapCount") == "70"
+        and result.get("overlapMismatchCount") == "0"
+    )
+    overlap_unproven = all(
+        result.get(key) == "NOT_PROVEN"
+        for key in (
+            "resultCount",
+            "concurrentTrialCount",
+            "mixedRuntimeOverlapCount",
+            "overlapMismatchCount",
+        )
+    )
+    snapshots_match = (staging / "express-before.txt").read_bytes() == (
+        staging / "express-after.txt"
+    ).read_bytes()
+    if gate_passed != overlap_proven or (not gate_passed and not overlap_unproven):
+        raise ValueError("gate result and overlap evidence do not correlate")
     if result["status"] == "PASS" and (
-        result.get("gateVerdict") != "PASS"
-        or result.get("gateExit") != "0"
+        result.get("launcherExit") != "0"
+        or not gate_passed
+        or result.get("integrity") != "PASS"
         or any(value != "PASS" for value in cleanup.values())
-        or (staging / "express-before.txt").read_bytes()
-        != (staging / "express-after.txt").read_bytes()
+        or not snapshots_match
+        or result.get("cleanup") != "PASS"
+        or result.get("expressSnapshotUnchanged") != "true"
+        or result.get("zeroCandidateResources") != "true"
+        or result.get("privateTempRemoved") != "true"
     ):
         raise ValueError("shared runtime PASS evidence requires every invariant")
+    if result["status"] == "FAIL" and result.get("launcherExit") == "0":
+        raise ValueError("shared runtime FAIL evidence requires a non-zero final launcher exit")
+    if (
+        RUN_ID.fullmatch(expected_run_id) is None
+        or provenance.get("runId") != expected_run_id
+        or GIT_SHA.fullmatch(provenance.get("gitHead", "")) is None
+        or SHA256.fullmatch(provenance.get("gateEvidenceSha256", "")) is None
+        or SHA256.fullmatch(provenance.get("runtimeLauncherSha256", "")) is None
+    ):
+        raise ValueError("shared runtime provenance is missing or not linked to the final run")
 
 
 def rename_noreplace(source: Path, target: Path) -> None:
@@ -135,7 +200,7 @@ def main() -> int:
     ):
         raise SystemExit("staging and final must be matching sibling directories")
     try:
-        validate_bundle(staging)
+        validate_bundle(staging, final.name)
         rename_noreplace(staging, final)
     except (OSError, ValueError) as exc:
         print(f"shared runtime evidence publication refused: {exc}", file=sys.stderr)

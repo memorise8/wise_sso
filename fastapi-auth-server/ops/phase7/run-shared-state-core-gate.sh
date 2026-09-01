@@ -14,18 +14,39 @@ readonly REPO_DIR="$(cd -- "${FASTAPI_DIR}/.." && pwd)"
 readonly CONTRACTS_DIR="${REPO_DIR}/contracts"
 readonly SCENARIOS="${CONTRACTS_DIR}/scenarios/shared-state-core-v1.json"
 readonly RUNNER="${CONTRACTS_DIR}/bin/shared_state.py"
+readonly RESULT_VALIDATOR="${PHASE7_DIR}/validate_shared_result.py"
 readonly EXPRESS_ADAPTER="${CONTRACTS_DIR}/adapters/express_fixture.py"
 readonly FASTAPI_ADAPTER="${CONTRACTS_DIR}/adapters/fastapi_fixture.py"
 readonly RUN_ID="$(basename -- "${EVIDENCE_DIR}")"
 readonly SOURCE_REVISION="$(git -C "${REPO_DIR}" rev-parse --verify HEAD)"
+readonly SOURCE_TREE="$(git -C "${REPO_DIR}" rev-parse --verify HEAD^{tree})"
+readonly EVIDENCE_RELATIVE="$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).resolve().relative_to(pathlib.Path(sys.argv[2]).resolve()))' "${EVIDENCE_DIR}" "${REPO_DIR}" 2>/dev/null || true)"
 
-for required in "${SCENARIOS}" "${RUNNER}" "${EXPRESS_ADAPTER}" "${FASTAPI_ADAPTER}"; do
+tree_is_clean_except_evidence() {
+  local untracked
+  git -C "${REPO_DIR}" diff --quiet -- \
+    && git -C "${REPO_DIR}" diff --cached --quiet -- \
+    && [[ "$(git -C "${REPO_DIR}" rev-parse --verify HEAD)" == "${SOURCE_REVISION}" ]] \
+    && [[ "$(git -C "${REPO_DIR}" rev-parse --verify HEAD^{tree})" == "${SOURCE_TREE}" ]] \
+    || return 1
+  while IFS= read -r -d '' untracked; do
+    if [[ -z "${EVIDENCE_RELATIVE}" || "${untracked}" != "${EVIDENCE_RELATIVE}/"* ]]; then
+      return 1
+    fi
+  done < <(git -C "${REPO_DIR}" ls-files --others --exclude-standard -z)
+}
+
+for required in "${SCENARIOS}" "${RUNNER}" "${RESULT_VALIDATOR}" "${EXPRESS_ADAPTER}" "${FASTAPI_ADAPTER}"; do
   [[ -f "${required}" && ! -L "${required}" ]] || {
     echo "shared-state gate input is missing or linked" >&2
     exit 2
   }
 done
 [[ -d "${EVIDENCE_DIR}" && ! -L "${EVIDENCE_DIR}" ]] || exit 2
+tree_is_clean_except_evidence || {
+  echo "shared-state gate requires a clean committed source tree" >&2
+  exit 2
+}
 
 readonly PRIVATE_SNAPSHOTS="$(mktemp -d /tmp/wiseacct-phase7-shared-gate.XXXXXXXX)"
 trap 'rm -rf -- "${PRIVATE_SNAPSHOTS}"' EXIT INT TERM
@@ -35,6 +56,7 @@ readonly EXPRESS_CONFIG_SHA256="$(sha256sum "${EXPRESS_CONFIG}" | cut -d' ' -f1)
 readonly FASTAPI_CONFIG_SHA256="$(sha256sum "${FASTAPI_CONFIG}" | cut -d' ' -f1)"
 readonly SCENARIOS_SHA256="$(sha256sum "${SCENARIOS}" | cut -d' ' -f1)"
 readonly RUNNER_SHA256="$(sha256sum "${RUNNER}" | cut -d' ' -f1)"
+readonly RESULT_VALIDATOR_SHA256="$(sha256sum "${RESULT_VALIDATOR}" | cut -d' ' -f1)"
 readonly EXPRESS_ADAPTER_SHA256="$(sha256sum "${EXPRESS_ADAPTER}" | cut -d' ' -f1)"
 readonly FASTAPI_ADAPTER_SHA256="$(sha256sum "${FASTAPI_ADAPTER}" | cut -d' ' -f1)"
 
@@ -43,6 +65,7 @@ inputs_are_stable() {
     && [[ "$(sha256sum "${FASTAPI_CONFIG}" | cut -d' ' -f1)" == "${FASTAPI_CONFIG_SHA256}" ]] \
     && [[ "$(sha256sum "${SCENARIOS}" | cut -d' ' -f1)" == "${SCENARIOS_SHA256}" ]] \
     && [[ "$(sha256sum "${RUNNER}" | cut -d' ' -f1)" == "${RUNNER_SHA256}" ]] \
+    && [[ "$(sha256sum "${RESULT_VALIDATOR}" | cut -d' ' -f1)" == "${RESULT_VALIDATOR_SHA256}" ]] \
     && [[ "$(sha256sum "${EXPRESS_ADAPTER}" | cut -d' ' -f1)" == "${EXPRESS_ADAPTER_SHA256}" ]] \
     && [[ "$(sha256sum "${FASTAPI_ADAPTER}" | cut -d' ' -f1)" == "${FASTAPI_ADAPTER_SHA256}" ]]
 }
@@ -116,7 +139,7 @@ if env -i PATH="${PATH}" PYTHONDONTWRITEBYTECODE=1 \
 else
   runner_status=$?
 fi
-if ! inputs_are_stable; then runner_status=5; fi
+if ! inputs_are_stable || ! tree_is_clean_except_evidence; then runner_status=5; fi
 if [[ -f "${OUTPUT}" ]]; then
   result_count="$(wc -l <"${OUTPUT}" | tr -d ' ')"
   result_hash="$(sha256sum "${OUTPUT}" | cut -d' ' -f1)"
@@ -124,17 +147,26 @@ else
   result_count=0
   result_hash=absent
 fi
-if (( runner_status == 0 )) && [[ "${result_count}" != 100 ]]; then runner_status=6; fi
+if (( runner_status == 0 )) && ! python3 "${RESULT_VALIDATOR}" \
+  --summary "${EVIDENCE_DIR}/shared-state.stdout" --jsonl "${OUTPUT}" \
+  --scenarios "${SCENARIOS}"; then
+  runner_status=6
+fi
 if (( runner_status != 0 )); then
   printf 'gate=shared-state-core-v1\nstatus=FAIL\nexitCode=%s\nresultCount=%s\njsonlSha256=%s\noverallReplacementReady=false\n' \
     "${runner_status}" "${result_count}" "${result_hash}" \
     >"${EVIDENCE_DIR}/shared-state.status"
   exit "${runner_status}"
 fi
+if ! inputs_are_stable || ! tree_is_clean_except_evidence; then
+  printf 'gate=shared-state-core-v1\nstatus=FAIL\nfailedSuite=source-stability\noverallReplacementReady=false\n' \
+    >"${EVIDENCE_DIR}/shared-state.status"
+  exit 5
+fi
 
-printf 'gate=shared-state-core-v1\nstatus=PASS\nresultCount=100\nmismatchCount=0\njsonlSha256=%s\nfullPhase7SampleSatisfied=false\noverallReplacementReady=false\n' \
+printf 'gate=shared-state-core-v1\nstatus=PASS\nresultCount=100\nconcurrentTrialCount=70\nmixedRuntimeOverlapCount=70\noverlapMismatchCount=0\njsonlSha256=%s\nfullPhase7SampleSatisfied=false\noverallReplacementReady=false\n' \
   "${result_hash}" >"${EVIDENCE_DIR}/shared-state.status"
-printf 'gitHead=%s\nrunId=%s\nsourceRevision=%s\nscenariosSha256=%s\nrunnerSha256=%s\nexpressAdapterSha256=%s\nfastapiAdapterSha256=%s\n' \
+printf 'gitHead=%s\nrunId=%s\nsourceRevision=%s\nscenariosSha256=%s\nrunnerSha256=%s\nresultValidatorSha256=%s\nexpressAdapterSha256=%s\nfastapiAdapterSha256=%s\n' \
   "$(git -C "${REPO_DIR}" rev-parse HEAD)" "${RUN_ID}" "${SOURCE_REVISION}" \
-  "${SCENARIOS_SHA256}" "${RUNNER_SHA256}" "${EXPRESS_ADAPTER_SHA256}" \
+  "${SCENARIOS_SHA256}" "${RUNNER_SHA256}" "${RESULT_VALIDATOR_SHA256}" "${EXPRESS_ADAPTER_SHA256}" \
   "${FASTAPI_ADAPTER_SHA256}" >"${EVIDENCE_DIR}/provenance.txt"

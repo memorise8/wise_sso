@@ -77,11 +77,47 @@ cover valid HS256 refresh rotation plus `none`, HS384, and HS512 rejection/no mu
 verification and refresh-ledger delta, recovery token deltas, and an admin state
 transition.
 
+## Run the shared-state core gate
+
+After both isolated runtimes have been deliberately configured against the
+same disposable PostgreSQL database and the same non-zero Redis logical
+database, run the mixed-writer gate with one shared fixture adapter:
+
+```sh
+python3 contracts/bin/shared_state.py \
+  --express http://127.0.0.1:4400 \
+  --fastapi http://127.0.0.1:4401 \
+  --fixture-adapter contracts/adapters/express_fixture.py \
+  --fixture-config /secure/untracked/shared-contract-env.json \
+  --jsonl /tmp/shared-state-core-v1.jsonl \
+  --run-id local-shared-001 \
+  --source-revision "$(git rev-parse HEAD)"
+```
+
+`shared-state-core-v1.json` fixes ten schedules at ten trials each. Seven
+schedules use concurrent actors waiting on one in-process release barrier. For
+those 70 trials, the runner fails closed unless at least one Express request
+lifetime overlaps one FastAPI request lifetime in monotonic time. This is a
+concurrent-ingress smoke check; it does not prove that database or Redis
+critical sections overlapped. Every HTTP operation has one attempt and zero
+retries. The runner stops after the first mismatch, emits the remaining planned
+rows as `NOT_RUN`, and writes only sanitized counts, status classes, boolean
+outcomes, and error digests. The JSONL file is created exclusively and made
+read-only after it is flushed. Passing this 100-row gate does not satisfy the
+full Phase 7 sample or make the replacement production ready; both fields
+remain explicitly false.
+
+The mixed failed-login schedule accepts a final failure count from 5 through
+20 with the lock set. Both runtimes intentionally skip increments after a
+request observes the lock, and an ingress-lifetime overlap cannot prove that all
+20 requests read the credential before the lock was written.
+
 ## Files
 
 - `manifest.json` maps migration behavior to scenarios, schemas, snapshots, and
   current implementation evidence.
 - `scenarios/public.json` is the executable, non-mutating HTTP baseline.
+- `scenarios/shared-state-core-v1.json` is the approved mixed-runtime shared-store schedule matrix.
 - `schemas/` contains JSON Schema definitions for shared wire/state shapes.
 - `snapshots/` contains synthetic examples only. Values use reserved domains and
   obvious placeholders; they must never be replaced with production captures.

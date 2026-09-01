@@ -18,6 +18,19 @@
     "partial": "Some deterministic contract cases are executable, but listed corpus, topology, concurrency, or sample-count gaps remain.",
     "planMapping": "phase7FlowGroups are asset-oriented coverage labels. phase7ApprovedCoreFlows separately preserves the approved qualification order and must not be inferred from group position."
   },
+  "phase7SharedStateCore": {
+    "suiteId": "shared-state-core-v1",
+    "runner": "bin/shared_state.py",
+    "scenarios": "scenarios/shared-state-core-v1.json",
+    "schedules": 10,
+    "trialsPerSchedule": 10,
+    "plannedTrialRows": 100,
+    "retryCount": 0,
+    "failFast": true,
+    "concurrencyClaim": "concurrent-ingress-smoke-only; at least one mixed-runtime monotonic HTTP request-lifetime overlap is required and does not prove database or Redis critical-section overlap",
+    "fullPhase7SampleSatisfied": false,
+    "overallReplacementReady": false
+  },
   "phase7ApprovedCoreFlows": [
     {
       "order": 1,
@@ -268,6 +281,29 @@
     { "snapshot": "snapshots/state.json#/oauthState", "schema": "schemas/auth-state.schema.json#/$defs/oauthState" }
   ],
   "behaviors": [
+    {
+      "id": "phase7.shared-state-core-v1",
+      "description": "Ten mixed-runtime shared-state schedules run ten trials each against one disposable PostgreSQL database and Redis logical database. The seven concurrent schedules require mixed-runtime HTTP request-lifetime overlap, but database/Redis critical-section overlap is not claimed; passing does not imply full Phase 7 or replacement readiness.",
+      "execution": "shared-fixture-required",
+      "scenarios": [
+        "express-handoff-fastapi-exchange",
+        "fastapi-handoff-express-exchange",
+        "express-handoff-mixed-consume-race",
+        "fastapi-handoff-mixed-consume-race",
+        "mixed-refresh-race",
+        "express-logout-fastapi-refresh-race",
+        "fastapi-logout-express-refresh-race",
+        "alternating-shared-rate-limit-boundary",
+        "mixed-simultaneous-shared-rate-limit",
+        "mixed-failed-login-race"
+      ],
+      "schemas": ["schemas/auth-state.schema.json", "schemas/http-response.schema.json"],
+      "snapshots": ["snapshots/state.json", "snapshots/http.json"],
+      "evidence": [
+        "contracts/bin/shared_state.py",
+        "contracts/scenarios/shared-state-core-v1.json"
+      ]
+    },
     {
       "id": "service.health",
       "description": "Liveness response remains stable.",

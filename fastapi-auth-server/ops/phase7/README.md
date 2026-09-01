@@ -145,11 +145,12 @@ mixed-runtime canary, or approve a cutover.
 ## Disposable shared-state core gate
 
 `ops/run-phase7-shared-integration.sh` is a separate opt-in launcher for the
-`shared-state-core-v1` mixed-writer gate; the verified independent launcher is
-left unchanged. Both loopback runtimes use one disposable test database through
-two distinct DML roles and share Redis logical database 13. They receive the
-same synthetic signer, refresh secret, issuer, and client policy. Prisma
-migrations run once before the restricted runtime roles are used.
+`shared-state-core-v1` concurrent-ingress/shared-state smoke gate; the verified
+independent launcher is left unchanged. Both loopback runtimes use one
+disposable test database through two distinct DML roles and share Redis logical
+database 13. They receive the same synthetic signer, refresh secret, issuer,
+and client policy. Prisma migrations run once before the restricted runtime
+roles are used.
 
 The launcher reuses the integration lock, production Express before/after
 snapshot, candidate-resource tri-state check, exact PID LISTEN proof, and
@@ -167,7 +168,13 @@ Express snapshot, and zero remaining candidate resources. Runtime evidence is
 atomically published without replacement under
 `evidence/phase7-shared-runtime/<run-id>/`.
 
+Exactly 70 rows belong to the seven schedules that prove mixed-runtime HTTP
+request-lifetime overlap. The remaining 30 rows are sequential cross-runtime or
+alternating-ingress checks and are not counted as concurrent overlap evidence.
+
 This incremental result always records `fullPhase7SampleSatisfied=false` and
 `overallReplacementReady=false`; it does not satisfy the full Phase 7 sample or
 the performance, security, chaos, backup/restore, rollback, refreeze, or cutover
-gates.
+gates. It also does not prove deterministic database critical-section ordering,
+linearizability, or exhaustive race coverage; those claims require separately
+instrumented concurrency evidence and the approved full sample.

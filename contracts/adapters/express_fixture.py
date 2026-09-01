@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib import error, parse, request
 
-
 PASSWORD = "ContractOnly!2026"
 PASSWORD_HASH = "$argon2id$v=19$m=19456,t=2,p=1$Y29udHJhY3QtZml4dHVyZQ$qBKSeab/Q2pFMu2TocZA6c1w/qtUDTgvDmzv1tsEgqI"
 ACTIVE_USER_ID = "00000000-0000-4000-8000-000000000001"
@@ -38,6 +37,18 @@ SAFE_REDIS_KEY_PREFIXES = (
     "wiseacct:oauth-state:",
     "wiseacct:rate-limit:",
 )
+FIXTURE_ANONYMOUS_AUDIT_PREDICATE = r'''"userId" IS NULL
+  AND "actorUserId" IS NULL
+  AND "targetUserId" IS NULL
+  AND (
+    ("eventType" = 'rate_limit_exceeded' AND "reasonCode" = 'RATE_LIMITED'
+      AND "detailsJson"->>'route' = '/auth/login' AND "detailsJson"->>'method' = 'POST')
+    OR ("eventType" = 'auth_handoff_exchange_failure' AND "reasonCode" = 'INVALID_AUTH_HANDOFF_CODE'
+      AND "detailsJson"->>'route' = '/auth/exchange')
+    OR ("eventType" = 'refresh' AND "reasonCode" = 'REFRESH_FAILED')
+    OR ("eventType" = 'logout' AND "outcome" = 'success'
+      AND "reasonCode" IS NULL AND "detailsJson" IS NULL)
+  )'''
 
 
 class AdapterError(Exception):
@@ -158,7 +169,7 @@ def psql(config: Config, sql: str) -> str:
         "-d", parsed.path.lstrip("/"),
         "-c", sql,
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, env=_psql_environment(parsed), timeout=20)
+    completed = subprocess.run(command, capture_output=True, text=True, env=_psql_environment(parsed), timeout=20, check=False)
     if completed.returncode != 0:
         raise AdapterError(f"psql failed: {completed.stderr.strip()}")
     return completed.stdout.strip()
@@ -175,7 +186,7 @@ class RedisRespClient:
         self.password = password
 
     @classmethod
-    def from_url(cls, value: str) -> "RedisRespClient":
+    def from_url(cls, value: str) -> RedisRespClient:
         parsed = _local_url(value, {"redis"}, "CONTRACT_REDIS_URL")
         return cls(
             parsed.hostname or "127.0.0.1",
@@ -293,6 +304,8 @@ def reset(config: Config) -> None:
     fixture_emails = ", ".join(f"'{item}'" for item in emails(config).values())
     psql(config, f'''BEGIN;
 DELETE FROM "AuditLog" WHERE "userId" IN ({ids}) OR "actorUserId" IN ({ids}) OR "targetUserId" IN ({ids}) OR "reasonCode" = 'CONTRACT_FIXTURE';
+DELETE FROM "AuditLog"
+WHERE {FIXTURE_ANONYMOUS_AUDIT_PREDICATE};
 DELETE FROM "User" WHERE "id" IN ({ids}) OR "email" IN ({fixture_emails});
 COMMIT;''')
     redis_client = RedisRespClient.from_url(config.redis_url)
@@ -473,9 +486,11 @@ def snapshot(config: Config, probe: str) -> Any:
         }
     if probe == "auth-lifecycle":
         active = count(config, f'''SELECT COUNT(*) FROM "RefreshToken" WHERE "userId" = '{ACTIVE_USER_ID}' AND "revokedAt" IS NULL;''')
+        active_hashes = [item for item in psql(config, f'''SELECT "tokenHash" FROM "RefreshToken" WHERE "userId" = '{ACTIVE_USER_ID}' AND "revokedAt" IS NULL ORDER BY "tokenHash";''').splitlines() if item]
         return {
             "activeRefreshTokens": active,
             "authHandoffKeys": redis_key_count(config, "wiseacct:auth-handoff:"),
+            "activeTokenHashes": active_hashes,
         }
     if probe == "password-reset-ledger":
         unused = count(config, f'''SELECT COUNT(*) FROM "PasswordResetToken" WHERE "userId" = '{ACTIVE_USER_ID}' AND "usedAt" IS NULL;''')
@@ -487,6 +502,31 @@ def snapshot(config: Config, probe: str) -> Any:
         status = psql(config, f'''SELECT "status"::text FROM "User" WHERE "id" = '{TARGET_USER_ID}';''')
         audits = count(config, f'''SELECT COUNT(*) FROM "AuditLog" WHERE "targetUserId" = '{TARGET_USER_ID}' AND "reasonCode" = 'CONTRACT_FIXTURE' AND "eventType" = 'admin_user_status_changed';''')
         return {"status": status, "auditEvents": audits}
+    if probe == "shared-rate-limit":
+        redis_client = RedisRespClient.from_url(config.redis_url)
+        keys = redis_client.scan("wiseacct:rate-limit:*")
+        counters: list[int] = []
+        ttls: list[int] = []
+        for key in keys:
+            raw_count = redis_client.get(key)
+            try:
+                counters.append(int(raw_count.decode("ascii")) if raw_count is not None else -1)
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise AdapterError("rate-limit counter was not a decimal integer") from exc
+            ttls.append(redis_client.ttl(key))
+        return {"keyCount": len(keys), "counters": sorted(counters), "ttls": sorted(ttls)}
+    if probe == "failed-login-ledger":
+        row = psql(config, f'''SELECT "failedLoginCount"::text || '|' || ("lockedUntil" IS NOT NULL)::text
+FROM "PasswordCredential" WHERE "userId" = '{ACTIVE_USER_ID}';''')
+        parts = row.split("|")
+        if len(parts) != 2:
+            raise AdapterError("failed-login ledger returned an unexpected row")
+        active = count(config, f'''SELECT COUNT(*) FROM "RefreshToken" WHERE "userId" = '{ACTIVE_USER_ID}' AND "revokedAt" IS NULL;''')
+        return {"failedLoginCount": int(parts[0]), "lockSet": parts[1] == "t", "activeRefreshTokens": active}
+    if probe == "fixture-anonymous-audits":
+        residual = count(config, f'''SELECT COUNT(*) FROM "AuditLog"
+WHERE {FIXTURE_ANONYMOUS_AUDIT_PREDICATE};''')
+        return {"residualCount": residual}
     raise AdapterError(f"unsupported probe {probe!r}")
 
 

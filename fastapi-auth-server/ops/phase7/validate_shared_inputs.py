@@ -72,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
             raise UnsafeTarget("FastAPI Python and Node URLs must use the same test database")
         express_credential = credentials(express_database_url)
         fastapi_credential = credentials(fastapi_node_url)
+        if credentials(fastapi_database_url) != fastapi_credential:
+            raise UnsafeTarget("FastAPI Python and Node URLs must use the same runtime credential")
         if express_credential[0] == fastapi_credential[0]:
             raise UnsafeTarget("shared-state runtime roles must be distinct")
         if express_credential[1] == fastapi_credential[1]:
