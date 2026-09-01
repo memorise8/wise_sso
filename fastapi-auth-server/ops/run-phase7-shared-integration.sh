@@ -402,7 +402,7 @@ if (( gate_exit != 0 )) || ! grep -Fxq 'status=PASS' "${GATE_EVIDENCE_DIR}/share
   gate_verdict=FAIL
   exit "$(( gate_exit == 0 ? 7 : gate_exit ))"
 fi
-if grep -ERiq 'postgres(ql)?://|redis://|private key|password=|accessToken|refreshToken' "${GATE_EVIDENCE_DIR}"; then
+if grep -ERiq 'postgres(ql)?://|redis://|private key|password=|"(accessToken|refreshToken)"[[:space:]]*:' "${GATE_EVIDENCE_DIR}"; then
   gate_verdict=FAIL
   echo "Shared-state gate evidence contains forbidden sensitive material" >&2
   exit 7

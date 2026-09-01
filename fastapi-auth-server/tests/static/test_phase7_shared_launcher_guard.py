@@ -263,6 +263,8 @@ def test_launcher_preserves_production_and_reuses_fail_closed_guards() -> None:
     assert '[[ -n "${fastapi_pid}" ]]' in source
     assert '[[ ! -e "${PRIVATE_DIR}" && ! -L "${PRIVATE_DIR}" ]]' in source
     assert "artifacts_are_stable" in source
+    assert '"(accessToken|refreshToken)"[[:space:]]*:' in source
+    assert "|accessToken|refreshToken'" not in source
     assert "if ! publish_evidence" in source
     assert "launcher_exit=1" in source
 
