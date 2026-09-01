@@ -141,3 +141,33 @@ launcher exit. `PASS` publication requires `privateTempRemoved=true`.
 This launcher is intentionally local and provisional. It does not alter
 production routing or configuration, call real OAuth/mail providers, perform a
 mixed-runtime canary, or approve a cutover.
+
+## Disposable shared-state core gate
+
+`ops/run-phase7-shared-integration.sh` is a separate opt-in launcher for the
+`shared-state-core-v1` mixed-writer gate; the verified independent launcher is
+left unchanged. Both loopback runtimes use one disposable test database through
+two distinct DML roles and share Redis logical database 13. They receive the
+same synthetic signer, refresh secret, issuer, and client policy. Prisma
+migrations run once before the restricted runtime roles are used.
+
+The launcher reuses the integration lock, production Express before/after
+snapshot, candidate-resource tri-state check, exact PID LISTEN proof, and
+fail-closed cleanup pattern. Cleanup is limited to the launched children, the
+generated shared test database and roles, Redis DB 13, and the guarded candidate
+Compose project. No production routing, database, Redis, configuration, or
+credential is changed.
+
+`ops/phase7/run-shared-state-core-gate.sh` validates and privately snapshots
+both 0600 adapter configs, runs both adapter preflights, then invokes
+`contracts/bin/shared_state.py` with the canonical shared fixture adapter. A
+pass requires exactly 100 JSONL trial rows, zero mismatches, stable source
+hashes, sanitized immutable evidence, complete cleanup, an unchanged production
+Express snapshot, and zero remaining candidate resources. Runtime evidence is
+atomically published without replacement under
+`evidence/phase7-shared-runtime/<run-id>/`.
+
+This incremental result always records `fullPhase7SampleSatisfied=false` and
+`overallReplacementReady=false`; it does not satisfy the full Phase 7 sample or
+the performance, security, chaos, backup/restore, rollback, refreeze, or cutover
+gates.
