@@ -877,16 +877,16 @@ def run_schedule(
             ("failedLoginCount", "lockSet", "activeRefreshTokens"),
         )
         failed_count = state["failedLoginCount"]
-        if (
-            not isinstance(failed_count, int)
-            or isinstance(failed_count, bool)
-            or not 5 <= failed_count <= 20
-            or state["lockSet"] is not True
-            or state["activeRefreshTokens"] != 0
-        ):
+        if not isinstance(failed_count, int) or isinstance(failed_count, bool):
             raise ContractFailure(
-                "failed-login ingress smoke did not reach a valid locked credential state"
+                "failed-login ledger returned a non-integer failure count"
             )
+        if not 5 <= failed_count <= 20:
+            raise ContractFailure("failed-login count fell outside the canonical range")
+        if state["lockSet"] is not True:
+            raise ContractFailure("failed-login lock was not persisted")
+        if state["activeRefreshTokens"] != 0:
+            raise ContractFailure("failed-login race retained an active refresh token")
         return {
             "actors": _actor_summary(results),
             "state": state,
