@@ -41,13 +41,26 @@ fi
 command -v git >/dev/null
 command -v flock >/dev/null
 command -v python3 >/dev/null
+command -v readlink >/dev/null
 command -v sha256sum >/dev/null
 
 readonly GIT_COMMON_DIR="$(git -C "${REPO_DIR}" rev-parse --git-common-dir)"
-exec 8>"${GIT_COMMON_DIR}/wiseacct-fastapi-integration.lock"
-if ! flock --nonblock 8; then
-  echo "Another guarded FastAPI qualification or integration run owns the repository lock" >&2
-  exit 4
+readonly INTEGRATION_LOCK="$(cd -- "${GIT_COMMON_DIR}" && pwd)/wiseacct-fastapi-integration.lock"
+if [[ -n "${WISEACCT_PHASE7_INTEGRATION_LOCK_FD:-}" ]]; then
+  readonly INHERITED_LOCK_FD="${WISEACCT_PHASE7_INTEGRATION_LOCK_FD}"
+  if [[ ! "${INHERITED_LOCK_FD}" =~ ^[0-9]+$ ]] \
+      || [[ ! -e "/proc/$$/fd/${INHERITED_LOCK_FD}" ]] \
+      || [[ "$(readlink -f -- "/proc/$$/fd/${INHERITED_LOCK_FD}")" != "${INTEGRATION_LOCK}" ]] \
+      || ! flock --nonblock "${INHERITED_LOCK_FD}"; then
+    echo "Phase 7 inherited integration lock could not be verified" >&2
+    exit 4
+  fi
+else
+  exec 8>"${INTEGRATION_LOCK}"
+  if ! flock --nonblock 8; then
+    echo "Another guarded FastAPI qualification or integration run owns the repository lock" >&2
+    exit 4
+  fi
 fi
 
 readonly GIT_HEAD="$(git -C "${REPO_DIR}" rev-parse --verify HEAD)"

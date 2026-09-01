@@ -54,3 +54,62 @@ failure leaves all three suites at `NOT_RUN`.
 The runner requires a clean committed worktree before creating the immutable
 `evidence/phase7/<run-id>/` directory. An independent contract success followed
 by placeholder gates exits 3 to report honest `INCOMPLETE` status.
+
+## Disposable independent runtime launcher
+
+`ops/run-phase7-independent-integration.sh` is the guarded local entry point
+that supplies those already-running runtimes. It requires a clean committed
+worktree and zero pre-existing resources from the candidate Compose project.
+It takes the repository integration lock, snapshots the current Express
+containers' identity, restart count, state, health, and start time, and then
+starts only the existing guarded FastAPI development Compose stack.
+
+For each run it creates two separately named test databases and two DML-only
+login roles after applying the committed Prisma migrations. Express and
+FastAPI run as host processes on distinct loopback ports and use Redis logical
+databases 13 and 14 respectively. Both receive the same access signer, issuer,
+generated refresh secret, and client policy. The signer and base policy come
+from the committed synthetic `.env.example`; the issuer is pinned to the
+contract corpus compatibility value. The launcher adds only the loopback contract-fixture client;
+OAuth providers remain disabled and mail remains in development capture mode.
+Private runtime environments and adapter configs live in a mode-0700 `mktemp`
+directory, and each config has mode 0600.
+
+Candidate container, network, and volume inspection is tri-state: every Docker
+query must succeed before the result can be `EMPTY`; query failure is distinct
+from both `EMPTY` and `PRESENT`. HTTP readiness is accepted only after the
+launched process ID is also proven to own the expected TCP LISTEN socket.
+
+The qualification runner verifies the inherited integration-lock descriptor.
+Exit 3 is accepted only when the immutable qualification result contains both
+`status=INCOMPLETE` and `passedGate=independent-contract`. This means the
+independent contract gate passed; it does not waive the downstream Phase 7
+gates or approve replacement.
+
+On every exit the launcher stops both host runtimes, drops the two exact test
+databases and roles, clears only Redis databases 13 and 14, removes the guarded
+candidate Compose resources, and compares the Express before/after snapshots.
+Only after cleanup does it publish sanitized, immutable evidence under
+`evidence/phase7-runtime/<run-id>/`, including the qualification run ID and
+evidence hash. Runtime log bodies, adapter configs, URLs, and credentials stay
+in the temporary directory and are deleted rather than published.
+Publication refuses collisions, validates a complete sanitized read-only
+bundle, and uses a no-replace atomic directory rename. A `PASS` bundle is
+rejected unless cleanup, Express stability, and zero-candidate invariants are
+all proven.
+
+Express is started through a Phase 7-only Node launcher that injects
+`127.0.0.1` when the unchanged application calls `listen(port, callback)` and
+rejects an explicit wildcard or non-loopback host. The socket proof checks both
+the owning PID's socket inode and the `/proc` TCP local address; wildcard
+listeners cannot satisfy readiness.
+
+Before final evidence publication, the sanitized Express snapshots are copied
+to sibling staging and the private `/tmp/wiseacct-phase7-runtime.*` directory
+containing credentials and log bodies is removed and verified absent. Failure
+to remove it forces `status=FAIL`, `privateTempRemoved=false`, and a non-zero
+launcher exit. `PASS` publication requires `privateTempRemoved=true`.
+
+This launcher is intentionally local and provisional. It does not alter
+production routing or configuration, call real OAuth/mail providers, perform a
+mixed-runtime canary, or approve a cutover.
