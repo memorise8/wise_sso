@@ -2,12 +2,13 @@
 set -euo pipefail
 umask 077
 
-if (( $# != 5 )); then
-  echo "usage: run-independent-contract-gate.sh BASELINE_URL CANDIDATE_URL EXPRESS_CONFIG FASTAPI_CONFIG EVIDENCE_DIR" >&2
+if (( $# != 6 )); then
+  echo "usage: run-independent-contract-gate.sh BASELINE_URL CANDIDATE_URL EXPRESS_CONFIG FASTAPI_CONFIG EVIDENCE_DIR PUBLIC_SCENARIOS" >&2
   exit 2
 fi
 
 readonly BASELINE_URL="$1" CANDIDATE_URL="$2" EXPRESS_CONFIG="$3" FASTAPI_CONFIG="$4" EVIDENCE_DIR="$5"
+readonly PUBLIC_SCENARIOS="$6"
 readonly PHASE7_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly FASTAPI_DIR="$(cd -- "${PHASE7_DIR}/../.." && pwd)"
 readonly REPO_DIR="$(cd -- "${FASTAPI_DIR}/.." && pwd)"
@@ -18,10 +19,12 @@ readonly EXPRESS_ADAPTER="${CONTRACTS_DIR}/adapters/express_fixture.py"
 readonly FASTAPI_ADAPTER="${CONTRACTS_DIR}/adapters/fastapi_fixture.py"
 readonly EXPRESS_CONFIG_SHA256="$(sha256sum "${EXPRESS_CONFIG}" | cut -d' ' -f1)"
 readonly FASTAPI_CONFIG_SHA256="$(sha256sum "${FASTAPI_CONFIG}" | cut -d' ' -f1)"
+readonly PUBLIC_SCENARIOS_SHA256="$(sha256sum "${PUBLIC_SCENARIOS}" | cut -d' ' -f1)"
 
-configs_are_stable() {
+inputs_are_stable() {
   [[ "$(sha256sum "${EXPRESS_CONFIG}" | cut -d' ' -f1)" == "${EXPRESS_CONFIG_SHA256}" ]] \
-    && [[ "$(sha256sum "${FASTAPI_CONFIG}" | cut -d' ' -f1)" == "${FASTAPI_CONFIG_SHA256}" ]]
+    && [[ "$(sha256sum "${FASTAPI_CONFIG}" | cut -d' ' -f1)" == "${FASTAPI_CONFIG_SHA256}" ]] \
+    && [[ "$(sha256sum "${PUBLIC_SCENARIOS}" | cut -d' ' -f1)" == "${PUBLIC_SCENARIOS_SHA256}" ]]
 }
 
 write_status() {
@@ -38,7 +41,7 @@ printf 'gate=independent-contract\nscope=independent-stateful\nstatus=RUNNING\n'
   >"${EVIDENCE_DIR}/independent-contract.status"
 
 printf 'gate=adapter-preflight\nstatus=RUNNING\n' >"${EVIDENCE_DIR}/adapter-preflight.status"
-if ! configs_are_stable; then
+if ! inputs_are_stable; then
   printf 'gate=adapter-preflight\nstatus=FAIL\nreason=config-snapshot-instability\n' \
     >"${EVIDENCE_DIR}/adapter-preflight.status"
   exit 5
@@ -60,19 +63,20 @@ else
     >"${EVIDENCE_DIR}/independent-contract.status"
   exit "${preflight_status}"
 fi
-if ! configs_are_stable; then
+if ! inputs_are_stable; then
   printf 'gate=independent-contract\nscope=independent-stateful\nstatus=FAIL\nfailedSuite=config-snapshot-stability\n' \
     >"${EVIDENCE_DIR}/independent-contract.status"
   exit 5
 fi
 
 for suite in public guards fixtures; do
-  if ! configs_are_stable; then
+  if ! inputs_are_stable; then
     printf 'gate=independent-contract\nscope=independent-stateful\nstatus=FAIL\nfailedSuite=config-snapshot-stability\n' \
       >"${EVIDENCE_DIR}/independent-contract.status"
     exit 5
   fi
   scenarios="${CONTRACTS_DIR}/scenarios/${suite}.json"
+  if [[ "${suite}" == public ]]; then scenarios="${PUBLIC_SCENARIOS}"; fi
   output="${EVIDENCE_DIR}/${suite}-contract-results.jsonl"
   scenario_hash="$(sha256sum "${scenarios}" | cut -d' ' -f1)"
   scenario_count="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))["scenarios"]))' "${scenarios}")"
@@ -91,7 +95,7 @@ for suite in public guards fixtures; do
   else
     status=$?
   fi
-  if ! configs_are_stable; then status=5; fi
+  if ! inputs_are_stable; then status=5; fi
   if [[ -f "${output}" ]]; then
     result_hash="$(sha256sum "${output}" | cut -d' ' -f1)"
     result_count="$(wc -l <"${output}" | tr -d ' ')"

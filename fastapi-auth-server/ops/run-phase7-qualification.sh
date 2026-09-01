@@ -7,6 +7,7 @@ readonly FASTAPI_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 readonly REPO_DIR="$(cd -- "${FASTAPI_DIR}/.." && pwd)"
 readonly PHASE7_DIR="${SCRIPT_DIR}/phase7"
 readonly CONTRACTS_DIR="${REPO_DIR}/contracts"
+readonly ENV_EXAMPLE="${FASTAPI_DIR}/.env.example"
 readonly EVIDENCE_ROOT="${FASTAPI_DIR}/evidence/phase7"
 
 if env | grep -Eq '^(PG[A-Z0-9_]*=|DATABASE_URL=|REDIS_URL=|COMPOSE_|DOCKER_HOST=|DOCKER_CONTEXT=|KUBECONFIG=|PORT=)'; then
@@ -80,6 +81,27 @@ trap cleanup_private EXIT
 trap 'cleanup_private; exit 130' INT
 trap 'cleanup_private; exit 143' TERM
 
+PUBLIC_SCENARIOS="${CONTRACTS_DIR}/scenarios/public.json"
+runtime_public_provenance="runtimePublicScenario=false"
+if [[ -n "${WISEACCT_PHASE7_PUBLIC_SCENARIOS:-}" ]]; then
+  runtime_public_metadata="$(${PHASE7_DIR}/runtime_public_scenarios.py snapshot \
+    --input "${WISEACCT_PHASE7_PUBLIC_SCENARIOS}" \
+    --source "${CONTRACTS_DIR}/scenarios/public.json" --example "${ENV_EXAMPLE}" \
+    --output "${PRIVATE_DIR}/runtime-public.json" --repo "${REPO_DIR}" \
+    --evidence "${EVIDENCE_ROOT}")"
+  if [[ "$(printf '%s\n' "${runtime_public_metadata}" | wc -l)" != 2 ]] \
+      || ! grep -Eq '^runtimePublicScenarioSha256=[a-f0-9]{64}$' <<<"${runtime_public_metadata}" \
+      || ! grep -Eq '^runtimePublicJwkSha256=[a-f0-9]{64}$' <<<"${runtime_public_metadata}"; then
+    echo "Runtime public scenario provenance is malformed" >&2
+    exit 2
+  fi
+  PUBLIC_SCENARIOS="${PRIVATE_DIR}/runtime-public.json"
+  runtime_public_provenance="runtimePublicScenario=true
+${runtime_public_metadata}"
+fi
+readonly PUBLIC_SCENARIOS runtime_public_provenance
+readonly PUBLIC_SCENARIOS_SHA256="$(sha256sum "${PUBLIC_SCENARIOS}" | cut -d' ' -f1)"
+
 topology="$(${PHASE7_DIR}/validate_inputs.py \
   --baseline "${WISEACCT_PHASE7_BASELINE_URL}" \
   --candidate "${WISEACCT_PHASE7_CANDIDATE_URL}" \
@@ -124,10 +146,15 @@ printf '%s\n' "${topology}" >"${EVIDENCE_DIR}/topology.json"
 runner_sha256="$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
 contract_sha256="$(sha256sum "${CONTRACTS_DIR}/bin/differential.py" | cut -d' ' -f1)"
 gate_sha256="$(sha256sum "${PHASE7_DIR}/run-independent-contract-gate.sh" | cut -d' ' -f1)"
+runtime_public_helper_sha256="$(sha256sum "${PHASE7_DIR}/runtime_public_scenarios.py" | cut -d' ' -f1)"
+synthetic_policy_sha256="$(sha256sum "${ENV_EXAMPLE}" | cut -d' ' -f1)"
 corpus_sha256="$(sha256sum "${CONTRACTS_DIR}/scenarios/public.json" "${CONTRACTS_DIR}/scenarios/guards.json" "${CONTRACTS_DIR}/scenarios/fixtures.json" | sha256sum | cut -d' ' -f1)"
-printf 'gitHead=%s\ngitTree=clean\nrunId=%s\nrunnerSha256=%s\ncontractRunnerSha256=%s\nindependentGateSha256=%s\ncorpusSha256=%s\n' \
-  "${GIT_HEAD}" "${RUN_ID}" "${runner_sha256}" "${contract_sha256}" "${gate_sha256}" "${corpus_sha256}" \
+printf 'gitHead=%s\ngitTree=clean\nrunId=%s\nrunnerSha256=%s\ncontractRunnerSha256=%s\nindependentGateSha256=%s\nruntimePublicHelperSha256=%s\nsyntheticPolicySha256=%s\ncorpusSha256=%s\n' \
+  "${GIT_HEAD}" "${RUN_ID}" "${runner_sha256}" "${contract_sha256}" "${gate_sha256}" \
+  "${runtime_public_helper_sha256}" "${synthetic_policy_sha256}" "${corpus_sha256}" \
   >"${EVIDENCE_DIR}/provenance.txt"
+printf '%s\neffectivePublicScenarioSha256=%s\n' \
+  "${runtime_public_provenance}" "${PUBLIC_SCENARIOS_SHA256}" >>"${EVIDENCE_DIR}/provenance.txt"
 
 provenance_is_stable() {
   [[ "$(git -C "${REPO_DIR}" rev-parse --verify HEAD)" == "${GIT_HEAD}" ]] \
@@ -136,7 +163,10 @@ provenance_is_stable() {
     && [[ "$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)" == "${runner_sha256}" ]] \
     && [[ "$(sha256sum "${CONTRACTS_DIR}/bin/differential.py" | cut -d' ' -f1)" == "${contract_sha256}" ]] \
     && [[ "$(sha256sum "${PHASE7_DIR}/run-independent-contract-gate.sh" | cut -d' ' -f1)" == "${gate_sha256}" ]] \
+    && [[ "$(sha256sum "${PHASE7_DIR}/runtime_public_scenarios.py" | cut -d' ' -f1)" == "${runtime_public_helper_sha256}" ]] \
+    && [[ "$(sha256sum "${ENV_EXAMPLE}" | cut -d' ' -f1)" == "${synthetic_policy_sha256}" ]] \
     && [[ "$(sha256sum "${CONTRACTS_DIR}/scenarios/public.json" "${CONTRACTS_DIR}/scenarios/guards.json" "${CONTRACTS_DIR}/scenarios/fixtures.json" | sha256sum | cut -d' ' -f1)" == "${corpus_sha256}" ]] \
+    && [[ "$(sha256sum "${PUBLIC_SCENARIOS}" | cut -d' ' -f1)" == "${PUBLIC_SCENARIOS_SHA256}" ]] \
     && snapshots_are_stable
 }
 
@@ -145,7 +175,8 @@ if "${PHASE7_DIR}/run-independent-contract-gate.sh" \
     "${WISEACCT_PHASE7_CANDIDATE_URL}" \
     "${EXPRESS_CONFIG_SNAPSHOT}" \
     "${FASTAPI_CONFIG_SNAPSHOT}" \
-    "${EVIDENCE_DIR}"; then
+    "${EVIDENCE_DIR}" \
+    "${PUBLIC_SCENARIOS}"; then
   :
 else
   contract_status=$?

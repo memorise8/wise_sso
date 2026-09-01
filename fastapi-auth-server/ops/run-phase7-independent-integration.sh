@@ -64,6 +64,19 @@ express_snapshot_unchanged="false"
 private_temp_removed="false"
 evidence_staging=""
 qualification_hash="NOT_CREATED"
+cleanup_terminate_express="NOT_REQUIRED"
+cleanup_terminate_fastapi="NOT_REQUIRED"
+cleanup_drop_express_database="NOT_REQUIRED"
+cleanup_drop_fastapi_database="NOT_REQUIRED"
+cleanup_drop_express_role="NOT_REQUIRED"
+cleanup_drop_fastapi_role="NOT_REQUIRED"
+cleanup_redis_probe="NOT_REQUIRED"
+cleanup_clear_redis_13="NOT_REQUIRED"
+cleanup_clear_redis_14="NOT_REQUIRED"
+cleanup_candidate_compose_down="NOT_REQUIRED"
+cleanup_express_snapshot="NOT_RUN"
+cleanup_candidate_resources="NOT_RUN"
+cleanup_private_temp_remove="NOT_RUN"
 PRIVATE_DIR=""
 before_snapshot=""
 after_snapshot=""
@@ -105,28 +118,60 @@ terminate_runtime() {
     wait "${pid}" 2>/dev/null || true
     return 0
   fi
-  local parent
-  parent="$(awk '/^PPid:/ { print $2 }' "/proc/${pid}/status" 2>/dev/null)" || return 1
-  [[ "${parent}" == "$$" ]] || return 1
-  kill -TERM "${pid}" 2>/dev/null || return 1
-  local attempt state
-  for attempt in {1..20}; do
-    if [[ ! -e "/proc/${pid}/stat" ]]; then
-      wait "${pid}" 2>/dev/null || true
-      ! kill -0 "${pid}" 2>/dev/null
-      return
+  local stat_line stat_tail
+  stat_line="$(<"/proc/${pid}/stat")" || {
+    wait "${pid}" 2>/dev/null || true
+    ! kill -0 "${pid}" 2>/dev/null
+    return
+  }
+  stat_tail="${stat_line##*) }"
+  local -a stat_fields
+  read -r -a stat_fields <<<"${stat_tail}"
+  [[ "${stat_fields[1]:-}" == "$$" && -n "${stat_fields[19]:-}" ]] || return 1
+  local start_time="${stat_fields[19]}"
+
+  same_runtime_process() {
+    local current current_tail
+    [[ -r "/proc/${pid}/stat" ]] || return 1
+    current="$(<"/proc/${pid}/stat")" || return 1
+    current_tail="${current##*) }"
+    local -a current_fields
+    read -r -a current_fields <<<"${current_tail}"
+    [[ "${current_fields[19]:-}" == "${start_time}" ]]
+  }
+
+  if ! kill -TERM "${pid}" 2>/dev/null; then
+    if same_runtime_process; then
+      return 1
     fi
-    state="$(awk '{ print $3 }' "/proc/${pid}/stat" 2>/dev/null)"
+    wait "${pid}" 2>/dev/null || true
+    return 0
+  fi
+  local attempt state current current_tail
+  for attempt in {1..20}; do
+    if ! same_runtime_process; then
+      wait "${pid}" 2>/dev/null || true
+      return 0
+    fi
+    current="$(<"/proc/${pid}/stat")" || continue
+    current_tail="${current##*) }"
+    read -r -a stat_fields <<<"${current_tail}"
+    state="${stat_fields[0]:-}"
     if [[ "${state}" == "Z" ]]; then
       wait "${pid}" 2>/dev/null || true
-      ! kill -0 "${pid}" 2>/dev/null
-      return
+      return 0
     fi
     sleep 0.1
   done
-  kill -KILL "${pid}" 2>/dev/null || return 1
+  if ! kill -KILL "${pid}" 2>/dev/null; then
+    if same_runtime_process; then
+      return 1
+    fi
+    wait "${pid}" 2>/dev/null || true
+    return 0
+  fi
   wait "${pid}" 2>/dev/null || true
-  ! kill -0 "${pid}" 2>/dev/null
+  ! same_runtime_process
 }
 
 prepare_evidence_staging() {
@@ -165,11 +210,19 @@ publish_evidence() {
     "${zero_candidate_resources}" \
     >"${evidence_staging}/result.status"
   printf 'privateTempRemoved=%s\n' "${private_temp_removed}" >>"${evidence_staging}/result.status"
+  printf 'terminateExpress=%s\nterminateFastapi=%s\ndropExpressDatabase=%s\ndropFastapiDatabase=%s\ndropExpressRole=%s\ndropFastapiRole=%s\nredisProbe=%s\nclearRedis13=%s\nclearRedis14=%s\ncandidateComposeDown=%s\nexpressSnapshot=%s\ncandidateResources=%s\nprivateTempRemove=%s\n' \
+    "${cleanup_terminate_express}" "${cleanup_terminate_fastapi}" \
+    "${cleanup_drop_express_database}" "${cleanup_drop_fastapi_database}" \
+    "${cleanup_drop_express_role}" "${cleanup_drop_fastapi_role}" \
+    "${cleanup_redis_probe}" "${cleanup_clear_redis_13}" "${cleanup_clear_redis_14}" \
+    "${cleanup_candidate_compose_down}" "${cleanup_express_snapshot}" \
+    "${cleanup_candidate_resources}" "${cleanup_private_temp_remove}" \
+    >"${evidence_staging}/cleanup.status"
   printf 'gitHead=%s\nrunId=%s\nqualificationRunId=%s\nqualificationEvidenceSha256=%s\nruntimeLauncherSha256=%s\n' \
     "$(git -C "${REPO_DIR}" rev-parse HEAD)" "${RUN_ID}" "${RUN_ID}" \
     "${qualification_hash}" "$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)" \
     >"${evidence_staging}/provenance.txt"
-  if [[ "$(find "${evidence_staging}" -mindepth 1 -maxdepth 1 -type f | wc -l)" != 4 ]] \
+  if [[ "$(find "${evidence_staging}" -mindepth 1 -maxdepth 1 -type f | wc -l)" != 5 ]] \
       || [[ -n "$(find "${evidence_staging}" -mindepth 1 -maxdepth 1 ! -type f -print -quit)" ]] \
       || ! grep -Fxq "status=${final_status}" "${evidence_staging}/result.status" \
       || ! grep -Fxq "zeroCandidateResources=${zero_candidate_resources}" "${evidence_staging}/result.status" \
@@ -193,58 +246,127 @@ cleanup() {
   local original_status=$?
   trap - EXIT INT TERM
   set +e
-  terminate_runtime "${express_pid}" || cleanup_status=1
-  terminate_runtime "${fastapi_pid}" || cleanup_status=1
+  if [[ -n "${express_pid}" ]]; then
+    if terminate_runtime "${express_pid}"; then
+      cleanup_terminate_express="PASS"
+    else
+      cleanup_terminate_express="FAIL"
+      cleanup_status=1
+    fi
+  fi
+  if [[ -n "${fastapi_pid}" ]]; then
+    if terminate_runtime "${fastapi_pid}"; then
+      cleanup_terminate_fastapi="PASS"
+    else
+      cleanup_terminate_fastapi="FAIL"
+      cleanup_status=1
+    fi
+  fi
   if (( express_database_created == 1 )); then
-    postgres_admin >/dev/null <<SQL
+    if postgres_admin >/dev/null <<SQL
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${P7_EXPRESS_DATABASE}' AND pid <> pg_backend_pid();
 DROP DATABASE IF EXISTS "${P7_EXPRESS_DATABASE}";
 SQL
-    (( $? == 0 )) || cleanup_status=1
+    then
+      cleanup_drop_express_database="PASS"
+    else
+      cleanup_drop_express_database="FAIL"
+      cleanup_status=1
+    fi
   fi
   if (( fastapi_database_created == 1 )); then
-    postgres_admin >/dev/null <<SQL
+    if postgres_admin >/dev/null <<SQL
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${P7_FASTAPI_DATABASE}' AND pid <> pg_backend_pid();
 DROP DATABASE IF EXISTS "${P7_FASTAPI_DATABASE}";
 SQL
-    (( $? == 0 )) || cleanup_status=1
+    then
+      cleanup_drop_fastapi_database="PASS"
+    else
+      cleanup_drop_fastapi_database="FAIL"
+      cleanup_status=1
+    fi
   fi
   if (( express_role_created == 1 )); then
-    printf 'DROP ROLE IF EXISTS "%s";\n' "${P7_EXPRESS_ROLE}" | postgres_admin >/dev/null
-    (( $? == 0 )) || cleanup_status=1
+    if printf 'DROP ROLE IF EXISTS "%s";\n' "${P7_EXPRESS_ROLE}" | postgres_admin >/dev/null; then
+      cleanup_drop_express_role="PASS"
+    else
+      cleanup_drop_express_role="FAIL"
+      cleanup_status=1
+    fi
   fi
   if (( fastapi_role_created == 1 )); then
-    printf 'DROP ROLE IF EXISTS "%s";\n' "${P7_FASTAPI_ROLE}" | postgres_admin >/dev/null
-    (( $? == 0 )) || cleanup_status=1
+    if printf 'DROP ROLE IF EXISTS "%s";\n' "${P7_FASTAPI_ROLE}" | postgres_admin >/dev/null; then
+      cleanup_drop_fastapi_role="PASS"
+    else
+      cleanup_drop_fastapi_role="FAIL"
+      cleanup_status=1
+    fi
   fi
   if (( compose_up_attempted == 1 )); then
-    if "${PHASE7_DIR}/runtime_candidate_state.py" redis-usable >/dev/null; then
-      "${PHASE7_DIR}/runtime_redis_clear.py" --database 13 >/dev/null || cleanup_status=1
-      "${PHASE7_DIR}/runtime_redis_clear.py" --database 14 >/dev/null || cleanup_status=1
+    redis_probe_output=""
+    if redis_probe_output="$(${PHASE7_DIR}/runtime_candidate_state.py redis-usable)"; then
+      redis_state=0
     else
       redis_state=$?
-      (( redis_state == 1 )) || cleanup_status=1
     fi
-    "${SCRIPT_DIR}/dev-compose.sh" down "${ENV_EXAMPLE}" >/dev/null || cleanup_status=1
+    case "${redis_state}:${redis_probe_output}" in
+      0:USABLE)
+        cleanup_redis_probe="PASS"
+        if "${PHASE7_DIR}/runtime_redis_clear.py" --database 13 >/dev/null; then
+          cleanup_clear_redis_13="PASS"
+        else
+          cleanup_clear_redis_13="FAIL"
+          cleanup_status=1
+        fi
+        if "${PHASE7_DIR}/runtime_redis_clear.py" --database 14 >/dev/null; then
+          cleanup_clear_redis_14="PASS"
+        else
+          cleanup_clear_redis_14="FAIL"
+          cleanup_status=1
+        fi
+        ;;
+      1:ABSENT)
+        cleanup_redis_probe="ABSENT"
+        ;;
+      1:UNUSABLE)
+        cleanup_redis_probe="UNUSABLE"
+        cleanup_status=1
+        ;;
+      *)
+        cleanup_redis_probe="FAIL"
+        cleanup_status=1
+        ;;
+    esac
+    if "${SCRIPT_DIR}/dev-compose.sh" down "${ENV_EXAMPLE}" >/dev/null; then
+      cleanup_candidate_compose_down="PASS"
+    else
+      cleanup_candidate_compose_down="FAIL"
+      cleanup_status=1
+    fi
   fi
-  snapshot_express "${after_snapshot}" || cleanup_status=1
-  if cmp -s "${before_snapshot}" "${after_snapshot}"; then
+  if snapshot_express "${after_snapshot}" && cmp -s "${before_snapshot}" "${after_snapshot}"; then
     express_snapshot_unchanged="true"
+    cleanup_express_snapshot="PASS"
   else
     express_snapshot_unchanged="false"
+    cleanup_express_snapshot="FAIL"
     cleanup_status=1
   fi
   if candidate_resources_state; then
     zero_candidate_resources="true"
+    cleanup_candidate_resources="PASS"
   else
     zero_candidate_resources="$([[ "${candidate_state}" == PRESENT ]] && echo false || echo unknown)"
+    cleanup_candidate_resources="$([[ "${candidate_state}" == PRESENT ]] && echo PRESENT || echo ERROR)"
     cleanup_status=1
   fi
   prepare_evidence_staging || cleanup_status=1
   if "${PHASE7_DIR}/runtime_private_remove.py" --path "${PRIVATE_DIR}"; then
     private_temp_removed="true"
+    cleanup_private_temp_remove="PASS"
   else
     private_temp_removed="false"
+    cleanup_private_temp_remove="FAIL"
     cleanup_status=1
   fi
   final_status=FAIL
@@ -288,6 +410,9 @@ fi
 "${PHASE7_DIR}/runtime_material.py" \
   --example "${ENV_EXAMPLE}" --private-dir "${PRIVATE_DIR}" --run-id "${RUN_ID}" \
   --express-port "${EXPRESS_PORT}" --fastapi-port "${FASTAPI_PORT}"
+"${PHASE7_DIR}/runtime_public_scenarios.py" create \
+  --source "${REPO_DIR}/contracts/scenarios/public.json" --example "${ENV_EXAMPLE}" \
+  --output "${PRIVATE_DIR}/runtime-public.json"
 # shellcheck disable=SC1090 -- generated by the committed trusted helper into a private directory
 source "${PRIVATE_DIR}/material.sh"
 
@@ -353,7 +478,8 @@ fastapi_pid=$!
 for origin in "${P7_EXPRESS_URL}" "${P7_FASTAPI_URL}"; do
   ready=0
   for attempt in {1..100}; do
-    if curl --fail --silent --show-error --output /dev/null "${origin}/healthz"; then
+    if curl --fail --silent --show-error --output /dev/null "${origin}/healthz" \
+        2>>"${PRIVATE_DIR}/readiness-curl.stderr"; then
       ready=1
       break
     fi
@@ -389,6 +515,7 @@ WISEACCT_PHASE7_EXPRESS_REDIS_URL="${P7_EXPRESS_REDIS_URL}" \
 WISEACCT_PHASE7_FASTAPI_REDIS_URL="${P7_FASTAPI_REDIS_URL}" \
 WISEACCT_PHASE7_EXPRESS_ADAPTER_CONFIG="${PRIVATE_DIR}/express-adapter.json" \
 WISEACCT_PHASE7_FASTAPI_ADAPTER_CONFIG="${PRIVATE_DIR}/fastapi-adapter.json" \
+WISEACCT_PHASE7_PUBLIC_SCENARIOS="${PRIVATE_DIR}/runtime-public.json" \
 "${SCRIPT_DIR}/run-phase7-qualification.sh" >"${PRIVATE_DIR}/qualification.log" 2>&1
 qualification_exit=$?
 set -e

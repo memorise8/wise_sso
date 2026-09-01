@@ -217,6 +217,7 @@ def test_both_preflights_run_before_any_http_and_failure_runs_zero_suites(
             str(express_config),
             str(fastapi_config),
             str(evidence),
+            str(tmp_path / "contracts" / "scenarios" / "public.json"),
         ],
         env={"PATH": os.environ["PATH"]},
         check=False,

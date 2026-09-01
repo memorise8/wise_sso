@@ -19,6 +19,7 @@ CANDIDATE_STATE = ROOT / "ops" / "phase7" / "runtime_candidate_state.py"
 LISTEN_GUARD = ROOT / "ops" / "phase7" / "runtime_listen_guard.py"
 PUBLISH = ROOT / "ops" / "phase7" / "runtime_publish.py"
 PRIVATE_REMOVE = ROOT / "ops" / "phase7" / "runtime_private_remove.py"
+PUBLIC_SCENARIOS = ROOT / "ops" / "phase7" / "runtime_public_scenarios.py"
 EXPRESS_LOOPBACK = ROOT / "ops" / "phase7" / "runtime_express_loopback.mjs"
 
 
@@ -179,6 +180,132 @@ def test_runtime_exec_rejects_non_private_environment(tmp_path: Path) -> None:
     assert "0600" in result.stderr
 
 
+def run_public_scenario_helper(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed local helper and argument vector
+        [sys.executable, str(PUBLIC_SCENARIOS), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_private_public_scenario_changes_only_jwks_expectation_and_snapshots(
+    tmp_path: Path,
+) -> None:
+    source = REPO / "contracts" / "scenarios" / "public.json"
+    source_before = source.read_bytes()
+    runtime = tmp_path / "runtime-public.json"
+    created = run_public_scenario_helper(
+        [
+            "create",
+            "--source",
+            str(source),
+            "--example",
+            str(ROOT / ".env.example"),
+            "--output",
+            str(runtime),
+        ]
+    )
+    assert created.returncode == 0, created.stderr
+    assert stat.S_IMODE(runtime.stat().st_mode) == 0o600
+    original = json.loads(source_before)
+    derived = json.loads(runtime.read_bytes())
+    original_jwks = next(item for item in original["scenarios"] if item["id"] == "public.jwks")
+    derived_jwks = next(item for item in derived["scenarios"] if item["id"] == "public.jwks")
+    original_jwks["expect"]["json"]["keys"] = derived_jwks["expect"]["json"]["keys"]
+    assert derived == original
+    assert derived_jwks["expect"]["json"]["keys"][0]["kid"] == "synthetic-fastapi-key-1"
+    snapshot = tmp_path / "snapshot.json"
+    validated = run_public_scenario_helper(
+        [
+            "snapshot",
+            "--input",
+            str(runtime),
+            "--source",
+            str(source),
+            "--example",
+            str(ROOT / ".env.example"),
+            "--output",
+            str(snapshot),
+            "--repo",
+            str(REPO),
+            "--evidence",
+            str(ROOT / "evidence" / "phase7"),
+        ]
+    )
+    assert validated.returncode == 0, validated.stderr
+    assert "runtimePublicScenarioSha256=" in validated.stdout
+    assert "runtimePublicJwkSha256=" in validated.stdout
+    assert snapshot.read_bytes() == runtime.read_bytes()
+    assert stat.S_IMODE(snapshot.stat().st_mode) == 0o600
+    assert source.read_bytes() == source_before
+
+
+def test_private_public_scenario_rejects_tampering_mode_and_symlink(tmp_path: Path) -> None:
+    source = REPO / "contracts" / "scenarios" / "public.json"
+    runtime = tmp_path / "runtime-public.json"
+    created = run_public_scenario_helper(
+        [
+            "create",
+            "--source",
+            str(source),
+            "--example",
+            str(ROOT / ".env.example"),
+            "--output",
+            str(runtime),
+        ]
+    )
+    assert created.returncode == 0, created.stderr
+    document = json.loads(runtime.read_bytes())
+    document["scenarios"][0]["request"]["method"] = "POST"
+    runtime.write_text(json.dumps(document), encoding="utf-8")
+    runtime.chmod(0o600)
+
+    common = [
+        "snapshot",
+        "--source",
+        str(source),
+        "--example",
+        str(ROOT / ".env.example"),
+        "--repo",
+        str(REPO),
+        "--evidence",
+        str(ROOT / "evidence" / "phase7"),
+    ]
+    tampered = run_public_scenario_helper(
+        [*common, "--input", str(runtime), "--output", str(tmp_path / "tampered.json")]
+    )
+    assert tampered.returncode != 0
+    assert "may replace only" in tampered.stderr
+
+    runtime.chmod(0o644)
+    wrong_mode = run_public_scenario_helper(
+        [*common, "--input", str(runtime), "--output", str(tmp_path / "mode.json")]
+    )
+    assert wrong_mode.returncode != 0
+    assert "0600" in wrong_mode.stderr
+
+    link = tmp_path / "runtime-link.json"
+    link.symlink_to(runtime)
+    linked = run_public_scenario_helper(
+        [*common, "--input", str(link), "--output", str(tmp_path / "link.json")]
+    )
+    assert linked.returncode != 0
+    assert "non-link" in linked.stderr
+
+
+def test_launcher_threads_private_public_scenario_into_qualification() -> None:
+    launcher = LAUNCHER.read_text(encoding="utf-8")
+    qualification = QUALIFICATION.read_text(encoding="utf-8")
+    gate = (ROOT / "ops" / "phase7" / "run-independent-contract-gate.sh").read_text()
+    assert 'runtime_public_scenarios.py" create' in launcher
+    assert 'WISEACCT_PHASE7_PUBLIC_SCENARIOS="${PRIVATE_DIR}/runtime-public.json"' in launcher
+    assert "runtime_public_scenarios.py snapshot" in qualification
+    assert "runtimePublicScenarioSha256" in qualification
+    assert '"${PUBLIC_SCENARIOS}"; then' in qualification
+    assert 'if [[ "${suite}" == public ]]; then scenarios="${PUBLIC_SCENARIOS}"; fi' in gate
+
+
 def test_redis_cleanup_is_pinned_to_only_databases_13_and_14() -> None:
     source = REDIS_CLEAR.read_text(encoding="utf-8")
     assert "choices=(13, 14)" in source
@@ -194,6 +321,8 @@ def test_evidence_is_published_after_cleanup_without_runtime_logs_or_secrets() -
     assert "overallReplacementReady=false" in publish
     assert "runtime.log" not in publish and "qualification.log" not in publish
     assert "PASSWORD" not in publish and "DATABASE_URL" not in publish
+    assert 'cleanup.status"' in publish
+    assert 'wc -l)" != 5' in publish
     assert 'chmod -R a-w -- "${evidence_staging}"' in publish
     assert (
         'runtime_publish.py" --staging "${evidence_staging}" --final '
@@ -216,6 +345,12 @@ def make_fake_docker(tmp_path: Path) -> tuple[Path, Path]:
         "      ps) echo wiseacct-sso-fastapi-dev-redis ;;\n"
         '      inspect) echo "/wiseacct-sso-fastapi-dev-redis|true|wiseacct-sso-fastapi-dev" ;;\n'
         "      exec) echo PONG ;;\n"
+        "    esac\n"
+        "    exit 0 ;;\n"
+        "  redis-unusable)\n"
+        '    case "$1" in\n'
+        "      ps) echo wiseacct-sso-fastapi-dev-redis ;;\n"
+        '      inspect) echo "/wiseacct-sso-fastapi-dev-redis|false|wiseacct-sso-fastapi-dev" ;;\n'
         "    esac\n"
         "    exit 0 ;;\n"
         "  *) exit 0 ;;\n"
@@ -259,9 +394,11 @@ def test_candidate_resource_inspection_distinguishes_empty_present_and_error(
 def test_candidate_redis_probe_requires_exact_usable_runtime(tmp_path: Path) -> None:
     usable = run_candidate_state(tmp_path / "usable", "redis", "redis-usable")
     absent = run_candidate_state(tmp_path / "absent", "empty", "redis-usable")
+    unusable = run_candidate_state(tmp_path / "unusable", "redis-unusable", "redis-usable")
     error = run_candidate_state(tmp_path / "error", "error", "redis-usable")
     assert usable[:2] == (0, "USABLE") and len(usable[2]) == 3
     assert absent[:2] == (1, "ABSENT") and len(absent[2]) == 1
+    assert unusable[:2] == (1, "UNUSABLE") and len(unusable[2]) == 2
     assert error[:2] == (2, "ERROR") and len(error[2]) == 1
 
 
@@ -412,6 +549,14 @@ def test_atomic_evidence_publish_refuses_collision_without_overwrite(tmp_path: P
             encoding="utf-8",
         )
         (path / "provenance.txt").write_text("gitHead=synthetic\n", encoding="utf-8")
+        (path / "cleanup.status").write_text(
+            "terminateExpress=PASS\nterminateFastapi=PASS\n"
+            "dropExpressDatabase=PASS\ndropFastapiDatabase=PASS\n"
+            "dropExpressRole=PASS\ndropFastapiRole=PASS\nredisProbe=PASS\n"
+            "clearRedis13=PASS\nclearRedis14=PASS\ncandidateComposeDown=PASS\n"
+            "expressSnapshot=PASS\ncandidateResources=PASS\nprivateTempRemove=PASS\n",
+            encoding="utf-8",
+        )
         for child in path.iterdir():
             child.chmod(0o400)
         path.chmod(0o500)
@@ -459,15 +604,66 @@ def test_atomic_evidence_publish_refuses_collision_without_overwrite(tmp_path: P
 def test_atomic_evidence_publish_rejects_false_pass(tmp_path: Path) -> None:
     staging = tmp_path / ".run.tmp.false-pass"
     staging.mkdir()
-    (staging / "express-before.txt").write_text("before", encoding="utf-8")
-    (staging / "express-after.txt").write_text("after", encoding="utf-8")
+    (staging / "express-before.txt").write_text("same", encoding="utf-8")
+    (staging / "express-after.txt").write_text("same", encoding="utf-8")
     (staging / "result.status").write_text(
-        "status=PASS\ncleanup=FAIL\nexpressSnapshotUnchanged=false\n"
+        "status=PASS\ncleanup=PASS\nexpressSnapshotUnchanged=true\n"
+        "zeroCandidateResources=true\nprivateTempRemoved=true\n"
+        "overallReplacementReady=false\n",
+        encoding="utf-8",
+    )
+    (staging / "provenance.txt").write_text("gitHead=synthetic\n", encoding="utf-8")
+    (staging / "cleanup.status").write_text(
+        "terminateExpress=PASS\nterminateFastapi=PASS\n"
+        "dropExpressDatabase=PASS\ndropFastapiDatabase=PASS\n"
+        "dropExpressRole=PASS\ndropFastapiRole=PASS\nredisProbe=UNUSABLE\n"
+        "clearRedis13=NOT_REQUIRED\nclearRedis14=NOT_REQUIRED\n"
+        "candidateComposeDown=PASS\nexpressSnapshot=PASS\n"
+        "candidateResources=PASS\nprivateTempRemove=PASS\n",
+        encoding="utf-8",
+    )
+    for child in staging.iterdir():
+        child.chmod(0o400)
+    staging.chmod(0o500)
+    result = subprocess.run(  # noqa: S603 - fixed local publisher
+        [
+            sys.executable,
+            str(PUBLISH),
+            "--staging",
+            str(staging),
+            "--final",
+            str(tmp_path / "run"),
+        ],
+        check=False,
+    )
+    assert result.returncode == 2
+    assert not (tmp_path / "run").exists()
+    staging.chmod(0o700)
+    for child in staging.iterdir():
+        child.chmod(0o600)
+
+
+def test_atomic_evidence_publish_rejects_all_not_required_pass(tmp_path: Path) -> None:
+    staging = tmp_path / ".run.tmp.not-required"
+    staging.mkdir()
+    (staging / "express-before.txt").write_text("same", encoding="utf-8")
+    (staging / "express-after.txt").write_text("same", encoding="utf-8")
+    (staging / "result.status").write_text(
+        "status=PASS\ncleanup=PASS\nexpressSnapshotUnchanged=false\n"
         "zeroCandidateResources=unknown\nprivateTempRemoved=false\n"
         "overallReplacementReady=false\n",
         encoding="utf-8",
     )
     (staging / "provenance.txt").write_text("gitHead=synthetic\n", encoding="utf-8")
+    (staging / "cleanup.status").write_text(
+        "terminateExpress=NOT_REQUIRED\nterminateFastapi=NOT_REQUIRED\n"
+        "dropExpressDatabase=NOT_REQUIRED\ndropFastapiDatabase=NOT_REQUIRED\n"
+        "dropExpressRole=NOT_REQUIRED\ndropFastapiRole=NOT_REQUIRED\n"
+        "redisProbe=NOT_REQUIRED\nclearRedis13=NOT_REQUIRED\nclearRedis14=NOT_REQUIRED\n"
+        "candidateComposeDown=NOT_REQUIRED\nexpressSnapshot=NOT_REQUIRED\n"
+        "candidateResources=NOT_REQUIRED\nprivateTempRemove=NOT_REQUIRED\n",
+        encoding="utf-8",
+    )
     for child in staging.iterdir():
         child.chmod(0o400)
     staging.chmod(0o500)
@@ -516,6 +712,60 @@ def test_terminate_runtime_kills_and_reaps_an_exact_child(tmp_path: Path) -> Non
     )
     assert result.returncode == 0, result.stderr
     assert time.monotonic() - started >= 1.5
+
+
+def test_terminate_runtime_treats_already_dead_child_as_success(tmp_path: Path) -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    function = source[
+        source.index("terminate_runtime() {") : source.index("prepare_evidence_staging() {")
+    ]
+    script = tmp_path / "already-dead.sh"
+    script.write_text(
+        "#!/usr/bin/env bash\nset -u\n"
+        + function
+        + '\ntrue &\npid=$!\nwait "${pid}"\n'
+        + 'terminate_runtime "${pid}" || exit 20\n'
+        + "exit 0\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    result = subprocess.run(  # noqa: S603 - synthetic already-dead child harness
+        [str(script)], check=False, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_cleanup_evidence_has_exact_attribution_and_readiness_noise_is_private() -> None:
+    source = LAUNCHER.read_text(encoding="utf-8")
+    publish = source[source.index("publish_evidence() {") : source.index("cleanup() {")]
+    expected = {
+        "terminateExpress",
+        "terminateFastapi",
+        "dropExpressDatabase",
+        "dropFastapiDatabase",
+        "dropExpressRole",
+        "dropFastapiRole",
+        "redisProbe",
+        "clearRedis13",
+        "clearRedis14",
+        "candidateComposeDown",
+        "expressSnapshot",
+        "candidateResources",
+        "privateTempRemove",
+    }
+    assert all(f"{key}=%s" in publish for key in expected)
+    cleanup = source[source.index("cleanup() {") : source.index("trap cleanup EXIT")]
+    assert (
+        'redis_probe_output="$(${PHASE7_DIR}/runtime_candidate_state.py redis-usable)"' in cleanup
+    )
+    assert "1:ABSENT)" in cleanup and 'cleanup_redis_probe="ABSENT"' in cleanup
+    assert "1:UNUSABLE)" in cleanup and 'cleanup_redis_probe="UNUSABLE"' in cleanup
+    unusable = cleanup[
+        cleanup.index("1:UNUSABLE)") : cleanup.index(";;", cleanup.index("1:UNUSABLE)"))
+    ]
+    assert "cleanup_status=1" in unusable
+    assert '2>>"${PRIVATE_DIR}/readiness-curl.stderr"' in source
+    assert "readiness-curl.stderr" not in publish
 
 
 def test_private_temp_removal_is_verified_and_gates_pass_evidence(tmp_path: Path) -> None:

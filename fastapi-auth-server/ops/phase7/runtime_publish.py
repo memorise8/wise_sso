@@ -16,10 +16,36 @@ RENAME_NOREPLACE = 1
 EXPECTED_FILES = {
     "express-before.txt",
     "express-after.txt",
+    "cleanup.status",
     "result.status",
     "provenance.txt",
 }
 FORBIDDEN = ("postgresql://", "postgres://", "redis://", "private key", "password=")
+CLEANUP_KEYS = {
+    "terminateExpress",
+    "terminateFastapi",
+    "dropExpressDatabase",
+    "dropFastapiDatabase",
+    "dropExpressRole",
+    "dropFastapiRole",
+    "redisProbe",
+    "clearRedis13",
+    "clearRedis14",
+    "candidateComposeDown",
+    "expressSnapshot",
+    "candidateResources",
+    "privateTempRemove",
+}
+CLEANUP_VALUES = {
+    "PASS",
+    "FAIL",
+    "NOT_REQUIRED",
+    "NOT_RUN",
+    "ABSENT",
+    "UNUSABLE",
+    "PRESENT",
+    "ERROR",
+}
 
 
 def validate_bundle(staging: Path) -> None:
@@ -43,12 +69,41 @@ def validate_bundle(staging: Path) -> None:
         raise ValueError("evidence status must fail closed")
     if result.get("overallReplacementReady") != "false":
         raise ValueError("runtime evidence cannot approve replacement")
+    cleanup_lines = [
+        line.split("=", 1) for line in text["cleanup.status"].splitlines() if line and "=" in line
+    ]
+    cleanup = dict(cleanup_lines)
+    if (
+        len(cleanup_lines) != len(CLEANUP_KEYS)
+        or set(cleanup) != CLEANUP_KEYS
+        or any(value not in CLEANUP_VALUES for value in cleanup.values())
+    ):
+        raise ValueError("cleanup evidence must contain every exact sanitized step")
+    cleanup_expected = (
+        "PASS"
+        if all(value in {"PASS", "NOT_REQUIRED", "ABSENT"} for value in cleanup.values())
+        else "FAIL"
+    )
+    snapshot_expected = "true" if cleanup["expressSnapshot"] == "PASS" else "false"
+    candidate_expected = {
+        "PASS": "true",
+        "PRESENT": "false",
+    }.get(cleanup["candidateResources"], "unknown")
+    private_expected = "true" if cleanup["privateTempRemove"] == "PASS" else "false"
+    if (
+        result.get("cleanup") != cleanup_expected
+        or result.get("expressSnapshotUnchanged") != snapshot_expected
+        or result.get("zeroCandidateResources") != candidate_expected
+        or result.get("privateTempRemoved") != private_expected
+    ):
+        raise ValueError("aggregate cleanup fields do not match their exact cleanup steps")
     if result["status"] == "PASS" and (
         result.get("cleanup") != "PASS"
         or result.get("expressSnapshotUnchanged") != "true"
         or result.get("zeroCandidateResources") != "true"
         or result.get("privateTempRemoved") != "true"
         or text["express-before.txt"] != text["express-after.txt"]
+        or any(value != "PASS" for value in cleanup.values())
     ):
         raise ValueError("PASS evidence requires every cleanup invariant")
 

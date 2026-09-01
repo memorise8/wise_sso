@@ -17,6 +17,14 @@ fail-closed placeholders. The current scenario corpus is not yet the complete
 Phase 7 replacement sample, so this gate alone cannot establish replacement
 readiness.
 
+The disposable launcher derives a private runtime-only copy of `public.json`
+for its committed synthetic signer. Only the expected JWK in the single
+`public.jwks` scenario may differ. The qualification runner reopens that input
+as a non-link regular file with exact mode `0600`, verifies the complete
+derivation against the committed corpus and `.env.example`, snapshots it into
+its private directory, and records only scenario/JWK hashes in provenance.
+The checked-in public corpus remains unchanged.
+
 Required environment variables:
 
 - `WISEACCT_PHASE7_BASELINE_URL` — isolated Express loopback origin.
@@ -97,6 +105,26 @@ Publication refuses collisions, validates a complete sanitized read-only
 bundle, and uses a no-replace atomic directory rename. A `PASS` bundle is
 rejected unless cleanup, Express stability, and zero-candidate invariants are
 all proven.
+
+The runtime bundle includes `cleanup.status`, with a sanitized result for each
+runtime termination, database and role drop, Redis probe/clear, candidate
+Compose down, Express snapshot, candidate-resource inspection, and private
+temporary-directory removal. This makes an aggregate cleanup failure
+attributable without publishing credentials or runtime log bodies. A child
+that has already exited is reaped successfully; ownership mismatches and a
+process that remains alive after TERM/KILL still fail cleanup.
+The Redis probe is accepted as benignly absent only for the exact paired result
+`exit 1` plus `ABSENT`. `UNUSABLE`, an output/exit mismatch, or a probe error is
+recorded separately and blocks PASS before the guarded Compose teardown.
+For a full successful launcher run, every cleanup key must be `PASS`, including
+the Redis probe and both logical-database clears; `NOT_REQUIRED` is never enough
+for an overall runtime `PASS`. Aggregate cleanup, Express snapshot, candidate
+resource, and private-temp fields are cross-checked against their corresponding
+step values before publication.
+
+Expected connection-refused messages during readiness polling are written only
+to the private temporary directory. The console receives one non-sensitive
+timeout error only if readiness is never established.
 
 Express is started through a Phase 7-only Node launcher that injects
 `127.0.0.1` when the unchanged application calls `listen(port, callback)` and
