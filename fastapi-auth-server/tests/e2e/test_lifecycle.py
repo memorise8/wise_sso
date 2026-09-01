@@ -363,15 +363,46 @@ async def test_runtime_rebinds_a_fresh_oauth_client_for_each_lifespan(
     async with running_client(app):
         assert len(created_clients) == 1
         assert vars(app.state.phase4_services)["_oauth_client"] is created_clients[0]
+        assert (
+            vars(app.state.phase4_services)["_tokens"] is vars(app.state.phase6_services)["_tokens"]
+        )
     assert app.state.phase4_services is None
+    assert app.state.phase6_services is None
     async with running_client(app):
         assert len(created_clients) == 2
         assert vars(app.state.phase4_services)["_oauth_client"] is created_clients[1]
+        assert (
+            vars(app.state.phase4_services)["_tokens"] is vars(app.state.phase6_services)["_tokens"]
+        )
     assert app.state.phase4_services is None
+    assert app.state.phase6_services is None
 
     assert len(created_clients) == 2
     assert created_clients[0] is not created_clients[1]
     assert events.count("oauth.close") == 2
+
+
+@pytest.mark.anyio
+async def test_runtime_mounts_admin_router_under_both_express_prefixes(
+    synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    app = runtime_app_with(
+        monkeypatch,
+        synthetic_settings,
+        FakeDatabase(events),
+        FakeRedisStore(events),
+    )
+    async with running_client(app) as client:
+        responses = [
+            await client.get("/admin/users"),
+            await client.get("/admin/audit-logs"),
+            await client.get("/manage-api/users"),
+            await client.get("/manage-api/audit-logs"),
+        ]
+
+    assert [response.status_code for response in responses] == [401, 401, 401, 401]
+    assert all(response.json()["error"]["code"] == "UNAUTHORIZED" for response in responses)
 
 
 @pytest.mark.anyio

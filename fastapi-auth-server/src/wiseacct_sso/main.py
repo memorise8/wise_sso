@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from sqlalchemy.engine import make_url
 
 from wiseacct_sso import __version__
-from wiseacct_sso.api.dependencies import Phase4Services
+from wiseacct_sso.api.dependencies import Phase4Services, Phase6Services
 from wiseacct_sso.api.errors import ExpressJsonResponse, install_error_handlers
 from wiseacct_sso.api.middleware import (
     AuthRateLimitMiddleware,
@@ -25,11 +25,13 @@ from wiseacct_sso.api.middleware import (
 from wiseacct_sso.api.middleware import (
     RequestLogger as RequestLogger,
 )
+from wiseacct_sso.api.routes.admin import build_admin_router
 from wiseacct_sso.api.routes.auth import build_auth_router
 from wiseacct_sso.api.routes.oauth import build_oauth_router
 from wiseacct_sso.api.routes.system import build_system_router
 from wiseacct_sso.api.routes.users import build_users_router
 from wiseacct_sso.api.staticfiles import ImmutableStaticFiles
+from wiseacct_sso.application.admin import Phase6AdminService
 from wiseacct_sso.application.auth import Phase5AuthService
 from wiseacct_sso.config import Settings, get_settings
 from wiseacct_sso.domain.auth import PasswordPolicy
@@ -94,6 +96,7 @@ def create_app(
     lifecycle_hooks: LifecycleHooks | None = None,
     request_logger: RequestLogger | None = None,
     phase4_services: Phase4Services | None = None,
+    phase6_services: Phase6Services | None = None,
 ) -> FastAPI:
     configure_logging()
     application = FastAPI(
@@ -109,6 +112,7 @@ def create_app(
     application.state.settings = settings
     application.state.telemetry_drop_count = 0
     application.state.phase4_services = phase4_services
+    application.state.phase6_services = phase6_services
     logger: RequestLogger = request_logger or structlog.get_logger()
 
     def record_telemetry_drop() -> None:
@@ -137,6 +141,9 @@ def create_app(
         application.include_router(build_users_router())
         if hasattr(phase4_services, "oauth_start"):
             application.include_router(build_oauth_router())
+    if phase6_services is not None:
+        application.include_router(build_admin_router(prefix="/admin"))
+        application.include_router(build_admin_router(prefix="/manage-api"))
     application.mount(
         "/assets",
         ImmutableStaticFiles(directory=_STATIC_ROOT / "assets"),
@@ -179,11 +186,12 @@ def create_runtime_app() -> FastAPI:
 
     frontend_origin = _frontend_origin(settings.frontend_redirect_url)
     mail_service = create_mail_service(settings)
+    token_codec = JwtTokenCodec.from_settings(settings)
     phase5_services = Phase5AuthService(
         database=runtime_database,
         redis=runtime_redis,
         passwords=AsyncPasswordHasher(),
-        tokens=JwtTokenCodec.from_settings(settings),
+        tokens=token_codec,
         password_policy=PasswordPolicy(
             min_length=settings.password_min_length,
             allowed_email_domain=settings.company_allowed_email_domain or None,
@@ -198,6 +206,7 @@ def create_runtime_app() -> FastAPI:
         provider_config=lambda provider: provider_config_for(settings, provider),
         oauth_client=None,
     )
+    phase6_services = Phase6AdminService(database=runtime_database, tokens=token_codec)
 
     async def close_resources(*, report_failure: bool) -> None:
         first_error: Exception | None = None
@@ -229,6 +238,7 @@ def create_runtime_app() -> FastAPI:
         application.state.redis_store = None
         application.state.database = None
         application.state.phase4_services = None
+        application.state.phase6_services = None
         if report_failure and first_error is not None:
             raise RuntimeError("Runtime dependency shutdown failed") from None
 
@@ -249,6 +259,7 @@ def create_runtime_app() -> FastAPI:
             stage = "redis_start"
             await resources.redis.start()
             application.state.phase4_services = phase5_services
+            application.state.phase6_services = phase6_services
         except Exception as error:
             _report_runtime_dependency_failure(stage, error)
             await close_resources(report_failure=False)
@@ -268,6 +279,7 @@ def create_runtime_app() -> FastAPI:
         readiness_check=database_ready,
         lifecycle_hooks=LifecycleHooks(startup=startup, shutdown=shutdown),
         phase4_services=phase5_services,
+        phase6_services=phase6_services,
     )
     application.state.database = None
     application.state.redis_store = None

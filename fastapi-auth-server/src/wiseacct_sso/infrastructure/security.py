@@ -290,6 +290,34 @@ class JwtTokenCodec:
             expires_at=expires_at,
         )
 
+    def verify_admin_access_subject(self, token: str) -> str:
+        """Mirror Express admin authentication without imposing Phase 4 claim shape.
+
+        ``jsonwebtoken.verify`` errors are deliberately allowed to propagate so the
+        admin route's generic error middleware returns the same 500 response as
+        Express.  Only the post-verification ``readJwtPayload`` checks become the
+        public 401 ``INVALID_TOKEN`` response.
+        """
+
+        payload = jwt.decode(
+            token,
+            self._access_public_key,
+            algorithms=["RS256"],
+            issuer=self._issuer,
+            audience=self._default_audience,
+            options={
+                # jsonwebtoken ignores iat unless maxAge is configured and does
+                # not validate these claim types as part of verify().
+                "verify_iat": False,
+                "verify_jti": False,
+                "verify_sub": False,
+            },
+        )
+        subject = payload.get("sub")
+        if not isinstance(subject, str) or payload.get("type") != "access":
+            raise TokenValidationError()
+        return subject
+
     def issue_refresh_token(
         self,
         *,

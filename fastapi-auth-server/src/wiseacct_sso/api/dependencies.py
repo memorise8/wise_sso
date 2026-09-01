@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from datetime import datetime
 from typing import Annotated, Never, Protocol, cast, overload
 
 from fastapi import Depends, Request
 
+from wiseacct_sso.application.admin import (
+    AssignRoleResult,
+    RemoveRoleResult,
+    RevokeSessionsResult,
+    SetUserStatusResult,
+)
 from wiseacct_sso.application.auth import (
     AuthHandoffExchangeInput,
     EmailVerificationResult,
@@ -16,9 +24,16 @@ from wiseacct_sso.application.auth import (
     RequestAuditContext,
     TokenPair,
 )
+from wiseacct_sso.domain.admin import (
+    AdminAuditLogPage,
+    AdminRoleProfile,
+    AdminUserListInput,
+    AdminUserPage,
+    AuditLogListInput,
+)
 from wiseacct_sso.domain.oauth import ClientHandoff, OAuthProvider
 from wiseacct_sso.domain.password_reset import PasswordResetAccepted, PasswordResetConfirmed
-from wiseacct_sso.domain.users import CurrentUser
+from wiseacct_sso.domain.users import CurrentUser, UserStatus
 from wiseacct_sso.domain.verification import VerificationAccepted
 
 
@@ -125,6 +140,69 @@ def phase5_services(request: Request) -> Phase5Services:
 
 
 InjectedPhase5Services = Annotated[Phase5Services, Depends(phase5_services)]
+
+
+class Phase6Services(Protocol):
+    """Administrator HTTP boundary backed by the Phase 6 application service."""
+
+    async def authenticate_admin(self, access_token: str, *, route: str, method: str) -> str: ...
+
+    async def list_users(self, input: AdminUserListInput) -> AdminUserPage: ...
+
+    async def list_audit_logs(self, input: AuditLogListInput) -> AdminAuditLogPage: ...
+
+    async def find_role_by_id(self, role_id: str) -> AdminRoleProfile | None: ...
+
+    async def set_user_status(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        status: str | UserStatus,
+        reason_code: str,
+        details: Mapping[str, object] | None = None,
+        now: datetime | None = None,
+    ) -> SetUserStatusResult: ...
+
+    async def assign_role(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        service_key: str,
+        name: str,
+        reason_code: str,
+        details: Mapping[str, object] | None = None,
+    ) -> AssignRoleResult: ...
+
+    async def remove_role(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        service_key: str,
+        name: str,
+        reason_code: str,
+        details: Mapping[str, object] | None = None,
+        now: datetime | None = None,
+    ) -> RemoveRoleResult: ...
+
+    async def revoke_sessions(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        reason_code: str,
+        details: Mapping[str, object] | None = None,
+        now: datetime | None = None,
+    ) -> RevokeSessionsResult: ...
+
+
+def phase6_services(request: Request) -> Phase6Services:
+    return cast(Phase6Services, request.app.state.phase6_services)
+
+
+InjectedPhase6Services = Annotated[Phase6Services, Depends(phase6_services)]
 
 
 def audit_context(request: Request) -> RequestAuditContext:

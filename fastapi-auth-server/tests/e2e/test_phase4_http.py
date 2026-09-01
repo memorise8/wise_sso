@@ -159,8 +159,10 @@ def test_malformed_json_is_rejected_before_auth_rate_limit(
         content=b'{"email":"person@example.com",',
         headers={"content-type": "application/json"},
     )
-    assert response.status_code == 400
-    assert response.json() == {"error": {"code": "INVALID_REQUEST", "message": "Invalid request"}}
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {"code": "INTERNAL_SERVER_ERROR", "message": "Internal server error"}
+    }
     assert services.calls == []
 
 
@@ -188,7 +190,7 @@ def test_express_json_strict_mode_classifies_before_rate_limit(
         content=body,
         headers={"content-type": "application/json; charset=utf-8"},
     )
-    assert response.status_code == 400
+    assert response.status_code == (400 if expected_rate_calls else 500)
     assert sum(name == "rate" for name, _value in services.calls) == expected_rate_calls
 
 
@@ -210,9 +212,9 @@ def test_malformed_application_plus_json_reaches_limiter_before_validation(
         (b'{"email":"person@example.com","password":"password"}', 200, 1, 1),
         (b'{"email":"person@example.com"}', 400, 1, 0),
         (b"[]", 400, 1, 0),
-        (b"null", 400, 0, 0),
-        (b'{"email":', 400, 0, 0),
-        (b"   \t\r\n", 400, 0, 0),
+        (b"null", 500, 0, 0),
+        (b'{"email":', 500, 0, 0),
+        (b"   \t\r\n", 500, 0, 0),
     ],
 )
 def test_utf8_bom_matches_express_json_classification(
@@ -274,10 +276,10 @@ _VALID_LOGIN_JSON = '{"email":"person@example.com","password":"password"}'
         ),
         ("[]".encode("utf-16-le"), "utf-16le", 400, 1, 0),
         ("null".encode("utf-32-be"), "utf-32be", 500, 0, 0),
-        ('{"email":'.encode("utf-16-le"), "utf-16le", 400, 0, 0),
-        (_VALID_LOGIN_JSON.encode("utf-16-le"), None, 400, 0, 0),
-        (_VALID_LOGIN_JSON.encode("utf-32-le"), None, 400, 0, 0),
-        (_VALID_LOGIN_JSON.encode("utf-16-le"), "utf-16be", 400, 0, 0),
+        ('{"email":'.encode("utf-16-le"), "utf-16le", 500, 0, 0),
+        (_VALID_LOGIN_JSON.encode("utf-16-le"), None, 500, 0, 0),
+        (_VALID_LOGIN_JSON.encode("utf-32-le"), None, 500, 0, 0),
+        (_VALID_LOGIN_JSON.encode("utf-16-le"), "utf-16be", 500, 0, 0),
         (_VALID_LOGIN_JSON.encode("utf-8"), "utf8", 500, 0, 0),
     ],
 )

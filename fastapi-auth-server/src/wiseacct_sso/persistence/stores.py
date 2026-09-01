@@ -2,13 +2,29 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Protocol, cast
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, exists, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
+from sqlalchemy.sql.elements import ColumnElement
 
+from wiseacct_sso.domain.admin import (
+    AdminAuditLogPage,
+    AdminAuditRecord,
+    AdminRoleProfile,
+    AdminUserListInput,
+    AdminUserPage,
+    AdminUserProfile,
+    AuditLogListInput,
+    AuditRetentionCleanupResult,
+    StoredAuditLogRecord,
+    audit_log_page,
+    audit_retention_cutoff,
+    parse_role_filter,
+)
+from wiseacct_sso.domain.users import UserStatus as DomainUserStatus
 from wiseacct_sso.persistence.models import (
     AuditLog,
     EmailVerificationToken,
@@ -1109,3 +1125,356 @@ class AuditStore:
             )
         ).one_or_none()
         return None if row is None else str(row.userId)
+
+
+class _AdminUserRow(Protocol):
+    id: object
+    email: str | None
+    name: str | None
+    status: str | UserStatus
+    createdAt: datetime
+
+
+class AdminDirectoryStore:
+    """Connection-scoped administrator directory reads matching Prisma selection rules."""
+
+    async def list_users(
+        self, connection: AsyncConnection, *, input: AdminUserListInput
+    ) -> AdminUserPage:
+        conditions: list[ColumnElement[bool]] = []
+        if input.status is not None:
+            conditions.append(User.c.status == input.status)
+        if input.email is not None:
+            conditions.append(User.c.email.ilike(f"%{input.email.strip()}%"))
+        if input.role is not None:
+            service_key, role_name = parse_role_filter(input.role)
+            role_conditions = [
+                UserRole.c.userId == User.c.id,
+                UserRole.c.roleId == Role.c.id,
+                Role.c.name == role_name,
+            ]
+            if service_key is not None:
+                role_conditions.append(Role.c.serviceKey == service_key)
+            conditions.append(
+                exists(select(1).select_from(UserRole.join(Role)).where(*role_conditions))
+            )
+
+        page_rows = (
+            await connection.execute(
+                select(User.c.id, User.c.email, User.c.name, User.c.status, User.c.createdAt)
+                .where(*conditions)
+                .order_by(User.c.createdAt.desc())
+                .offset((input.page - 1) * input.page_size)
+                .limit(input.page_size)
+            )
+        ).all()
+        total = int(
+            (
+                await connection.execute(select(func.count()).select_from(User).where(*conditions))
+            ).scalar_one()
+        )
+
+        user_ids = [str(row.id) for row in page_rows]
+        roles_by_user: dict[str, list[AdminRoleProfile]] = {user_id: [] for user_id in user_ids}
+        if user_ids:
+            role_rows = (
+                await connection.execute(
+                    select(
+                        UserRole.c.userId,
+                        Role.c.id,
+                        Role.c.serviceKey,
+                        Role.c.name,
+                    )
+                    .select_from(UserRole.join(Role, UserRole.c.roleId == Role.c.id))
+                    .where(UserRole.c.userId.in_(user_ids))
+                )
+            ).all()
+            for role_row in role_rows:
+                roles_by_user[str(role_row.userId)].append(
+                    AdminRoleProfile(
+                        id=str(role_row.id),
+                        service_key=str(role_row.serviceKey),
+                        name=str(role_row.name),
+                    )
+                )
+
+        return AdminUserPage(
+            items=tuple(
+                self._profile(row, roles=tuple(roles_by_user[str(row.id)])) for row in page_rows
+            ),
+            total=total,
+            page=input.page,
+            page_size=input.page_size,
+        )
+
+    async def find_role_by_id(
+        self, connection: AsyncConnection, *, role_id: str
+    ) -> AdminRoleProfile | None:
+        row = (
+            await connection.execute(
+                select(Role.c.id, Role.c.serviceKey, Role.c.name)
+                .where(Role.c.id == role_id)
+                .limit(1)
+            )
+        ).one_or_none()
+        return (
+            None
+            if row is None
+            else AdminRoleProfile(
+                id=str(row.id), service_key=str(row.serviceKey), name=str(row.name)
+            )
+        )
+
+    async def is_active_temis_admin(self, connection: AsyncConnection, *, user_id: str) -> bool:
+        row = (
+            await connection.execute(
+                select(User.c.id)
+                .select_from(
+                    User.join(UserRole, UserRole.c.userId == User.c.id).join(
+                        Role, Role.c.id == UserRole.c.roleId
+                    )
+                )
+                .where(
+                    User.c.id == user_id,
+                    User.c.status == UserStatus.ACTIVE,
+                    Role.c.serviceKey == "temis",
+                    Role.c.name == "admin",
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        return row is not None
+
+    @staticmethod
+    def _profile(row: object, *, roles: tuple[AdminRoleProfile, ...]) -> AdminUserProfile:
+        typed = cast(_AdminUserRow, row)
+        return AdminUserProfile(
+            id=str(typed.id),
+            email=typed.email,
+            name=typed.name,
+            status=DomainUserStatus(typed.status),
+            created_at=typed.createdAt,
+            roles=roles,
+        )
+
+
+class AdminMutationStore:
+    """Atomic admin mutation primitives; the application owns the transaction boundary."""
+
+    async def update_user_status(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: str,
+        status: DomainUserStatus,
+        updated_at: datetime,
+    ) -> bool:
+        result = await connection.execute(
+            update(User).where(User.c.id == user_id).values(status=status, updatedAt=updated_at)
+        )
+        if result.rowcount not in {0, 1}:
+            raise RuntimeError("admin user status update count exceeded one")
+        return result.rowcount == 1
+
+    async def lock_user_for_refresh_token_revocation(
+        self, connection: AsyncConnection, *, user_id: str
+    ) -> bool:
+        row = (
+            await connection.execute(
+                select(User.c.id).where(User.c.id == user_id).with_for_update()
+            )
+        ).one_or_none()
+        return row is not None
+
+    async def revoke_all_refresh_tokens_for_user(
+        self, connection: AsyncConnection, *, user_id: str, revoked_at: datetime
+    ) -> int:
+        if not await self.lock_user_for_refresh_token_revocation(connection, user_id=user_id):
+            return 0
+        result = await connection.execute(
+            update(RefreshToken)
+            .where(RefreshToken.c.userId == user_id, RefreshToken.c.revokedAt.is_(None))
+            .values(revokedAt=revoked_at)
+        )
+        return int(result.rowcount)
+
+    async def upsert_role(
+        self, connection: AsyncConnection, *, service_key: str, name: str
+    ) -> AdminRoleProfile:
+        statement = postgresql_insert(Role).values(
+            id=application_uuid(), serviceKey=service_key, name=name
+        )
+        row = (
+            await connection.execute(
+                statement.on_conflict_do_update(
+                    index_elements=[Role.c.serviceKey, Role.c.name],
+                    set_={"serviceKey": statement.excluded.serviceKey},
+                ).returning(Role.c.id, Role.c.serviceKey, Role.c.name)
+            )
+        ).one_or_none()
+        if row is None:
+            raise RuntimeError("admin role upsert did not return a role")
+        return AdminRoleProfile(id=str(row.id), service_key=str(row.serviceKey), name=str(row.name))
+
+    async def find_role(
+        self, connection: AsyncConnection, *, service_key: str, name: str
+    ) -> AdminRoleProfile | None:
+        row = (
+            await connection.execute(
+                select(Role.c.id, Role.c.serviceKey, Role.c.name)
+                .where(Role.c.serviceKey == service_key, Role.c.name == name)
+                .limit(1)
+            )
+        ).one_or_none()
+        return (
+            None
+            if row is None
+            else AdminRoleProfile(
+                id=str(row.id), service_key=str(row.serviceKey), name=str(row.name)
+            )
+        )
+
+    async def assign_role_to_user(
+        self, connection: AsyncConnection, *, user_id: str, role_id: str
+    ) -> bool:
+        result = await connection.execute(
+            postgresql_insert(UserRole)
+            .values(id=application_uuid(), userId=user_id, roleId=role_id)
+            .on_conflict_do_nothing(index_elements=[UserRole.c.userId, UserRole.c.roleId])
+        )
+        if result.rowcount not in {0, 1}:
+            raise RuntimeError("admin user role insert count exceeded one")
+        return result.rowcount == 1
+
+    async def remove_role_from_user(
+        self, connection: AsyncConnection, *, user_id: str, role_id: str
+    ) -> bool:
+        result = await connection.execute(
+            delete(UserRole).where(UserRole.c.userId == user_id, UserRole.c.roleId == role_id)
+        )
+        return result.rowcount > 0
+
+    async def create_admin_audit_log(
+        self, connection: AsyncConnection, *, event: AdminAuditRecord, created_at: datetime
+    ) -> None:
+        result = await connection.execute(
+            insert(AuditLog).values(
+                id=application_uuid(),
+                eventType=event.event_type,
+                outcome=event.outcome,
+                userId=event.target_user_id,
+                actorUserId=event.actor_user_id,
+                targetUserId=event.target_user_id,
+                reasonCode=event.reason_code,
+                detailsJson=(None if event.details_json is None else dict(event.details_json)),
+                createdAt=created_at,
+            )
+        )
+        _require_one(result.rowcount, "admin audit event insert")
+
+
+class AdminAuditQueryStore:
+    async def query(
+        self, connection: AsyncConnection, *, input: AuditLogListInput
+    ) -> AdminAuditLogPage:
+        conditions: list[ColumnElement[bool]] = []
+        if input.created_at_from is not None:
+            conditions.append(AuditLog.c.createdAt >= _postgres_naive_utc(input.created_at_from))
+        if input.created_at_to is not None:
+            conditions.append(AuditLog.c.createdAt <= _postgres_naive_utc(input.created_at_to))
+        for column, value in (
+            (AuditLog.c.eventType, input.event_type),
+            (AuditLog.c.outcome, input.outcome),
+            (AuditLog.c.userId, input.user_id),
+            (AuditLog.c.actorUserId, input.actor_user_id),
+            (AuditLog.c.targetUserId, input.target_user_id),
+            (AuditLog.c.reasonCode, input.reason_code),
+        ):
+            if value is not None:
+                conditions.append(column == value)
+
+        rows = (
+            await connection.execute(
+                select(
+                    AuditLog.c.id,
+                    AuditLog.c.eventType,
+                    AuditLog.c.outcome,
+                    AuditLog.c.userId,
+                    AuditLog.c.actorUserId,
+                    AuditLog.c.targetUserId,
+                    AuditLog.c.reasonCode,
+                    AuditLog.c.detailsJson,
+                    AuditLog.c.createdAt,
+                )
+                .where(*conditions)
+                .order_by(AuditLog.c.createdAt.desc())
+                .offset((input.page - 1) * input.page_size)
+                .limit(input.page_size)
+            )
+        ).all()
+        total = int(
+            (
+                await connection.execute(
+                    select(func.count()).select_from(AuditLog).where(*conditions)
+                )
+            ).scalar_one()
+        )
+        records = tuple(
+            StoredAuditLogRecord(
+                id=str(row.id),
+                event_type=str(row.eventType),
+                outcome=str(row.outcome),
+                user_id=None if row.userId is None else str(row.userId),
+                actor_user_id=(None if row.actorUserId is None else str(row.actorUserId)),
+                target_user_id=(None if row.targetUserId is None else str(row.targetUserId)),
+                reason_code=None if row.reasonCode is None else str(row.reasonCode),
+                details_json=row.detailsJson,
+                created_at=row.createdAt,
+            )
+            for row in rows
+        )
+        return audit_log_page(records, total=total, input=input)
+
+
+def _postgres_naive_utc(value: datetime) -> datetime:
+    """Bind instants safely to Prisma's PostgreSQL TIMESTAMP(3) columns."""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
+class AuditRetentionStore:
+    async def count_older_than(self, connection: AsyncConnection, *, cutoff: datetime) -> int:
+        return int(
+            (
+                await connection.execute(
+                    select(func.count()).select_from(AuditLog).where(AuditLog.c.createdAt < cutoff)
+                )
+            ).scalar_one()
+        )
+
+    async def delete_older_than(self, connection: AsyncConnection, *, cutoff: datetime) -> int:
+        result = await connection.execute(delete(AuditLog).where(AuditLog.c.createdAt < cutoff))
+        return int(result.rowcount)
+
+    async def cleanup(
+        self,
+        connection: AsyncConnection,
+        *,
+        now: datetime,
+        retention_days: int = 180,
+        execute: bool = False,
+    ) -> AuditRetentionCleanupResult:
+        cutoff = audit_retention_cutoff(now=now, retention_days=retention_days)
+        deleted_count = (
+            await self.delete_older_than(connection, cutoff=cutoff)
+            if execute
+            else await self.count_older_than(connection, cutoff=cutoff)
+        )
+        return AuditRetentionCleanupResult(
+            cutoff=cutoff,
+            deleted_count=deleted_count,
+            dry_run=not execute,
+            retention_days=retention_days,
+        )

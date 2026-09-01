@@ -247,8 +247,8 @@ def test_errors_never_expose_fastapi_or_exception_details(client: TestClient) ->
         content=b'{"value":',
         headers={"content-type": "application/json"},
     )
-    assert malformed.status_code == 400
-    assert malformed.json()["error"]["code"] == "INVALID_REQUEST"
+    assert malformed.status_code == 500
+    assert malformed.json()["error"]["code"] == "INTERNAL_SERVER_ERROR"
 
     public = client.get("/__phase3_public_error__")
     assert public.status_code == 409

@@ -40,6 +40,17 @@ function run(input) {
       }
       return { sub: payload.sub, type: payload.type };
     }
+    case "verify-admin-access": {
+      const payload = jwt.verify(input.token, publicKey(input.publicJwk), {
+        algorithms: ["RS256"],
+        issuer: input.issuer,
+        audience: input.audience,
+      });
+      if (typeof payload === "string" || typeof payload.sub !== "string" || payload.type !== "access") {
+        return { classification: "invalid-shape" };
+      }
+      return { classification: "accepted", sub: payload.sub };
+    }
     case "sign-refresh":
       return jwt.sign(input.payload, input.secret, {
         algorithm: input.algorithm ?? "HS256",
