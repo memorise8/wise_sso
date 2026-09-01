@@ -26,16 +26,18 @@
       }
     },
     {
-      "id": "session.logout-rejects-invalid-refresh",
+      "id": "session.logout-accepts-unknown-refresh",
       "request": {
         "method": "POST",
         "path": "/auth/logout",
         "json": { "refreshToken": "contract-invalid-refresh-token" }
       },
       "expect": {
-        "status": 401,
-        "json": { "error": { "code": "INVALID_REFRESH_TOKEN", "message": "Invalid refresh token" } }
-      }
+        "status": 204,
+        "json": null
+      },
+      "stateProbe": "auth-lifecycle",
+      "stateAssertions": [{ "type": "unchanged" }]
     },
     {
       "id": "recovery.password-reset-confirm-rejects-invalid-request",

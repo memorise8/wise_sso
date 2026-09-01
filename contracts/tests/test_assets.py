@@ -5,7 +5,6 @@ from pathlib import Path
 
 from schema_subset import SchemaValidationError, pointer, validate
 
-
 CONTRACTS = Path(__file__).resolve().parents[1]
 
 
@@ -148,13 +147,73 @@ class ContractAssetTests(unittest.TestCase):
                 self.assertIn("mixed-runtime", combined_gaps)
                 self.assertIn("per-runtime repeated-sample threshold", combined_gaps)
 
+    def test_logout_contract_preserves_idempotent_unknown_and_replay_semantics(self):
+        guards = json.loads(
+            (CONTRACTS / "scenarios" / "guards.json").read_text(encoding="utf-8")
+        )
+        guard_by_id = {scenario["id"]: scenario for scenario in guards["scenarios"]}
+        unknown_logout = guard_by_id["session.logout-accepts-unknown-refresh"]
+        self.assertEqual(
+            unknown_logout["request"]["json"],
+            {"refreshToken": "contract-invalid-refresh-token"},
+        )
+        self.assertEqual(unknown_logout["expect"], {"status": 204, "json": None})
+        self.assertEqual(unknown_logout["stateProbe"], "auth-lifecycle")
+        self.assertEqual(unknown_logout["stateAssertions"], [{"type": "unchanged"}])
+        self.assertNotIn("session.logout-rejects-invalid-refresh", guard_by_id)
+
+        fixtures = json.loads(
+            (CONTRACTS / "scenarios" / "fixtures.json").read_text(encoding="utf-8")
+        )
+        fixture_by_id = {scenario["id"]: scenario for scenario in fixtures["scenarios"]}
+        logout_steps = fixture_by_id["session.login-logout-replay"]["steps"][1:]
+        self.assertEqual(len(logout_steps), 2)
+        for step in logout_steps:
+            self.assertEqual(step["request"]["path"], "/auth/logout")
+            self.assertEqual(step["expect"], {"status": 204, "json": None})
+        self.assertEqual(
+            logout_steps[0]["stateAssertions"],
+            [
+                {"type": "numeric-delta", "path": "$.activeRefreshTokens", "by": -1},
+                {"type": "numeric-delta", "path": "$.authHandoffKeys", "by": 0},
+            ],
+        )
+        self.assertEqual(logout_steps[1]["stateAssertions"], [{"type": "unchanged"}])
+
+        manifest = json.loads((CONTRACTS / "manifest.json").read_text(encoding="utf-8"))
+        approved_by_id = {
+            flow["id"]: flow for flow in manifest["phase7ApprovedCoreFlows"]
+        }
+        self.assertIn(
+            "session.logout-accepts-unknown-refresh",
+            approved_by_id["refresh-logout-race"]["scenarios"],
+        )
+        self.assertIn(
+            "session.login-logout-replay",
+            approved_by_id["refresh-logout-race"]["scenarios"],
+        )
+        traced_ids = {
+            scenario
+            for collection in (
+                manifest["phase7ApprovedCoreFlows"],
+                manifest["phase7FlowGroups"],
+                manifest["behaviors"],
+            )
+            for item in collection
+            for scenario in item["scenarios"]
+        }
+        self.assertIn("session.logout-accepts-unknown-refresh", traced_ids)
+        self.assertNotIn("session.logout-rejects-invalid-refresh", traced_ids)
+
     def test_manifest_snapshot_validations_pass_full_wrappers(self):
         manifest = json.loads((CONTRACTS / "manifest.json").read_text(encoding="utf-8"))
         schemas = {
             path.name: json.loads(path.read_text(encoding="utf-8"))
             for path in (CONTRACTS / "schemas").glob("*.json")
         }
-        schemas_by_id = {schema["$id"]: schema for schema in schemas.values() if "$id" in schema}
+        schemas_by_id = {
+            schema["$id"]: schema for schema in schemas.values() if "$id" in schema
+        }
         for validation in manifest["validations"]:
             with self.subTest(snapshot=validation["snapshot"]):
                 snapshot = load_fragment(validation["snapshot"])
@@ -175,7 +234,9 @@ class ContractAssetTests(unittest.TestCase):
             for path in (CONTRACTS / "schemas").glob("*.json")
         }
         schema = schemas["auth-state.schema.json"]
-        snapshot = json.loads((CONTRACTS / "snapshots" / "state.json").read_text(encoding="utf-8"))
+        snapshot = json.loads(
+            (CONTRACTS / "snapshots" / "state.json").read_text(encoding="utf-8")
+        )
         snapshot["refreshToken"]["tokenHash"] = "not-a-sha256-hash"
         with self.assertRaisesRegex(SchemaValidationError, "pattern"):
             validate(
@@ -183,7 +244,9 @@ class ContractAssetTests(unittest.TestCase):
                 schema,
                 root=schema,
                 schemas_by_name=schemas,
-                schemas_by_id={item["$id"]: item for item in schemas.values() if "$id" in item},
+                schemas_by_id={
+                    item["$id"]: item for item in schemas.values() if "$id" in item
+                },
             )
 
     def test_snapshots_are_marked_synthetic_and_contain_no_password_field(self):

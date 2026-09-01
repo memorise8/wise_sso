@@ -107,7 +107,7 @@
         "security.refresh-hs384-algorithm",
         "security.refresh-hs512-algorithm",
         "session.login-logout-replay",
-        "session.logout-rejects-invalid-refresh"
+        "session.logout-accepts-unknown-refresh"
       ],
       "gaps": [
         "Unsupported: mixed-runtime refresh/logout orderings, deterministic concurrent race schedules, and the approved repeated-sample threshold remain outstanding."
@@ -203,7 +203,7 @@
       "scenarios": [
         "session.login-logout-replay",
         "session.me-requires-bearer",
-        "session.logout-rejects-invalid-refresh"
+        "session.logout-accepts-unknown-refresh"
       ],
       "gaps": [
         "Unsupported: mixed-runtime logout/replay orderings, concurrent logout races, and the approved per-runtime repeated-sample threshold remain outside this corpus."
@@ -341,7 +341,7 @@
         "auth.login-issues-verifiable-token",
         "session.login-logout-replay",
         "session.me-requires-bearer",
-        "session.logout-rejects-invalid-refresh"
+        "session.logout-accepts-unknown-refresh"
       ],
       "schemas": ["schemas/jwt-access-claims.schema.json", "schemas/auth-state.schema.json"],
       "snapshots": ["snapshots/jwt-access.json", "snapshots/state.json"],

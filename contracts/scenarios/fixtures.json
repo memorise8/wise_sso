@@ -289,7 +289,7 @@
             "path": "/auth/logout",
             "json": { "refreshToken": { "$captureValue": "session-refresh-token" } }
           },
-          "expect": { "status": 204 },
+          "expect": { "status": 204, "json": null },
           "stateAssertions": [
             { "type": "numeric-delta", "path": "$.activeRefreshTokens", "by": -1 },
             { "type": "numeric-delta", "path": "$.authHandoffKeys", "by": 0 }
@@ -302,15 +302,7 @@
             "path": "/auth/logout",
             "json": { "refreshToken": { "$captureValue": "session-refresh-token" } }
           },
-          "expect": {
-            "status": 401,
-            "json": {
-              "error": {
-                "code": "INVALID_REFRESH_TOKEN",
-                "message": "Invalid refresh token"
-              }
-            }
-          },
+          "expect": { "status": 204, "json": null },
           "stateAssertions": [{ "type": "unchanged" }]
         }
       ]
