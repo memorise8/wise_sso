@@ -36,6 +36,9 @@ from wiseacct_sso.domain.password_reset import PasswordResetAccepted, PasswordRe
 from wiseacct_sso.domain.users import CurrentUser, UserStatus
 from wiseacct_sso.domain.verification import VerificationAccepted
 
+MAX_AUDIT_IP_ADDRESS_LENGTH = 255
+MAX_AUDIT_USER_AGENT_LENGTH = 512
+
 
 class Phase4Services(Protocol):
     async def enforce_rate_limit(
@@ -205,11 +208,56 @@ def phase6_services(request: Request) -> Phase6Services:
 InjectedPhase6Services = Annotated[Phase6Services, Depends(phase6_services)]
 
 
-def audit_context(request: Request) -> RequestAuditContext:
-    forwarded = request.headers.get("x-forwarded-for")
-    forwarded_address = forwarded.split(",", 1)[0].strip() if forwarded else None
-    client_address = request.client.host if request.client is not None else None
+def _bounded_audit_value(value: str | None, *, limit: int, truncate: bool) -> str | None:
+    if value is None or any(
+        ord(character) < 32 or 127 <= ord(character) <= 159 for character in value
+    ):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[:limit] if truncate else None
+
+
+def request_audit_context(
+    *,
+    forwarded_for: str | None,
+    user_agent: str | None,
+    client_address: str | None,
+) -> RequestAuditContext:
+    """Build bounded audit metadata without deciding which proxies are trustworthy.
+
+    The first X-Forwarded-For hop matches the frozen application contract. Canonical
+    trusted-proxy selection remains an external ingress/refreeze prerequisite; this
+    helper must not expand trust or use forwarded data as a rate-limit identity.
+    """
+
+    forwarded_candidate = forwarded_for.split(",", 1)[0] if forwarded_for else None
+    forwarded_address = _bounded_audit_value(
+        forwarded_candidate,
+        limit=MAX_AUDIT_IP_ADDRESS_LENGTH,
+        truncate=False,
+    )
+    socket_address = _bounded_audit_value(
+        client_address,
+        limit=MAX_AUDIT_IP_ADDRESS_LENGTH,
+        truncate=False,
+    )
     return RequestAuditContext(
-        ip_address=forwarded_address or client_address,
+        ip_address=forwarded_address or socket_address,
+        user_agent=_bounded_audit_value(
+            user_agent,
+            limit=MAX_AUDIT_USER_AGENT_LENGTH,
+            truncate=True,
+        ),
+    )
+
+
+def audit_context(request: Request) -> RequestAuditContext:
+    return request_audit_context(
+        forwarded_for=request.headers.get("x-forwarded-for"),
         user_agent=request.headers.get("user-agent"),
+        client_address=request.client.host if request.client is not None else None,
     )

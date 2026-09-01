@@ -244,3 +244,73 @@ hash-mismatched input. The currently recorded independent and shared-state runs
 cannot form a group: their source revisions differ, their full sample/readiness
 assertions remain false, and performance, security, chaos, backup/restore, and
 local rollback evidence is absent.
+
+## Security evidence gate
+
+`ops/phase7/run-security-gate.sh ABSOLUTE_SANITIZED_INPUT_DIR RUN_ID` validates
+externally generated, offline security evidence; it does not install or run
+scanners, start Docker, or access the network. The input directory must be a
+non-link absolute directory with mode `0700`. It must contain exactly mode-0600
+regular non-link files named `provenance.txt`, the three
+`dependency-{python,node-runtime,node-build}.json` reports, `sast.sarif`,
+`secrets.sarif`, `image-{vulns,high-critical,misconfig}.json`,
+`sbom.cdx.json`, `licenses.json`, `hardening.status`, `negative-tests.xml`,
+`negative-tests.status`, `sanitization.status`, and `cleanup.status`.
+The exact set also includes `express-before.txt`, `express-after.txt`, and
+`candidate-inventory.json`. Files must be single-link and owned by the caller;
+the controller checks stable inode, size, owner, link count, mtime, and ctime
+while copying them through descriptors into a private snapshot before parsing.
+
+Provenance is an exact key/value contract that pins the run, committed HEAD and
+tree, runner/policy/rule/lock/Dockerfile hashes, exact image ID/config/base
+digest, scanner identities/versions/database time, disabled network and absent
+sockets, plus every report hash. Reports repeat the exact source and image
+subject. Every report also repeats the digest-pinned scanner image, exact
+declared version, and common database timestamp. Scanner identities are fixed to pip-audit and npm audit for dependency
+groups, Ruff plus pinned Semgrep rules for SAST, full-history Gitleaks plus Trivy
+filesystem scanning for secrets, and offline Trivy for the exact image. Scanner
+databases must be no more than 24 hours old.
+
+The checked-in policy is parsed as an exact document in addition to being
+hashed. CycloneDX components and the license report must join one-to-one by
+package URL with identical names, versions, and non-empty license sets; missing,
+extra, or duplicate packages/licenses fail. Sanitization is independently
+enforced over every published byte for credential keys and token prefixes,
+authorization/Bearer values, PEM material, URLs, and email-shaped PII. The
+negative-test JUnit suite must contain the exact required security case IDs;
+counts or a generic passing testcase are insufficient. The pinned Semgrep rules
+are a bounded source-pattern supplement only: their presence and clean report
+do not independently prove redirect or JWT correctness, which remains covered
+by the exact negative-test manifest and other gate evidence.
+
+The gate rejects unapproved Critical or High findings and Medium findings in
+auth, crypto, redirect, or network-reachable domains. Only an unreachable
+Node build-only High may carry an exact owner, rationale, compensating control,
+and expiry no more than 30 days away; broad ignores and Critical waivers are not
+accepted. Unknown/unlicensed, AGPL, SSPL, BUSL, Commons Clause, and
+noncommercial licenses fail. GPL/LGPL coordinates require an exact manual
+review record. Hardening must prove non-root execution, a read-only root
+filesystem, all capabilities dropped, no-new-privileges, and tmpfs. Negative
+tests, sanitization, and every downstream cleanup key must pass.
+Express before/after snapshots must be byte-identical and separately hashed in
+provenance. The exact empty candidate inventory and cleanup inventory are also
+hash-bound; cleanup labels alone cannot establish these claims.
+
+Missing required evidence exits `3` as `INCOMPLETE`; malformed, unsafe, stale,
+unlinked, policy-violating, dirty-source, or colliding input exits `2` as
+`FAIL`. The external-artifact controller currently keeps even a fully validated
+bundle at `INCOMPLETE` with `CONTROLLED_COLLECTOR_REQUIRED`: opaque caller-authored
+runtime snapshots and JUnit cannot authenticate execution. A future controlled,
+pinned launcher must produce structured subject-bound Express/runtime evidence
+and a source/tree/image-bound negative-test attestation before `PASS` can be
+enabled. Evidence is atomically published without replacement beneath
+`evidence/phase7-security/<run-id>/`. Published directories
+and files are read-only. Every result, including `PASS`, records
+`overallReplacementReady=false`; this gate never authorizes replacement.
+While this controlled-collector requirement remains active, published bundles
+contain only controller-generated `result.status` and `gate-result.json`;
+caller-authored reports, snapshots, XML, and text are validated privately but
+are never republished.
+Publication fsyncs every staged file, the staging directory, the renamed
+evidence root, and a newly created root's parent. FAIL/INCOMPLETE status retains
+only bounded sanitized reason codes.

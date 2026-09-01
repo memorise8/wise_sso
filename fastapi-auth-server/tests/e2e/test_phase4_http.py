@@ -115,6 +115,10 @@ def test_direct_password_auth_contract(client: TestClient, services: FakePhase4S
     assert logout.status_code == 204
     assert logout.content == b""
     assert me.status_code == 200
+    assert all(
+        response.headers["cache-control"] == "no-store"
+        for response in (register, login, refresh, logout, me)
+    )
     assert me.json() == {
         "id": "user-1",
         "email": "person@example.com",
@@ -141,6 +145,7 @@ def test_auth_rate_limit_runs_before_body_validation(
     services.retry_after = 60
     response = client.post("/auth/login", json={"invalid": "body"})
     assert response.status_code == 429
+    assert response.headers["cache-control"] == "no-store"
     assert response.headers["retry-after"] == "60"
     assert response.json() == {
         "error": {
@@ -375,8 +380,31 @@ def test_auth_limiter_uses_original_alias_and_ignores_unsupported_methods(
     _client_key, route, method, _context = cast(
         tuple[str, str, str, RequestAuditContext], rate_calls[0]
     )
+    assert aliased.headers["cache-control"] == "no-store"
     assert route == "/AUTH/LOGIN/"
     assert method == "POST"
+
+
+def test_rate_limit_keeps_socket_identity_while_bounding_audit_headers(
+    client: TestClient, services: FakePhase4Services
+) -> None:
+    response = client.post(
+        "/auth/login",
+        json={"email": "person@example.com", "password": "password"},
+        headers={
+            "x-forwarded-for": "x" * 300,
+            "user-agent": "browser/" + "u" * 700,
+        },
+    )
+
+    assert response.status_code == 200
+    client_key, _route, _method, context = cast(
+        tuple[str, str, str, RequestAuditContext],
+        next(value for name, value in services.calls if name == "rate"),
+    )
+    assert client_key == "testclient"
+    assert context.ip_address == "testclient"
+    assert context.user_agent == ("browser/" + "u" * 700)[:512]
 
 
 @pytest.mark.parametrize("path", ["/auth/%6cogin", "/auth%2flogin", "/%61uth/login"])

@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "id": "phase7-no-untrusted-redirect",
+      "languages": ["python"],
+      "message": "Redirect targets must come from the exact registered-client policy.",
+      "severity": "ERROR",
+      "patterns": [
+        {"pattern": "RedirectResponse($URL, ...)"},
+        {"pattern-not": "RedirectResponse(url=$CLIENT.redirect_uri, ...)"}
+      ]
+    },
+    {
+      "id": "phase7-no-weak-jwt-decode",
+      "languages": ["python"],
+      "message": "JWT verification must pin algorithms and required claims.",
+      "severity": "ERROR",
+      "pattern": "jwt.decode(..., options={\"verify_signature\": False}, ...)"
+    }
+  ]
+}

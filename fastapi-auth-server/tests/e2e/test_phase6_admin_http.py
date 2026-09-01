@@ -19,12 +19,14 @@ from dotenv import dotenv_values
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from wiseacct_sso.api.dependencies import Phase6Services
 from wiseacct_sso.api.errors import ExpressJsonResponse, PublicHttpError, install_error_handlers
 from wiseacct_sso.api.middleware import KnownPathCompatibilityMiddleware, normalized_route
 from wiseacct_sso.api.routes.admin import _coerce_js_integer as coerce_js_integer
 from wiseacct_sso.api.routes.admin import _iso as admin_iso
 from wiseacct_sso.api.routes.admin import _parse_date as parse_admin_date
 from wiseacct_sso.api.routes.admin import build_admin_router
+from wiseacct_sso.config import Settings
 from wiseacct_sso.domain.admin import (
     AdminAuditLogListItem,
     AdminAuditLogPage,
@@ -35,6 +37,7 @@ from wiseacct_sso.domain.admin import (
     AuditLogListInput,
 )
 from wiseacct_sso.domain.users import DomainError, UserStatus
+from wiseacct_sso.main import create_app
 
 DATE_CORPUS = Path(__file__).parents[1] / "fixtures" / "admin-date-corpus.json"
 DATE_ORACLE = Path(__file__).parents[1] / "helpers" / "admin_date_oracle.mjs"
@@ -159,6 +162,27 @@ def client(services: FakePhase6Services) -> Iterator[TestClient]:
     application.add_middleware(KnownPathCompatibilityMiddleware)
     with TestClient(application, raise_server_exceptions=False) as test_client:
         yield test_client
+
+
+def test_admin_responses_are_no_store_in_the_composed_application(
+    synthetic_settings: Settings, services: FakePhase6Services
+) -> None:
+    application = create_app(
+        settings=synthetic_settings,
+        readiness_check=lambda: True,
+        phase6_services=cast(Phase6Services, services),
+    )
+
+    with TestClient(application, raise_server_exceptions=False) as test_client:
+        authorized = test_client.get(
+            "/admin/users", headers={"authorization": "Bearer access-token"}
+        )
+        unauthorized = test_client.get("/manage-api/audit-logs")
+
+    assert authorized.status_code == 200
+    assert unauthorized.status_code == 401
+    assert authorized.headers["cache-control"] == "no-store"
+    assert unauthorized.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.parametrize("prefix", ["/admin", "/manage-api"])

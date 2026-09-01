@@ -16,9 +16,8 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from wiseacct_sso import __version__
-from wiseacct_sso.api.dependencies import Phase4Services
+from wiseacct_sso.api.dependencies import Phase4Services, request_audit_context
 from wiseacct_sso.api.errors import error_response
-from wiseacct_sso.application.auth import RequestAuditContext
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _KNOWN_METHODS = {"DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"}
@@ -188,6 +187,21 @@ _RATE_LIMITED_AUTH_ROUTES = {
     ("GET", "/auth/kakao/callback"),
     ("HEAD", "/auth/kakao/callback"),
 }
+_PUBLIC_AUTH_HTML_PATH = "/auth/callback"
+_NO_STORE_RESPONSE_PATHS = {"/users/me"}
+
+
+def _requires_no_store(path: str) -> bool:
+    candidate = _ascii_lower(path)
+    if len(candidate) > 1 and candidate.endswith("/"):
+        candidate = candidate[:-1]
+    if candidate in _NO_STORE_RESPONSE_PATHS:
+        return True
+    if candidate.startswith("/auth/"):
+        return candidate != _PUBLIC_AUTH_HTML_PATH
+    if candidate.startswith("/manage-api/"):
+        return True
+    return candidate.startswith("/admin/") and candidate != "/admin/dashboard"
 
 
 class SanitizedResponseAbort(RuntimeError):
@@ -693,17 +707,16 @@ class AuthRateLimitMiddleware:
         if not valid_json:
             return
 
-        forwarded = headers.get("x-forwarded-for")
-        forwarded_address = forwarded.split(",", 1)[0].strip() if forwarded else None
         client = scope.get("client")
         client_address = client[0] if client is not None else "unknown"
         retry_after = await self.services.enforce_rate_limit(
             client_key=client_address,
             route=raw_path,
             method=method,
-            context=RequestAuditContext(
-                ip_address=forwarded_address or client_address,
+            context=request_audit_context(
+                forwarded_for=headers.get("x-forwarded-for"),
                 user_agent=headers.get("user-agent"),
+                client_address=client_address,
             ),
         )
         if retry_after is not None:
@@ -719,6 +732,8 @@ class SecurityHeadersMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        no_store = scope["type"] == "http" and _requires_no_store(scope.get("path", ""))
+
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
@@ -731,6 +746,8 @@ class SecurityHeadersMiddleware:
                         if asset_redirect and name == "content-security-policy"
                         else value
                     )
+                if no_store:
+                    headers["cache-control"] = "no-store"
             await send(message)
 
         await self.app(scope, receive, send_with_headers)
