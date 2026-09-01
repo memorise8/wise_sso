@@ -522,7 +522,13 @@ FROM "PasswordCredential" WHERE "userId" = '{ACTIVE_USER_ID}';''')
         if len(parts) != 2:
             raise AdapterError("failed-login ledger returned an unexpected row")
         active = count(config, f'''SELECT COUNT(*) FROM "RefreshToken" WHERE "userId" = '{ACTIVE_USER_ID}' AND "revokedAt" IS NULL;''')
-        return {"failedLoginCount": int(parts[0]), "lockSet": parts[1] == "t", "activeRefreshTokens": active}
+        if parts[1] not in {"true", "false"}:
+            raise AdapterError("failed-login ledger returned an invalid lock boolean")
+        return {
+            "failedLoginCount": int(parts[0]),
+            "lockSet": parts[1] == "true",
+            "activeRefreshTokens": active,
+        }
     if probe == "fixture-anonymous-audits":
         residual = count(config, f'''SELECT COUNT(*) FROM "AuditLog"
 WHERE {FIXTURE_ANONYMOUS_AUDIT_PREDICATE};''')

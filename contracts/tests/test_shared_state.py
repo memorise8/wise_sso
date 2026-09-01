@@ -404,13 +404,22 @@ class SharedStateContractTests(unittest.TestCase):
             database_url="postgresql://127.0.0.1/shared_contract_test"
         )
         with (
-            mock.patch.object(express_fixture, "psql", return_value="20|t"),
+            mock.patch.object(express_fixture, "psql", return_value="20|true"),
             mock.patch.object(express_fixture, "count", return_value=0),
         ):
             result = express_fixture.snapshot(config, "failed-login-ledger")
         self.assertEqual(
             result, {"failedLoginCount": 20, "lockSet": True, "activeRefreshTokens": 0}
         )
+
+        with (
+            mock.patch.object(express_fixture, "psql", return_value="20|t"),
+            mock.patch.object(express_fixture, "count", return_value=0),
+            self.assertRaisesRegex(
+                express_fixture.AdapterError, "invalid lock boolean"
+            ),
+        ):
+            express_fixture.snapshot(config, "failed-login-ledger")
 
     def test_reset_removes_only_exact_anonymous_login_rate_limit_audits(self) -> None:
         config = SimpleNamespace(
