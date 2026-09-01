@@ -1,0 +1,8 @@
+status=PASS
+qualificationVerdict=INCOMPLETE_INDEPENDENT_PASS
+qualificationExit=3
+cleanup=PASS
+expressSnapshotUnchanged=true
+zeroCandidateResources=true
+overallReplacementReady=false
+privateTempRemoved=true

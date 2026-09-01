@@ -1,0 +1,37 @@
+{
+  "adapterConfigs": "private-snapshots-not-persisted",
+  "baseline": {
+    "host": "127.0.0.1",
+    "port": 4410,
+    "scheme": "http"
+  },
+  "candidate": {
+    "host": "127.0.0.1",
+    "port": 4411,
+    "scheme": "http"
+  },
+  "postgres": {
+    "express": {
+      "database": "phase7_express_test_20260901t105243_3598166",
+      "host": "127.0.0.1",
+      "port": 5433
+    },
+    "fastapi": {
+      "database": "phase7_fastapi_test_20260901t105243_3598166",
+      "host": "127.0.0.1",
+      "port": 5433
+    }
+  },
+  "redis": {
+    "express": {
+      "database": 13,
+      "host": "127.0.0.1",
+      "port": 6380
+    },
+    "fastapi": {
+      "database": 14,
+      "host": "127.0.0.1",
+      "port": 6380
+    }
+  }
+}
