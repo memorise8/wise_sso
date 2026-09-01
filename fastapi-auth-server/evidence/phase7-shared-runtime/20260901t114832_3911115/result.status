@@ -1,0 +1,15 @@
+status=PASS
+launcherExit=0
+gateVerdict=PASS
+gateExit=0
+integrity=PASS
+cleanup=PASS
+expressSnapshotUnchanged=true
+zeroCandidateResources=true
+privateTempRemoved=true
+resultCount=100
+concurrentTrialCount=70
+mixedRuntimeOverlapCount=70
+overlapMismatchCount=0
+fullPhase7SampleSatisfied=false
+overallReplacementReady=false

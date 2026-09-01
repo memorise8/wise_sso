@@ -1,0 +1,28 @@
+{
+  "adapterConfigs": "private-snapshots-not-persisted",
+  "express": {
+    "host": "127.0.0.1",
+    "port": 4410,
+    "scheme": "http"
+  },
+  "fastapi": {
+    "host": "127.0.0.1",
+    "port": 4411,
+    "scheme": "http"
+  },
+  "postgres": {
+    "distinctRuntimeRoles": true,
+    "shared": {
+      "database": "phase7_shared_test_20260901t114832_3911115",
+      "host": "127.0.0.1",
+      "port": 5433
+    }
+  },
+  "redis": {
+    "shared": {
+      "database": 13,
+      "host": "127.0.0.1",
+      "port": 6380
+    }
+  }
+}
