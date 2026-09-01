@@ -22,7 +22,6 @@ NODE_AVAILABLE = (
 
 pytestmark = [
     pytest.mark.skipif(not NODE_AVAILABLE, reason="Node jsonwebtoken fixture is unavailable"),
-    pytest.mark.filterwarnings("ignore::jwt.warnings.InsecureKeyLengthWarning"),
 ]
 
 

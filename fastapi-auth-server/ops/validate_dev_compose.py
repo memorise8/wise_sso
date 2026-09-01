@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -64,8 +65,8 @@ SECRET_KEYS = {
     "RESEND_API_KEY",
     "SMTP_PASSWORD",
 }
-SYNTHETIC_PRIVATE_KEY_SHA256 = "43c202e873481963082973f4b4fc4d4542dd1ddf34c97529e99dcfbd0c162889"
-SYNTHETIC_MODULUS_SHA256 = "6bf40596efda54b90a608bd5ee383e6a44b47089bdd09394b713c8cbca0c0ecd"
+SYNTHETIC_PRIVATE_KEY_SHA256 = "d72b888cc6a7c15c0c1beb60e4c2a2c336585e42f73a3fe584b574cd98d26c72"
+SYNTHETIC_MODULUS_SHA256 = "37716dec3f68e75f90913cfab525cbfb9b2eaa2f2942afbbeedaeab481a6ffe4"
 
 
 def fail(message: str) -> None:
@@ -135,9 +136,15 @@ def validate_env(path: Path) -> dict[str, str]:
     if public_jwk.get("kid") != values["JWT_ACCESS_KEY_ID"]:
         fail("synthetic JWK kid must match JWT_ACCESS_KEY_ID")
     modulus = public_jwk.get("n")
+    modulus_bytes = (
+        base64.urlsafe_b64decode(modulus + "=" * (-len(modulus) % 4))
+        if isinstance(modulus, str)
+        else b""
+    )
     if (
         not isinstance(modulus, str)
         or hashlib.sha256(modulus.encode("ascii")).hexdigest() != SYNTHETIC_MODULUS_SHA256
+        or int.from_bytes(modulus_bytes, "big").bit_length() < 2048
         or public_jwk.get("e") != "AQAB"
     ):
         fail("JWT_ACCESS_PUBLIC_JWK must match the pinned synthetic RSA public key")

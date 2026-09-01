@@ -554,6 +554,8 @@ class Settings(BaseSettings):
         _absolute_http_url(self.naver_redirect_uri, "NAVER_REDIRECT_URI")
         _absolute_http_url(self.kakao_redirect_uri, "KAKAO_REDIRECT_URI")
         private_n, private_e = _rsa_numbers_from_pkcs8(self.jwt_access_private_key)
+        if private_n.bit_length() < 2048:
+            raise ValueError("JWT_ACCESS_PRIVATE_KEY must be at least 2048 bits")
         if self.jwt_access_public_jwk.kid != self.jwt_access_key_id:
             raise ValueError("JWT_ACCESS_KEY_ID must match JWT_ACCESS_PUBLIC_JWK kid")
         if private_n != _jwk_integer(self.jwt_access_public_jwk.n) or private_e != _jwk_integer(

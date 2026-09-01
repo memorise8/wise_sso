@@ -127,6 +127,26 @@ class FixtureTests(unittest.TestCase):
     def test_none_token_has_no_signature(self):
         self.assertTrue(adapter.refresh_fixture_token(self.config, "none").endswith("."))
 
+    def test_refresh_tokens_use_deterministic_lowercase_hex_token_ids(self):
+        for algorithm in ("none", "HS256", "HS384", "HS512"):
+            with self.subTest(algorithm=algorithm):
+                token = adapter.refresh_fixture_token(self.config, algorithm)
+                claims_segment = token.split(".")[1]
+                claims = json.loads(
+                    base64.urlsafe_b64decode(
+                        claims_segment + "=" * (-len(claims_segment) % 4)
+                    )
+                )
+                expected = hashlib.sha256(
+                    f"contract-{algorithm.lower()}-token-id".encode()
+                ).hexdigest()
+                self.assertEqual(claims["tokenId"], expected)
+                self.assertRegex(claims["tokenId"], r"\A[0-9a-f]{64}\Z")
+
+    def test_refresh_token_rejects_unsupported_algorithm(self):
+        with self.assertRaisesRegex(adapter.AdapterError, "unsupported refresh fixture algorithm"):
+            adapter.refresh_fixture_token(self.config, "RS256")
+
     def test_wrong_algorithm_setup_seeds_matching_refresh_ledger_hash(self):
         with mock.patch.object(adapter, "reset"), mock.patch.object(adapter, "seed"), mock.patch.object(
             adapter, "seed_refresh_token"

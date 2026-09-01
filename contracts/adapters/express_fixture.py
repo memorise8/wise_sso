@@ -360,10 +360,11 @@ def refresh_fixture_token(config: Config, algorithm: str) -> str:
         raise AdapterError(f"unsupported refresh fixture algorithm {algorithm!r}")
     header = _segment({"alg": algorithm, "typ": "JWT"})
     issued_at = int(time.time())
+    token_id = hashlib.sha256(f"contract-{algorithm.lower()}-token-id".encode()).hexdigest()
     claims = _segment({
         "sub": ACTIVE_USER_ID,
         "type": "refresh",
-        "tokenId": f"contract-{algorithm.lower()}-token-id",
+        "tokenId": token_id,
         "audience": config.audience,
         "iat": issued_at,
         "exp": issued_at + 3600,

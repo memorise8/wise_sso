@@ -23,7 +23,6 @@ function run(input) {
       return jwt.sign(input.payload, createPrivateKey(input.privateKey), {
         algorithm: "RS256",
         keyid: input.keyId,
-        allowInsecureKeySizes: true,
       });
     case "sign-access-hs256":
       return jwt.sign(input.payload, input.secret, {

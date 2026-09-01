@@ -14,9 +14,6 @@ from wiseacct_sso.domain.tokens import (
 )
 from wiseacct_sso.infrastructure.security import JwtTokenCodec, sha256_token
 
-# The committed synthetic fixture is intentionally small and never used outside isolated tests.
-pytestmark = pytest.mark.filterwarnings("ignore::jwt.warnings.InsecureKeyLengthWarning")
-
 
 def codec(synthetic_settings: Settings) -> JwtTokenCodec:
     return JwtTokenCodec.from_settings(synthetic_settings)
@@ -226,7 +223,15 @@ def test_refresh_verification_rejects_invalid_tokens_generically(
     audience: str,
     expires_at: int | None,
 ) -> None:
-    tokens = codec(synthetic_settings)
+    refresh_secret = (
+        "synthetic-invalid-hs384-secret-that-is-at-least-forty-eight-bytes"
+        if algorithm == "HS384"
+        else synthetic_settings.jwt_refresh_secret
+    )
+    verification_settings = synthetic_settings.model_copy(
+        update={"jwt_refresh_secret": refresh_secret}
+    )
+    tokens = codec(verification_settings)
     now = datetime.now(UTC)
     token = jwt.encode(
         {
@@ -239,7 +244,7 @@ def test_refresh_verification_rejects_invalid_tokens_generically(
                 expires_at if expires_at is not None else int((now + timedelta(days=1)).timestamp())
             ),
         },
-        synthetic_settings.jwt_refresh_secret,
+        refresh_secret,
         algorithm=algorithm,
     )
 

@@ -1,9 +1,12 @@
+import base64
 import json
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pydantic import ValidationError
 
 from wiseacct_sso.config import RelyingClientPolicy, Settings
@@ -144,6 +147,35 @@ def test_settings_reject_mismatched_jwk_kid() -> None:
     values["jwt_access_key_id"] = "different-key"
 
     with pytest.raises(ValidationError, match="must match"):
+        Settings.model_validate(values)
+
+
+def test_settings_reject_access_key_smaller_than_2048_bits() -> None:
+    private_key = rsa.generate_private_key(
+        public_exponent=65537,
+        key_size=1024,  # noqa: S505 - intentionally rejected fixture
+    )
+    public_numbers = private_key.public_key().public_numbers()
+    values = example_values()
+    values["jwt_access_private_key"] = private_key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    values["jwt_access_public_jwk"] = {
+        "kty": "RSA",
+        "n": base64.urlsafe_b64encode(
+            public_numbers.n.to_bytes((public_numbers.n.bit_length() + 7) // 8, "big")
+        )
+        .rstrip(b"=")
+        .decode(),
+        "e": "AQAB",
+        "alg": "RS256",
+        "use": "sig",
+        "kid": values["jwt_access_key_id"],
+    }
+
+    with pytest.raises(ValidationError, match="at least 2048 bits"):
         Settings.model_validate(values)
 
 

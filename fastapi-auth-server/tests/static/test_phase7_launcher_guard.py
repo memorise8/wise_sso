@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import base64
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 ROOT = Path(__file__).resolve().parents[2]
 REPO = ROOT.parent
@@ -21,6 +26,8 @@ PUBLISH = ROOT / "ops" / "phase7" / "runtime_publish.py"
 PRIVATE_REMOVE = ROOT / "ops" / "phase7" / "runtime_private_remove.py"
 PUBLIC_SCENARIOS = ROOT / "ops" / "phase7" / "runtime_public_scenarios.py"
 EXPRESS_LOOPBACK = ROOT / "ops" / "phase7" / "runtime_express_loopback.mjs"
+NODE_EXECUTABLE = shutil.which("node")
+NODE_JSONWEBTOKEN = REPO / "auth-server" / "node_modules" / "jsonwebtoken"
 
 
 def test_launcher_uses_exact_disposable_targets_and_guarded_compose() -> None:
@@ -136,6 +143,16 @@ def test_private_material_has_distinct_stores_shared_policy_and_exact_modes(tmp_
         "JWT_REFRESH_SECRET",
     ):
         assert express_env[key] == fastapi_env[key]
+    normalized_private_key = express_env["JWT_ACCESS_PRIVATE_KEY"].replace("\\n", "\n")
+    private_key = serialization.load_pem_private_key(normalized_private_key.encode(), password=None)
+    assert isinstance(private_key, rsa.RSAPrivateKey)
+    public_jwk = json.loads(express_env["JWT_ACCESS_PUBLIC_JWK"])
+    public_modulus = int.from_bytes(
+        base64.urlsafe_b64decode(public_jwk["n"] + "=" * (-len(public_jwk["n"]) % 4)),
+        "big",
+    )
+    assert private_key.key_size >= 2048
+    assert private_key.public_key().public_numbers().n == public_modulus
     assert express_env["OAUTH_ENABLED_PROVIDERS"] == ""
     assert express_env["WISEACCT_PHASE7_EXPRESS_LOOPBACK"] == "1"
     assert fastapi_env["MAIL_PROVIDER"] == "dev"
@@ -164,6 +181,29 @@ def test_private_material_has_distinct_stores_shared_policy_and_exact_modes(tmp_
         text=True,
     )
     assert settings_check.returncode == 0, settings_check.stderr
+    if NODE_EXECUTABLE is not None and NODE_JSONWEBTOKEN.is_dir():
+        node_sign_check = subprocess.run(  # noqa: S603 - fixed local runtime and module path
+            [
+                sys.executable,
+                str(RUNTIME_EXEC),
+                str(private / "express-runtime.json"),
+                NODE_EXECUTABLE,
+                "-e",
+                (
+                    "const {createPrivateKey}=require('node:crypto');"
+                    "const jwt=require(process.argv[1]);"
+                    "jwt.sign({sub:'phase7-synthetic'},"
+                    "createPrivateKey(process.env.JWT_ACCESS_PRIVATE_KEY.replace(/\\\\n/g,'\\n')),"
+                    "{algorithm:'RS256',keyid:process.env.JWT_ACCESS_KEY_ID});"
+                ),
+                str(NODE_JSONWEBTOKEN),
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert node_sign_check.returncode == 0, node_sign_check.stderr
 
 
 def test_runtime_exec_rejects_non_private_environment(tmp_path: Path) -> None:
