@@ -1,5 +1,39 @@
 # Phase 7 qualification runner
 
+## Exact FastAPI candidate image
+
+`ops/phase7/build-exact-image.sh` is the guarded source-to-image entry point. Pass an
+explicit full commit ID in either check-only or build mode:
+
+```sh
+./ops/phase7/build-exact-image.sh --check-only <expected-40-character-HEAD>
+./ops/phase7/build-exact-image.sh --build <expected-40-character-HEAD>
+```
+
+The guard accepts a standalone checkout or a correctly cross-linked Git worktree, requires
+the complete worktree and index to equal that commit, and rejects replacement, alternate,
+partial-clone, bare, injected Git, and unsafe worktree metadata. It hashes the pinned HEAD
+blob listing for `Dockerfile`, `pyproject.toml`, `uv.lock`, `README.md`, and every tracked
+file below `src/`. Dockerfile and base-image parsing use only that pinned private HEAD
+snapshot, never mutable worktree bytes. Local/common and enabled worktree-scoped Git
+configuration are read without following includes, case-normalized, and checked for
+partial-clone, promisor, and alternate object routing. `include.path` and
+`includeIf.*.path` are rejected in both scopes, so external config files are never trusted.
+Before any external source tool runs, the guard rejects option-injection
+variables (including `TAR_OPTIONS`) and re-executes itself with a minimal cleared
+environment.
+
+Build mode currently validates the exact private source context and then unconditionally
+returns `INCOMPLETE: CONTROLLED_TOOLCHAIN_REQUIRED`. No Docker command is invoked and no
+image qualification claim is emitted. A future build path requires a checked-in, reviewed
+toolchain lock plus an isolated daemon collector; Docker self-reporting is not an
+authentication boundary. Consequently this guard currently makes no claim that an image
+was built offline or that a Docker endpoint could not mutate external resources. Ambient
+Git/Docker routing variables and alternate `PATH` values are rejected. `--check-only`
+validates and hashes only pinned source/Git material; it reports Docker trust as
+`NOT_CHECKED` and makes no claim about the Docker CLI, daemon, socket, or locally cached
+base.
+
 This provisional runner qualifies two **already-running**, isolated loopback
 runtimes. It never starts services, changes ingress, contacts providers, or
 approves a cutover. Express and FastAPI must use separate test PostgreSQL
