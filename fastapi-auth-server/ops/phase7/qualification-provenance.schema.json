@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.local/schemas/phase7-qualification-provenance-v2.json",
+  "title": "WiseAcct Phase 7 exact gate provenance v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "gateId", "topology", "runId", "sourceRevision", "gitTreeObject",
+    "expressApplicationTreeSha256", "fastapiApplicationTreeSha256", "schemaSha256",
+    "expressLockSha256", "fastapiLockSha256", "configSha256", "expressImageId",
+    "fastapiImageId", "collectorAttestationSha256"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "gateId": {"enum": ["independent-contract", "shared-state-core", "performance", "security", "chaos", "backup-restore", "local-rollback"]},
+    "topology": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "gitTreeObject": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "expressApplicationTreeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "fastapiApplicationTreeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "schemaSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "expressLockSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "fastapiLockSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "configSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "expressImageId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "fastapiImageId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "collectorAttestationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

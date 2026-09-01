@@ -194,14 +194,80 @@ must name exactly these seven gate IDs once each:
 - `backup-restore`
 - `local-rollback`
 
-Every gate entry pins its topology and run ID, evidence-relative directory and
-deterministic aggregate SHA-256, source revision, application-tree/schema/lock/
-config identifiers, immutable image digest, status, sample/readiness assertions,
-cleanup evidence, and Express before/after evidence. Objects have exact fields;
-unknown fields and gate IDs are rejected. The manifest and every attached input
-must be regular non-symlink files, and every path is confined below the explicit
-repository evidence root. The evidence aggregate is SHA-256 over sorted records
-of `relative-path`, a NUL byte, the file SHA-256, and a newline.
+Only a schema-version `2` manifest is considered for aggregation. Every gate entry pins its
+topology and run ID, evidence-relative directory and deterministic aggregate
+SHA-256, source revision and Git tree object, separate Express and FastAPI
+application-tree SHA-256 values, separate Express and FastAPI lock SHA-256
+values, the common schema and configuration SHA-256 values, and separate exact
+Express and FastAPI immutable image IDs. The finalizer derives the source values
+from the explicit absolute, clean, non-symlink `--repo` worktree. It checks
+`HEAD`, `HEAD^{tree}`, and the following exact tracked input sets:
+
+- Express application: every tracked file below `auth-server/src/`,
+  `auth-server/public/`, and `auth-server/prisma/migrations/`, plus
+  `auth-server/package.json` and `auth-server/tsconfig.json`. The Prisma schema
+  remains in the separate schema partition.
+- FastAPI application: every tracked file below `fastapi-auth-server/src/`, plus
+  `fastapi-auth-server/pyproject.toml` and `fastapi-auth-server/README.md`.
+- Express and FastAPI locks: `auth-server/package-lock.json` and
+  `fastapi-auth-server/uv.lock`, respectively.
+- Schema: `auth-server/prisma/schema.prisma`.
+- Runtime configuration: both runtimes' `.dockerignore`, `.env.example`,
+  `Dockerfile`, and compose file (`docker-compose.yml` or
+  `docker-compose.dev.yml`).
+
+Each set uses the evidence aggregate algorithm below, with repository-relative
+paths. The finalizer pins one `sourceRevision`, reads its recursive tree and
+blob objects, and hashes those immutable blob bytes; it never hashes mutable
+worktree bytes. HEAD is rechecked after derivation and the worktree must remain
+clean. Consequently revision, tree object, and every input aggregate describe
+the same commit even if worktree bytes are transiently changed and restored.
+
+Git is invoked with pinned worktree and normal `.git` directory descriptors, an
+explicit `--git-dir`/`--work-tree`, and a minimal environment that discards
+caller `GIT_DIR`, `GIT_WORK_TREE`, common/object/index/config paths, alternates,
+ceiling, discovery, and related `GIT_CONFIG*` injection. Linked worktrees, bare
+repositories, symlinked or unexpected Git metadata, and alternate object stores
+are refused. Object replacement is disabled with `GIT_NO_REPLACE_OBJECTS=1`,
+and any pinned `refs/replace/*` is refused before resolving HEAD, its tree, or
+blobs. Thus arbitrary self-consistent manifest/bundle hashes, repository
+A/B environment redirection, and a global Express/FastAPI field swap are
+refused against the named runtime-specific repository hashes. Lock, schema, and
+configuration inputs are deliberately represented separately.
+Named fields preserve the Express/FastAPI pairing, so exchanging their order is
+mixed provenance rather than an equivalent group.
+
+Those values in the manifest are not trusted. Each gate must attach
+`provenanceEvidencePath` and `provenanceEvidenceSha256` for an exact versioned
+JSON document governed by `ops/phase7/qualification-provenance.schema.json`.
+The provenance file must be inside that gate's hashed bundle and repeat the
+exact gate ID, topology, run ID, revision, tree object, application trees,
+locks, schema, configuration, and image IDs. Every repeated value is derived
+from the attachment and cross-checked against the manifest before group
+equality is evaluated. Unknown or missing fields are refused.
+
+Each provenance document also binds `collectorAttestationSha256` to a distinct
+hashed `collectorAttestationEvidencePath`. The exact current attachment format
+is documented by `qualification-collector-attestation.schema.json` and records
+only `status=UNVERIFIED`. It cannot authenticate Docker image identity. No
+checked-in controlled collector and independently pinned collector verification
+mechanism exists yet, so the finalizer unconditionally adds
+`controlled-collector-required`. Self-asserted booleans, identifiers, image
+digests, or attachment hashes cannot remove that reason.
+
+The manifest and every attached or aggregated input must be single-link regular
+non-symlink files, and every path is confined below the explicit repository
+evidence root. Stable inode, size, link count, modification time, and change
+time are checked around reads; bundle directory metadata and the aggregate are
+rechecked after attachments are evaluated. Attachment roles—provenance,
+collector attestation, gate result, cleanup, Express-before, and Express-after—
+must use distinct paths and distinct inodes. Before/after bytes must match but
+must not be the same file. Evidence directories are opened component-by-component
+with descriptor-relative `O_NOFOLLOW`, then read twice from the pinned directory
+descriptor, so replacing or symlinking an ancestor cannot redirect validation.
+The evidence aggregate is SHA-256
+over sorted records of `relative-path`, a NUL byte, the file SHA-256, and a
+newline.
 
 The manifest's status, sample, and readiness values are not authoritative by
 themselves. Each entry must also attach a hashed `gate-result.json` inside that
@@ -226,24 +292,26 @@ Run it from `fastapi-auth-server` with a separately prepared manifest:
 ```sh
 ./ops/phase7/finalize_qualification_group.py \
   --manifest /absolute/path/to/private-run-group.json \
-  --evidence-root ./evidence
+  --evidence-root ./evidence \
+  --repo /absolute/path/to/clean/wiseacct_sso
 ```
 
-Exit `0` means only `status=PROVISIONAL_READY_FOR_REVIEW`: all seven gates say
-`PASS`, all sample and readiness assertions are true, every cleanup step passes,
-each Express snapshot pair is byte-identical, all attachment/aggregate hashes
-match, and the shared source/tree/schema/lock/config/image provenance group is
-identical. Even then the output deliberately keeps
-`overallReplacementReady=false`; human review, refreeze, and an independently
-authorized cutover decision remain outside this tool.
+The current implementation never exits `0` or emits
+`PROVISIONAL_READY_FOR_REVIEW`, because controlled image collection is missing.
+An otherwise complete seven-gate v2 group is `INCOMPLETE` solely with
+`controlled-collector-required` and always keeps
+`overallReplacementReady=false`. A future reviewed change may unlock the
+provisional status only after a checked-in controlled collector exists and its
+own pinned evidence is independently verified; manifest claims cannot unlock it.
 
 Exit `1` emits a sanitized `status=INCOMPLETE` result for an otherwise valid
 group that has missing/non-passing gates, false assertions, failed cleanup or
 Express invariance, or mixed provenance. Exit `2` refuses malformed, unsafe, or
-hash-mismatched input. The currently recorded independent and shared-state runs
-cannot form a group: their source revisions differ, their full sample/readiness
-assertions remain false, and performance, security, chaos, backup/restore, and
-local rollback evidence is absent.
+hash-mismatched input. Legacy schema-version `1` manifests are accepted only as
+migration input and always return `INCOMPLETE` with
+`migration-required:schemaVersion-1`; their evidence and manifest provenance
+are never aggregated. The currently recorded independent and shared-state runs
+therefore cannot form a group or be promoted by rewriting their old claims.
 
 ## Security evidence gate
 
