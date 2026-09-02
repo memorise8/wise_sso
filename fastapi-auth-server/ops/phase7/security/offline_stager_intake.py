@@ -52,7 +52,15 @@ IMAGE_FIELDS = {
     "attestations",
     "fetchedAt",
 }
-SUBJECT_FIELDS = {"status", "subjectDigest", "rawArtifact", "descriptor"}
+SUBJECT_FIELDS = {
+    "status",
+    "subjectDigest",
+    "issuer",
+    "identity",
+    "rekorIncluded",
+    "rawArtifact",
+    "descriptor",
+}
 ATTESTATION_FIELDS = {
     "status",
     "subjectDigest",
@@ -94,6 +102,7 @@ IMAGE_ROLES = {
 }
 TRIVY_KINDS = {"vulnerability-db", "java-db", "checks-bundle"}
 ECOSYSTEMS = {"pip", "npm"}
+SCANNER_NAMES = {"gitleaks", "npm-audit", "pip-audit", "ruff", "semgrep", "trivy"}
 PREDICATES = {"https://slsa.dev/provenance/v1", "https://spdx.dev/Document"}
 SAFE_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,127}")
 SAFE_PATH = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -107,7 +116,6 @@ MAX_FILE_SIZE = 268435456
 MAX_TOTAL_SIZE = 536870912
 LOCK_RELATIVE = "fastapi-auth-server/ops/phase7/security/controlled-toolchain-lock.json"
 ALLOWED_REASONS = {
-    "TOOLCHAIN_LOCK_UNFROZEN",
     "CONTROLLED_COLLECTOR_REQUIRED",
     "MISSING_EVIDENCE",
     "UNSAFE_INPUT",
@@ -184,6 +192,98 @@ def load_security_gate() -> ModuleType:
         sys.modules.pop(spec.name, None)
         raise Failed("repository-snapshot:unavailable") from exc
     return module
+
+
+def load_online_stager() -> ModuleType:
+    path = Path(__file__).with_name("online_stager.py")
+    spec = importlib.util.spec_from_file_location("phase7_online_stager_for_intake", path)
+    if spec is None or spec.loader is None:
+        raise Failed("toolchain-lock:validator-unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        sys.modules.pop(spec.name, None)
+        raise Failed("toolchain-lock:validator-unavailable") from exc
+    return module
+
+
+def validate_lock_projection(manifest: dict[str, Any], lock: dict[str, Any]) -> None:
+    """Bind staged subjects to a frozen lock; signature verification is downstream."""
+    if lock["status"] != "FROZEN":
+        raise Incomplete("toolchain-lock:frozen-required")
+    platform = manifest["targetPlatform"]
+    platform_key = f"{platform['os']}/{platform['architecture']}" + (
+        f"/{platform['variant']}" if platform["variant"] is not None else ""
+    )
+    image_by_role = {value["role"]: value for value in manifest["images"]}
+    for role in ("builder", "collector"):
+        expected = lock["images"][role]
+        actual = image_by_role[role]
+        if (
+            actual["repository"] != expected["repository"]
+            or actual["requestedReference"] != f"{expected['repository']}@{expected['indexDigest']}"
+            or actual["indexDigest"] != expected["indexDigest"]
+            or actual["platformDigest"] != expected["platformDigests"][platform_key]
+            or actual["configDigest"] != expected["configDigests"][platform_key]
+        ):
+            raise Failed(f"toolchain-lock:image-projection:{role}")
+        policy = lock["signaturePolicies"]["images"][role]
+        if any(
+            signature["issuer"] != policy["issuer"]
+            or signature["identity"] != policy["subject"]
+            or signature["rekorIncluded"] is not policy["rekorRequired"]
+            for signature in actual["signatures"]
+        ):
+            raise Failed(f"toolchain-lock:signature-policy-projection:{role}")
+    for scanner in sorted(SCANNER_NAMES):
+        role = f"scanner-{scanner}"
+        expected = lock["scanners"][scanner]
+        actual = image_by_role[role]
+        if (
+            actual["repository"] != expected["repository"]
+            or actual["requestedReference"] != f"{expected['repository']}@{expected['indexDigest']}"
+            or actual["indexDigest"] != expected["indexDigest"]
+            or actual["platformDigest"] != expected["platformDigests"][platform_key]
+            or actual["configDigest"] != expected["configDigests"][platform_key]
+        ):
+            raise Failed(f"toolchain-lock:image-projection:{role}")
+        policy = lock["signaturePolicies"]["scanners"][scanner]
+        if any(
+            signature["issuer"] != policy["issuer"]
+            or signature["identity"] != policy["subject"]
+            or signature["rekorIncluded"] is not policy["rekorRequired"]
+            for signature in actual["signatures"]
+        ):
+            raise Failed(f"toolchain-lock:signature-policy-projection:{role}")
+    trivy_by_kind = {value["kind"]: value for value in manifest["trivyArtifacts"]}
+    for kind, expected in lock["trivyArtifacts"].items():
+        actual = trivy_by_kind[kind]
+        if (
+            actual["repository"] != expected["repository"]
+            or actual["manifestDigest"] != expected["manifestDigest"]
+            or actual["payload"]["sha256"] != expected["payloadSha256"]
+        ):
+            raise Failed(f"toolchain-lock:trivy-projection:{kind}")
+        policy = lock["signaturePolicies"]["trivyArtifacts"][kind]
+        if any(
+            signature["issuer"] != policy["issuer"]
+            or signature["identity"] != policy["subject"]
+            or signature["rekorIncluded"] is not policy["rekorRequired"]
+            for signature in actual["signatures"]
+        ):
+            raise Failed(f"toolchain-lock:signature-policy-projection:{kind}")
+    advisory_by_ecosystem = {value["ecosystem"]: value for value in manifest["advisoryReports"]}
+    for ecosystem, origin in lock["advisoryOrigins"].items():
+        if advisory_by_ecosystem[ecosystem]["serviceOrigin"] != origin:
+            raise Failed(f"toolchain-lock:advisory-projection:{ecosystem}")
+    declared = {
+        f"{value['scheme']}://{value['host']}:{value['port']}"
+        for value in manifest["networkScope"]["destinations"]
+    }
+    if declared != set(lock["destinationAllowlist"]):
+        raise Failed("toolchain-lock:destination-projection")
 
 
 def regular_bytes(path: Path) -> bytes:
@@ -330,11 +430,13 @@ def validate_manifest(
         lock = json.loads(lock_bytes)
     except json.JSONDecodeError as exc:
         raise Failed("toolchain-lock:json") from exc
-    if (
-        manifest["toolchainLockSha256"] != hash_bytes(lock_bytes)
-        or not isinstance(lock, dict)
-        or lock != security_gate.TOOLCHAIN_LOCK
-    ):
+    if manifest["toolchainLockSha256"] != hash_bytes(lock_bytes) or not isinstance(lock, dict):
+        raise Failed("toolchain-lock:binding")
+    try:
+        lock = load_online_stager().validate_lock(lock)
+    except Exception as exc:
+        raise Failed("toolchain-lock:binding") from exc
+    if lock["status"] == "UNFROZEN" and not type_exact_equal(lock, security_gate.TOOLCHAIN_LOCK):
         raise Failed("toolchain-lock:binding")
 
     paths: dict[str, tuple[str, int]] = {}
@@ -409,6 +511,14 @@ def validate_manifest(
                 subject = exact(value2, exact_fields, f"image.{field}")
                 if subject["status"] != "UNVERIFIED" or subject["subjectDigest"] != image_digest:
                     raise Failed(f"image.{field}:subject")
+                if field == "signatures" and (
+                    not isinstance(subject["issuer"], str)
+                    or not subject["issuer"]
+                    or not isinstance(subject["identity"], str)
+                    or not subject["identity"]
+                    or type(subject["rekorIncluded"]) is not bool
+                ):
+                    raise Failed("image.signatures:identity")
                 if field == "attestations":
                     predicate = subject["predicateType"]
                     if (
@@ -437,6 +547,14 @@ def validate_manifest(
                             "platformDigest": image["platformDigest"],
                             "configDigest": image["configDigest"],
                             "targetPlatform": manifest["targetPlatform"],
+                        }
+                    )
+                else:
+                    contract.update(
+                        {
+                            "issuer": subject["issuer"],
+                            "identity": subject["identity"],
+                            "rekorIncluded": subject["rekorIncluded"],
                         }
                     )
                 payload_contracts.append((descriptor["path"], contract))
@@ -489,6 +607,14 @@ def validate_manifest(
                     or subject["subjectDigest"] != item["manifestDigest"]
                 ):
                     raise Failed(f"trivyArtifact.{field}:subject")
+                if field == "signatures" and (
+                    not isinstance(subject["issuer"], str)
+                    or not subject["issuer"]
+                    or not isinstance(subject["identity"], str)
+                    or not subject["identity"]
+                    or type(subject["rekorIncluded"]) is not bool
+                ):
+                    raise Failed("trivyArtifact.signatures:identity")
                 contract = {
                     "schemaVersion": 1,
                     "kind": "signature" if field == "signatures" else "attestation",
@@ -507,6 +633,14 @@ def validate_manifest(
                             "payloadSha256": payload["sha256"],
                             "updatedAt": item["updatedAt"],
                             "nextUpdateAt": item["nextUpdateAt"],
+                        }
+                    )
+                else:
+                    contract.update(
+                        {
+                            "issuer": subject["issuer"],
+                            "identity": subject["identity"],
+                            "rekorIncluded": subject["rekorIncluded"],
                         }
                     )
                 raw_artifact = blob(
@@ -613,6 +747,7 @@ def validate_manifest(
     )
     if manifest["aggregateSha256"] != aggregate:
         raise Failed("manifest:aggregate")
+    validate_lock_projection(manifest, lock)
     return manifest
 
 
@@ -745,7 +880,7 @@ def main() -> int:
         ):
             raise Failed("input-directory:changed")
         status = "INCOMPLETE"
-        reasons = ["TOOLCHAIN_LOCK_UNFROZEN", "CONTROLLED_COLLECTOR_REQUIRED"]
+        reasons = ["CONTROLLED_COLLECTOR_REQUIRED"]
         validated = True
     except (Incomplete, Failed, OSError) as exc:
         status = "INCOMPLETE" if isinstance(exc, Incomplete) else "FAIL"

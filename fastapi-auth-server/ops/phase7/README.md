@@ -351,6 +351,29 @@ therefore cannot form a group or be promoted by rewriting their old claims.
 
 ### Online stager / offline intake contract
 
+`ops/phase7/run-security-online-stager.sh check RUN_ID linux/amd64
+ABSOLUTE_PRIVATE_OUTPUT_PARENT` is the check-only controller preflight. The same
+interface accepts `linux/arm64/v8`. It binds a clean HEAD through the hardened
+repository snapshot, validates the exact checked-in toolchain lock, and publishes
+only controller-authored `INCOMPLETE` evidence into an existing caller-owned mode
+`0700` output parent. Publication stays bound to an opened output-directory
+descriptor across creation, writes, and no-replace rename. `collect` is reserved
+but follows the same hardened clean-HEAD snapshot before the `UNFROZEN` refusal;
+it does not invoke Docker, a scanner, or a network client. The wrapper clears
+inherited environment variables and uses Python isolated mode.
+
+The exact lock shape is documented by
+`security/controlled-toolchain-lock.schema.json`. It separately pins builder,
+collector, and six scanner repositories, versions, index/platform/config digests;
+three Trivy artifact manifests and payloads; per-image and per-artifact signature
+issuer/subject/Rekor policies; exact pip/npm HTTPS:443 origins; the complete staging
+destination allowlist; and the fixed bootstrap binary path/hash. Downstream
+collection networking remains `disabled`; only the future stager boundary is
+`default-deny`. All checked-in candidate fields deliberately remain null, so no
+digest or signing identity has been invented. A frozen test fixture produces only
+declarative digest-bound staging subjects. It cannot produce an executable Docker
+command until a private-daemon socket contract exists.
+
 `ops/phase7/run-security-stager-intake.sh ABSOLUTE_PRIVATE_STAGER_INPUT_DIR RUN_ID`
 is a schema-only offline intake boundary for artifacts that a separate, restricted
 online stager may eventually collect. It never starts Docker, scanners, or network
@@ -361,11 +384,18 @@ exactly referenced artifacts. The manifest contract is pinned in
 
 The manifest can assert only `STAGED_UNVERIFIED`. It binds the current clean HEAD
 and Git tree through the same hardened repository snapshot implementation as the
-security gate, as well as the checked-in `UNFROZEN` toolchain-lock hash. It admits
+security gate, as well as the checked-in toolchain-lock hash. Artifact validation
+is admissible only after that lock is `FROZEN`; the checked-in `UNFROZEN` state
+therefore remains incomplete without claiming intake validation. A future frozen flow admits
 only Linux amd64/arm64 image bundles with unique builder, collector, and six
 scanner-image roles; subject-bound signatures and attestations; fresh Trivy database
 artifacts; request-bound pip/npm advisory responses; and an evidenced default-deny
-network scope whose declared destinations are HTTPS port 443 only. Every referenced
+network scope whose declared destinations are HTTPS port 443 only. Once the lock is
+`FROZEN`, image, Trivy payload, advisory-origin, destination, and signature-policy
+declarations must project exactly from it; a caller cannot substitute another pinned
+subject. Signature descriptors bind the asserted issuer, identity, Rekor-inclusion
+flag, raw evidence hash, and digest, but do not prove cryptographic authenticity.
+That verification remains a future controlled-collector responsibility. Every referenced
 file is descriptor-read, ownership/mode/link checked, and verified against its size,
 SHA-256, and the bundle aggregate.
 
@@ -378,10 +408,12 @@ destination set as applicable. Every image and Trivy registry host must also app
 in the default-deny HTTPS:443 destination list. These bindings detect swaps without
 mistaking self-asserted metadata for cryptographic verification.
 
-A structurally valid bundle produces controller-authored evidence only and exits
-`3` as `INCOMPLETE` with `intakeValidated=true`, `TOOLCHAIN_LOCK_UNFROZEN`, and
-`CONTROLLED_COLLECTOR_REQUIRED`. Caller bytes are never republished, and this
-intake can never emit `PASS`, `VERIFIED`, or replacement approval. Missing input is
+A structurally valid bundle under the checked-in `UNFROZEN` lock exits `3` as
+`INCOMPLETE` with `intakeValidated=false` and `MISSING_EVIDENCE`. Under a future
+exactly projected `FROZEN` lock, it still exits `3` with
+`CONTROLLED_COLLECTOR_REQUIRED`; only then may `intakeValidated=true`. Caller bytes
+are never republished, and this intake can never emit `PASS`, `VERIFIED`, or
+replacement approval. Missing input is
 incomplete; unsafe, stale, expired, malformed, unbound, or unexpected input fails.
 The wrapper clears its environment and uses fixed `/usr/bin` tools plus Python
 isolated mode. This contract does not invent candidate image or scanner digests.
@@ -405,8 +437,8 @@ while copying them through descriptors into a private snapshot before parsing.
 
 The checked-in `security/controlled-toolchain-lock.json` is exact and deliberately
 `UNFROZEN`. Collection networking is fixed to disabled and the daemon policy to
-isolated-disposable, but builder/collector image digests, scanner image digests,
-scanner versions, and the scanner-database snapshot hash remain null rather than
+isolated-disposable, but all builder/collector/scanner, Trivy artifact, signature,
+advisory-origin, allowlist, and bootstrap pins remain null or empty rather than
 being invented. The external `collector-contract.json` follows
 `security/controlled-collector-contract.schema.json`, accepts only
 `status=UNVERIFIED`, and binds the checked-in lock hash, the legacy report

@@ -191,16 +191,58 @@ PINNED_FILES = {
         "fastapi-auth-server/ops/phase7/security/controlled-toolchain-lock.json"
     ),
 }
+
+
+def _empty_image_lock() -> dict[str, object]:
+    return {
+        "repository": None,
+        "version": None,
+        "indexDigest": None,
+        "platformDigests": {"linux/amd64": None, "linux/arm64/v8": None},
+        "configDigests": {"linux/amd64": None, "linux/arm64/v8": None},
+    }
+
+
+def _empty_trivy_artifact_lock() -> dict[str, object]:
+    return {
+        "repository": None,
+        "version": None,
+        "manifestDigest": None,
+        "payloadSha256": None,
+    }
+
+
+def _empty_signature_policy() -> dict[str, object]:
+    return {"issuer": None, "subject": None, "rekorRequired": None}
+
+
 TOOLCHAIN_LOCK = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "status": "UNFROZEN",
     "collectionNetwork": "disabled",
+    "stagingNetwork": "default-deny",
     "daemonPolicy": "isolated-disposable",
-    "builderImageDigest": None,
-    "collectorImageDigest": None,
-    "scannerDatabaseSnapshotSha256": None,
-    "scannerImages": {name: None for name in sorted(SCANNER_NAMES)},
-    "scannerVersions": {name: None for name in sorted(SCANNER_NAMES)},
+    "bootstrapBinary": {"path": None, "sha256": None},
+    "targetPlatforms": [
+        {"os": "linux", "architecture": "amd64", "variant": None},
+        {"os": "linux", "architecture": "arm64", "variant": "v8"},
+    ],
+    "images": {name: _empty_image_lock() for name in ("builder", "collector")},
+    "scanners": {name: _empty_image_lock() for name in sorted(SCANNER_NAMES)},
+    "trivyArtifacts": {
+        name: _empty_trivy_artifact_lock()
+        for name in ("vulnerability-db", "java-db", "checks-bundle")
+    },
+    "signaturePolicies": {
+        "images": {name: _empty_signature_policy() for name in ("builder", "collector")},
+        "scanners": {name: _empty_signature_policy() for name in sorted(SCANNER_NAMES)},
+        "trivyArtifacts": {
+            name: _empty_signature_policy()
+            for name in ("vulnerability-db", "java-db", "checks-bundle")
+        },
+    },
+    "advisoryOrigins": {"pip": None, "npm": None},
+    "destinationAllowlist": [],
 }
 QUALIFICATION_PROVENANCE_FIELDS = {
     "schemaVersion",
@@ -326,6 +368,22 @@ def exact(value: object, fields: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != fields:
         raise Failed(f"{label}:exact-fields")
     return value
+
+
+def type_exact_equal(actual: object, expected: object) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict) or set(actual) != set(expected):
+            return False
+        return all(type_exact_equal(actual[key], value) for key, value in expected.items())
+    if isinstance(expected, list):
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        return all(
+            type_exact_equal(left, right) for left, right in zip(actual, expected, strict=True)
+        )
+    return actual == expected
 
 
 def timestamp(value: object, label: str) -> dt.datetime:
@@ -746,22 +804,18 @@ def validate_control_attachments(
     lock = exact(load_json(lock_bytes, "toolchain-lock"), set(TOOLCHAIN_LOCK), "toolchain-lock")
     if (
         type(lock["schemaVersion"]) is not int
-        or lock["schemaVersion"] != 1
+        or lock["schemaVersion"] != 2
         or not isinstance(lock["status"], str)
         or lock["status"] != "UNFROZEN"
         or not isinstance(lock["collectionNetwork"], str)
         or lock["collectionNetwork"] != "disabled"
+        or not isinstance(lock["stagingNetwork"], str)
+        or lock["stagingNetwork"] != "default-deny"
         or not isinstance(lock["daemonPolicy"], str)
         or lock["daemonPolicy"] != "isolated-disposable"
-        or lock["builderImageDigest"] is not None
-        or lock["collectorImageDigest"] is not None
-        or lock["scannerDatabaseSnapshotSha256"] is not None
+        or not type_exact_equal(lock, TOOLCHAIN_LOCK)
     ):
         raise Failed("toolchain-lock:exact-unfrozen-contract")
-    for field in ("scannerImages", "scannerVersions"):
-        values = exact(lock[field], SCANNER_NAMES, f"toolchain-lock:{field}")
-        if any(value is not None for value in values.values()):
-            raise Failed("toolchain-lock:exact-unfrozen-contract")
     lock_hash = sha256(lock_bytes)
     if security_provenance["toolchainLockSha256"] != lock_hash:
         raise Failed("provenance:toolchain-lock")

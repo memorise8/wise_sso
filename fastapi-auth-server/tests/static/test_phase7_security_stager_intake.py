@@ -116,6 +116,9 @@ def make_bundle(root: Path, repo: Path, run_id: str = "stager-test") -> dict[str
             "status": "UNVERIFIED",
             "repository": repository,
             "subjectDigest": digest,
+            "issuer": "https://issuer.example.invalid",
+            "identity": f"identity:{role}",
+            "rekorIncluded": False,
             "rawArtifactSha256": signature_raw["sha256"],
         }
         platform_digit = format(index + 8, "x")[-1]
@@ -151,6 +154,9 @@ def make_bundle(root: Path, repo: Path, run_id: str = "stager-test") -> dict[str
                     {
                         "status": "UNVERIFIED",
                         "subjectDigest": digest,
+                        "issuer": "https://issuer.example.invalid",
+                        "identity": f"identity:{role}",
+                        "rekorIncluded": False,
                         "rawArtifact": signature_raw,
                         "descriptor": artifact(
                             f"{role}-signature-descriptor", signature_descriptor
@@ -183,6 +189,9 @@ def make_bundle(root: Path, repo: Path, run_id: str = "stager-test") -> dict[str
             "status": "UNVERIFIED",
             "repository": repository,
             "subjectDigest": digest,
+            "issuer": "https://issuer.example.invalid",
+            "identity": f"identity:{kind}",
+            "rekorIncluded": False,
             "rawArtifactSha256": signature_raw["sha256"],
         }
         payload = artifact(kind)
@@ -212,6 +221,9 @@ def make_bundle(root: Path, repo: Path, run_id: str = "stager-test") -> dict[str
                     {
                         "status": "UNVERIFIED",
                         "subjectDigest": digest,
+                        "issuer": "https://issuer.example.invalid",
+                        "identity": f"identity:{kind}",
+                        "rekorIncluded": False,
                         "rawArtifact": signature_raw,
                         "descriptor": artifact(
                             f"{kind}-signature-descriptor", signature_descriptor
@@ -369,14 +381,7 @@ def validate(bundle: Path, repo: Path, manifest: dict[str, Any]) -> dict[str, An
 
 def test_valid_staged_bundle_is_controller_only_incomplete(tmp_path: Path) -> None:
     bundle, repo, evidence = tmp_path / "bundle", tmp_path / "repo", tmp_path / "evidence"
-    make_bundle(bundle, repo)
-    manifest = intake.validate_manifest(
-        (bundle / intake.MANIFEST_NAME).read_bytes(),
-        bundle,
-        "stager-test",
-        repo,
-        dt.datetime(2026, 9, 2, 1, tzinfo=dt.UTC),
-    )
+    manifest = make_bundle(bundle, repo)
     assert manifest["status"] == "STAGED_UNVERIFIED"
     raw_paths = (
         manifest["images"][0]["archive"]["path"],
@@ -388,16 +393,18 @@ def test_valid_staged_bundle_is_controller_only_incomplete(tmp_path: Path) -> No
         manifest["advisoryReports"][0]["response"]["rawArtifact"]["path"],
     )
     assert all(not (bundle / path).read_bytes().startswith(b"{") for path in raw_paths)
-    output = intake.publish(
-        evidence,
-        "stager-test",
-        "INCOMPLETE",
-        ["TOOLCHAIN_LOCK_UNFROZEN", "CONTROLLED_COLLECTOR_REQUIRED"],
-        True,
-    )
+    with pytest.raises(intake.Incomplete, match="frozen-required"):
+        intake.validate_manifest(
+            (bundle / intake.MANIFEST_NAME).read_bytes(),
+            bundle,
+            "stager-test",
+            repo,
+            dt.datetime(2026, 9, 2, 1, tzinfo=dt.UTC),
+        )
+    output = intake.publish(evidence, "stager-test", "INCOMPLETE", ["MISSING_EVIDENCE"], False)
     assert {path.name for path in output.iterdir()} == {"gate-result.json", "result.status"}
     result = json.loads((output / "gate-result.json").read_text())
-    assert result["intakeValidated"] is True
+    assert result["intakeValidated"] is False
     assert result["overallReplacementReady"] is False
     assert "PASS" not in (output / "result.status").read_text()
 
@@ -675,6 +682,9 @@ def test_rejects_forged_signature_payload_even_when_outer_hashes_match(tmp_path:
         "status": "UNVERIFIED",
         "repository": manifest["images"][0]["repository"],
         "subjectDigest": f"sha256:{'f' * 64}",
+        "issuer": signature["issuer"],
+        "identity": signature["identity"],
+        "rekorIncluded": signature["rekorIncluded"],
         "rawArtifactSha256": signature["rawArtifact"]["sha256"],
     }
     data = (json.dumps(forged, sort_keys=True, separators=(",", ":")) + "\n").encode()
@@ -765,7 +775,8 @@ def test_isolated_valid_intake_ignores_poisoned_environment_and_marker_tools(
     monkeypatch.setenv("BASH_ENV", str(marker))
     monkeypatch.setenv("PYTHONPATH", str(marker_bin))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(marker))
-    assert validate(bundle, repo, manifest)["status"] == "STAGED_UNVERIFIED"
+    with pytest.raises(intake.Incomplete, match="frozen-required"):
+        validate(bundle, repo, manifest)
     assert not marker.exists()
 
 

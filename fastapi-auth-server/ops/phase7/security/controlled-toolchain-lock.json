@@ -1,25 +1,50 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "status": "UNFROZEN",
   "collectionNetwork": "disabled",
+  "stagingNetwork": "default-deny",
   "daemonPolicy": "isolated-disposable",
-  "builderImageDigest": null,
-  "collectorImageDigest": null,
-  "scannerDatabaseSnapshotSha256": null,
-  "scannerImages": {
-    "gitleaks": null,
-    "npm-audit": null,
-    "pip-audit": null,
-    "ruff": null,
-    "semgrep": null,
-    "trivy": null
+  "bootstrapBinary": {"path": null, "sha256": null},
+  "targetPlatforms": [
+    {"os": "linux", "architecture": "amd64", "variant": null},
+    {"os": "linux", "architecture": "arm64", "variant": "v8"}
+  ],
+  "images": {
+    "builder": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}},
+    "collector": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}}
   },
-  "scannerVersions": {
-    "gitleaks": null,
-    "npm-audit": null,
-    "pip-audit": null,
-    "ruff": null,
-    "semgrep": null,
-    "trivy": null
-  }
+  "scanners": {
+    "gitleaks": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}},
+    "npm-audit": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}},
+    "pip-audit": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}},
+    "ruff": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}},
+    "semgrep": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}},
+    "trivy": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}}
+  },
+  "trivyArtifacts": {
+    "vulnerability-db": {"repository": null, "version": null, "manifestDigest": null, "payloadSha256": null},
+    "java-db": {"repository": null, "version": null, "manifestDigest": null, "payloadSha256": null},
+    "checks-bundle": {"repository": null, "version": null, "manifestDigest": null, "payloadSha256": null}
+  },
+  "signaturePolicies": {
+    "images": {
+      "builder": {"issuer": null, "subject": null, "rekorRequired": null},
+      "collector": {"issuer": null, "subject": null, "rekorRequired": null}
+    },
+    "scanners": {
+      "gitleaks": {"issuer": null, "subject": null, "rekorRequired": null},
+      "npm-audit": {"issuer": null, "subject": null, "rekorRequired": null},
+      "pip-audit": {"issuer": null, "subject": null, "rekorRequired": null},
+      "ruff": {"issuer": null, "subject": null, "rekorRequired": null},
+      "semgrep": {"issuer": null, "subject": null, "rekorRequired": null},
+      "trivy": {"issuer": null, "subject": null, "rekorRequired": null}
+    },
+    "trivyArtifacts": {
+      "vulnerability-db": {"issuer": null, "subject": null, "rekorRequired": null},
+      "java-db": {"issuer": null, "subject": null, "rekorRequired": null},
+      "checks-bundle": {"issuer": null, "subject": null, "rekorRequired": null}
+    }
+  },
+  "advisoryOrigins": {"pip": null, "npm": null},
+  "destinationAllowlist": []
 }

@@ -41,8 +41,8 @@
     },
     "subjectArtifact": {
       "type": "object", "additionalProperties": false,
-      "required": ["status", "subjectDigest", "rawArtifact", "descriptor"],
-      "properties": {"status": {"const": "UNVERIFIED"}, "subjectDigest": {"$ref": "#/$defs/digest"}, "rawArtifact": {"$ref": "#/$defs/blob"}, "descriptor": {"$ref": "#/$defs/blob"}}
+      "required": ["status", "subjectDigest", "issuer", "identity", "rekorIncluded", "rawArtifact", "descriptor"],
+      "properties": {"status": {"const": "UNVERIFIED"}, "subjectDigest": {"$ref": "#/$defs/digest"}, "issuer": {"type": "string", "minLength": 1}, "identity": {"type": "string", "minLength": 1}, "rekorIncluded": {"type": "boolean"}, "rawArtifact": {"$ref": "#/$defs/blob"}, "descriptor": {"$ref": "#/$defs/blob"}}
     },
     "attestation": {
       "type": "object", "additionalProperties": false,

@@ -412,11 +412,12 @@ def test_checked_in_toolchain_lock_is_exact_and_unfrozen() -> None:
     assert lock == gate.TOOLCHAIN_LOCK
     assert lock["status"] == "UNFROZEN"
     assert lock["collectionNetwork"] == "disabled"
+    assert lock["stagingNetwork"] == "default-deny"
     assert lock["daemonPolicy"] == "isolated-disposable"
-    assert lock["builderImageDigest"] is None
-    assert lock["collectorImageDigest"] is None
-    assert all(value is None for value in lock["scannerImages"].values())
-    assert all(value is None for value in lock["scannerVersions"].values())
+    assert lock["destinationAllowlist"] == []
+    assert lock["bootstrapBinary"] == {"path": None, "sha256": None}
+    assert all(image["repository"] is None for image in lock["images"].values())
+    assert all(image["indexDigest"] is None for image in lock["scanners"].values())
 
 
 def test_collector_contract_schema_only_accepts_unverified_hash_bindings() -> None:
@@ -506,8 +507,8 @@ def test_checked_in_lock_replacement_is_refused_even_with_rewritten_hash_claim(
         ("collectionNetwork", True),
         ("daemonPolicy", True),
         (
-            "scannerImages",
-            {name: (False if name == "trivy" else None) for name in gate.SCANNER_NAMES},
+            "destinationAllowlist",
+            [False],
         ),
     ],
 )

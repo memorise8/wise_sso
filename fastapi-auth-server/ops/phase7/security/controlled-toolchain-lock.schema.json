@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.invalid/schemas/phase7-controlled-toolchain-lock.json",
+  "title": "Phase 7 controlled security toolchain lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "collectionNetwork", "stagingNetwork", "daemonPolicy", "bootstrapBinary", "targetPlatforms", "images", "scanners", "trivyArtifacts", "signaturePolicies", "advisoryOrigins", "destinationAllowlist"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "status": {"enum": ["UNFROZEN", "FROZEN"]},
+    "collectionNetwork": {"const": "disabled"},
+    "stagingNetwork": {"const": "default-deny"},
+    "daemonPolicy": {"const": "isolated-disposable"},
+    "bootstrapBinary": {"$ref": "#/$defs/bootstrap"},
+    "targetPlatforms": {"const": [{"os": "linux", "architecture": "amd64", "variant": null}, {"os": "linux", "architecture": "arm64", "variant": "v8"}]},
+    "images": {"type": "object", "additionalProperties": false, "required": ["builder", "collector"], "properties": {"builder": {"$ref": "#/$defs/image"}, "collector": {"$ref": "#/$defs/image"}}},
+    "scanners": {"type": "object", "additionalProperties": false, "required": ["gitleaks", "npm-audit", "pip-audit", "ruff", "semgrep", "trivy"], "properties": {"gitleaks": {"$ref": "#/$defs/image"}, "npm-audit": {"$ref": "#/$defs/image"}, "pip-audit": {"$ref": "#/$defs/image"}, "ruff": {"$ref": "#/$defs/image"}, "semgrep": {"$ref": "#/$defs/image"}, "trivy": {"$ref": "#/$defs/image"}}},
+    "trivyArtifacts": {"type": "object", "additionalProperties": false, "required": ["vulnerability-db", "java-db", "checks-bundle"], "properties": {"vulnerability-db": {"$ref": "#/$defs/trivyArtifact"}, "java-db": {"$ref": "#/$defs/trivyArtifact"}, "checks-bundle": {"$ref": "#/$defs/trivyArtifact"}}},
+    "signaturePolicies": {
+      "type": "object", "additionalProperties": false, "required": ["images", "scanners", "trivyArtifacts"],
+      "properties": {
+        "images": {"type": "object", "additionalProperties": false, "required": ["builder", "collector"], "properties": {"builder": {"$ref": "#/$defs/signaturePolicy"}, "collector": {"$ref": "#/$defs/signaturePolicy"}}},
+        "scanners": {"type": "object", "additionalProperties": false, "required": ["gitleaks", "npm-audit", "pip-audit", "ruff", "semgrep", "trivy"], "properties": {"gitleaks": {"$ref": "#/$defs/signaturePolicy"}, "npm-audit": {"$ref": "#/$defs/signaturePolicy"}, "pip-audit": {"$ref": "#/$defs/signaturePolicy"}, "ruff": {"$ref": "#/$defs/signaturePolicy"}, "semgrep": {"$ref": "#/$defs/signaturePolicy"}, "trivy": {"$ref": "#/$defs/signaturePolicy"}}},
+        "trivyArtifacts": {"type": "object", "additionalProperties": false, "required": ["vulnerability-db", "java-db", "checks-bundle"], "properties": {"vulnerability-db": {"$ref": "#/$defs/signaturePolicy"}, "java-db": {"$ref": "#/$defs/signaturePolicy"}, "checks-bundle": {"$ref": "#/$defs/signaturePolicy"}}}
+      }
+    },
+    "advisoryOrigins": {"type": "object", "additionalProperties": false, "required": ["pip", "npm"], "properties": {"pip": {"$ref": "#/$defs/origin"}, "npm": {"$ref": "#/$defs/origin"}}},
+    "destinationAllowlist": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/origin"}}
+  },
+  "allOf": [{
+    "if": {"properties": {"status": {"const": "FROZEN"}}},
+    "then": {"properties": {
+      "bootstrapBinary": {"properties": {"path": {"const": "/usr/bin/docker"}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+      "images": {"properties": {"builder": {"$ref": "#/$defs/frozenImage"}, "collector": {"$ref": "#/$defs/frozenImage"}}},
+      "scanners": {"properties": {"gitleaks": {"$ref": "#/$defs/frozenImage"}, "npm-audit": {"$ref": "#/$defs/frozenImage"}, "pip-audit": {"$ref": "#/$defs/frozenImage"}, "ruff": {"$ref": "#/$defs/frozenImage"}, "semgrep": {"$ref": "#/$defs/frozenImage"}, "trivy": {"$ref": "#/$defs/frozenImage"}}},
+      "trivyArtifacts": {"properties": {"vulnerability-db": {"$ref": "#/$defs/frozenTrivyArtifact"}, "java-db": {"$ref": "#/$defs/frozenTrivyArtifact"}, "checks-bundle": {"$ref": "#/$defs/frozenTrivyArtifact"}}},
+      "signaturePolicies": {"properties": {
+        "images": {"properties": {"builder": {"$ref": "#/$defs/frozenSignaturePolicy"}, "collector": {"$ref": "#/$defs/frozenSignaturePolicy"}}},
+        "scanners": {"properties": {"gitleaks": {"$ref": "#/$defs/frozenSignaturePolicy"}, "npm-audit": {"$ref": "#/$defs/frozenSignaturePolicy"}, "pip-audit": {"$ref": "#/$defs/frozenSignaturePolicy"}, "ruff": {"$ref": "#/$defs/frozenSignaturePolicy"}, "semgrep": {"$ref": "#/$defs/frozenSignaturePolicy"}, "trivy": {"$ref": "#/$defs/frozenSignaturePolicy"}}},
+        "trivyArtifacts": {"properties": {"vulnerability-db": {"$ref": "#/$defs/frozenSignaturePolicy"}, "java-db": {"$ref": "#/$defs/frozenSignaturePolicy"}, "checks-bundle": {"$ref": "#/$defs/frozenSignaturePolicy"}}}
+      }},
+      "advisoryOrigins": {"properties": {"pip": {"type": "string", "pattern": "^https://[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?:443$"}, "npm": {"type": "string", "pattern": "^https://[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?:443$"}}},
+      "destinationAllowlist": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^https://[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?:443$"}}
+    }}
+  }, {
+    "if": {"properties": {"status": {"const": "UNFROZEN"}}},
+    "then": {"properties": {
+      "bootstrapBinary": {"const": {"path": null, "sha256": null}},
+      "images": {"properties": {"builder": {"$ref": "#/$defs/unfrozenImage"}, "collector": {"$ref": "#/$defs/unfrozenImage"}}},
+      "scanners": {"properties": {"gitleaks": {"$ref": "#/$defs/unfrozenImage"}, "npm-audit": {"$ref": "#/$defs/unfrozenImage"}, "pip-audit": {"$ref": "#/$defs/unfrozenImage"}, "ruff": {"$ref": "#/$defs/unfrozenImage"}, "semgrep": {"$ref": "#/$defs/unfrozenImage"}, "trivy": {"$ref": "#/$defs/unfrozenImage"}}},
+      "trivyArtifacts": {"properties": {"vulnerability-db": {"$ref": "#/$defs/unfrozenTrivyArtifact"}, "java-db": {"$ref": "#/$defs/unfrozenTrivyArtifact"}, "checks-bundle": {"$ref": "#/$defs/unfrozenTrivyArtifact"}}},
+      "signaturePolicies": {"properties": {
+        "images": {"properties": {"builder": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "collector": {"$ref": "#/$defs/unfrozenSignaturePolicy"}}},
+        "scanners": {"properties": {"gitleaks": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "npm-audit": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "pip-audit": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "ruff": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "semgrep": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "trivy": {"$ref": "#/$defs/unfrozenSignaturePolicy"}}},
+        "trivyArtifacts": {"properties": {"vulnerability-db": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "java-db": {"$ref": "#/$defs/unfrozenSignaturePolicy"}, "checks-bundle": {"$ref": "#/$defs/unfrozenSignaturePolicy"}}}
+      }},
+      "advisoryOrigins": {"const": {"pip": null, "npm": null}},
+      "destinationAllowlist": {"maxItems": 0}
+    }}
+  }],
+  "$defs": {
+    "digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+    "sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "origin": {"type": ["string", "null"], "pattern": "^https://[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?:443$"},
+    "bootstrap": {"type": "object", "additionalProperties": false, "required": ["path", "sha256"], "properties": {"path": {"type": ["string", "null"], "pattern": "^/[^\\u0000]+$"}, "sha256": {"$ref": "#/$defs/sha"}}},
+    "signaturePolicy": {"type": "object", "additionalProperties": false, "required": ["issuer", "subject", "rekorRequired"], "properties": {"issuer": {"type": ["string", "null"]}, "subject": {"type": ["string", "null"]}, "rekorRequired": {"type": ["boolean", "null"]}}},
+    "platformPins": {"type": "object", "additionalProperties": false, "required": ["linux/amd64", "linux/arm64/v8"], "properties": {"linux/amd64": {"$ref": "#/$defs/digest"}, "linux/arm64/v8": {"$ref": "#/$defs/digest"}}},
+    "image": {"type": "object", "additionalProperties": false, "required": ["repository", "version", "indexDigest", "platformDigests", "configDigests"], "properties": {"repository": {"type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"}, "version": {"type": ["string", "null"], "pattern": "^(?![Ll][Aa][Tt][Ee][Ss][Tt]$)[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"}, "indexDigest": {"$ref": "#/$defs/digest"}, "platformDigests": {"$ref": "#/$defs/platformPins"}, "configDigests": {"$ref": "#/$defs/platformPins"}}},
+    "trivyArtifact": {"type": "object", "additionalProperties": false, "required": ["repository", "version", "manifestDigest", "payloadSha256"], "properties": {"repository": {"type": ["string", "null"]}, "version": {"type": ["string", "null"]}, "manifestDigest": {"$ref": "#/$defs/digest"}, "payloadSha256": {"$ref": "#/$defs/sha"}}},
+    "frozenPins": {"type": "object", "additionalProperties": false, "required": ["linux/amd64", "linux/arm64/v8"], "properties": {"linux/amd64": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "linux/arm64/v8": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}},
+    "frozenImage": {"type": "object", "additionalProperties": false, "required": ["repository", "version", "indexDigest", "platformDigests", "configDigests"], "properties": {"repository": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"}, "version": {"type": "string", "pattern": "^(?![Ll][Aa][Tt][Ee][Ss][Tt]$)[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"}, "indexDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "platformDigests": {"$ref": "#/$defs/frozenPins"}, "configDigests": {"$ref": "#/$defs/frozenPins"}}},
+    "frozenTrivyArtifact": {"type": "object", "additionalProperties": false, "required": ["repository", "version", "manifestDigest", "payloadSha256"], "properties": {"repository": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"}, "version": {"type": "string", "pattern": "^(?![Ll][Aa][Tt][Ee][Ss][Tt]$)[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"}, "manifestDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "payloadSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "frozenSignaturePolicy": {"type": "object", "additionalProperties": false, "required": ["issuer", "subject", "rekorRequired"], "properties": {"issuer": {"type": "string", "minLength": 1}, "subject": {"type": "string", "minLength": 1}, "rekorRequired": {"const": true}}},
+    "unfrozenImage": {"const": {"repository": null, "version": null, "indexDigest": null, "platformDigests": {"linux/amd64": null, "linux/arm64/v8": null}, "configDigests": {"linux/amd64": null, "linux/arm64/v8": null}}},
+    "unfrozenTrivyArtifact": {"const": {"repository": null, "version": null, "manifestDigest": null, "payloadSha256": null}},
+    "unfrozenSignaturePolicy": {"const": {"issuer": null, "subject": null, "rekorRequired": null}}
+  }
+}
