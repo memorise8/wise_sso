@@ -2,7 +2,7 @@
 set -eu
 umask 077
 
-phase7_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+phase7_dir=$(CDPATH= cd -- "$(/usr/bin/dirname -- "$0")" && pwd -P)
 repo=$(CDPATH= cd -- "$phase7_dir/../../.." && pwd -P)
 
 if [ "$#" -ne 2 ]; then
@@ -15,7 +15,9 @@ case "$1" in
   *) echo "security input directory must be absolute" >&2; exit 2 ;;
 esac
 
-exec "$phase7_dir/security/security_gate.py" \
+exec /usr/bin/env -i \
+  PATH=/usr/bin:/bin \
+  /usr/bin/python3 -I "$phase7_dir/security/security_gate.py" \
   --input "$1" \
   --run-id "$2" \
   --repo "$repo" \

@@ -5,17 +5,21 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
 import types
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 GATE = ROOT / "ops" / "phase7" / "security" / "security_gate.py"
+WRAPPER = ROOT / "ops" / "phase7" / "run-security-gate.sh"
+LOCK = ROOT / "ops" / "phase7" / "security" / "controlled-toolchain-lock.json"
+CONTRACT_SCHEMA = ROOT / "ops" / "phase7" / "security" / "controlled-collector-contract.schema.json"
 SPEC = importlib.util.spec_from_file_location("phase7_security_gate", GATE)
 assert SPEC is not None and SPEC.loader is not None
 gate = importlib.util.module_from_spec(SPEC)
@@ -35,11 +39,18 @@ def dump(value: object) -> bytes:
 def initialize_repo(path: Path) -> tuple[str, str]:
     path.mkdir()
     (path / "tracked").write_text("committed\n", encoding="utf-8")
-    for relative in set(gate.PINNED_FILES.values()):
+    required = set(gate.PINNED_FILES.values())
+    for exact_paths, prefixes in gate.REPOSITORY_INPUT_GROUPS.values():
+        required.update(exact_paths)
+        for prefix in prefixes:
+            required.add(f"{prefix}fixture")
+    for relative in required:
         pinned = path / relative
         pinned.parent.mkdir(parents=True, exist_ok=True)
         if relative == gate.PINNED_FILES["policySha256"]:
             pinned.write_bytes(dump(gate.EXPECTED_POLICY))
+        elif relative == gate.PINNED_FILES["toolchainLockSha256"]:
+            pinned.write_bytes(LOCK.read_bytes())
         else:
             pinned.write_text(f"fixture:{relative}\n", encoding="utf-8")
     subprocess.run(["/usr/bin/git", "init", "-q"], cwd=path, check=True)
@@ -206,8 +217,6 @@ def make_input(tmp_path: Path) -> tuple[Path, Path]:
             ),
         }
     )
-    for name, data in blobs.items():
-        write_private(source / name, data)
     hashes = ",".join(f"{name}:{hashlib.sha256(blobs[name]).hexdigest()}" for name in sorted(blobs))
     provenance = {
         "schemaVersion": "1",
@@ -240,6 +249,78 @@ def make_input(tmp_path: Path) -> tuple[Path, Path]:
         source / "provenance.txt",
         b"".join(f"{key}={value}\n".encode() for key, value in provenance.items()),
     )
+    blobs["provenance.txt"] = (source / "provenance.txt").read_bytes()
+    attestation = {
+        "schemaVersion": 1,
+        "collectorId": "phase7-security-collector",
+        "collectorRevision": revision,
+        "collectorTreeObject": tree,
+        "expressImageId": f"sha256:{'c' * 64}",
+        "fastapiImageId": IMAGE,
+        "status": "UNVERIFIED",
+    }
+    blobs["collector-attestation.json"] = dump(attestation)
+    repo_provenance = gate.repository_provenance(repo)
+    qualification = {
+        "schemaVersion": 2,
+        "gateId": "security",
+        "topology": "controlled-security-v1",
+        "runId": "security-test",
+        **repo_provenance,
+        "expressImageId": attestation["expressImageId"],
+        "fastapiImageId": IMAGE,
+        "collectorAttestationSha256": hashlib.sha256(
+            blobs["collector-attestation.json"]
+        ).hexdigest(),
+    }
+    blobs["qualification-provenance.json"] = dump(qualification)
+    blobs["image-metadata.json"] = dump(
+        {
+            "schemaVersion": 1,
+            "gateId": "security",
+            "runId": "security-test",
+            "status": "UNVERIFIED",
+            "sourceRevision": revision,
+            "gitTreeObject": tree,
+            "imageId": IMAGE,
+            "imageConfig": HASH,
+            "baseImage": HASH,
+            "securityProvenanceSha256": hashlib.sha256(blobs["provenance.txt"]).hexdigest(),
+            "qualificationProvenanceSha256": hashlib.sha256(
+                blobs["qualification-provenance.json"]
+            ).hexdigest(),
+            "collectorAttestationSha256": hashlib.sha256(
+                blobs["collector-attestation.json"]
+            ).hexdigest(),
+            "toolchainLockSha256": hashlib.sha256(LOCK.read_bytes()).hexdigest(),
+        }
+    )
+    blobs["collector-contract.json"] = dump(
+        {
+            "schemaVersion": 1,
+            "gateId": "security",
+            "topology": "controlled-security-v1",
+            "runId": "security-test",
+            "status": "UNVERIFIED",
+            "sourceRevision": revision,
+            "gitTreeObject": tree,
+            "securityProvenanceSha256": hashlib.sha256(blobs["provenance.txt"]).hexdigest(),
+            "qualificationProvenanceSha256": hashlib.sha256(
+                blobs["qualification-provenance.json"]
+            ).hexdigest(),
+            "collectorAttestationSha256": hashlib.sha256(
+                blobs["collector-attestation.json"]
+            ).hexdigest(),
+            "imageMetadataSha256": hashlib.sha256(blobs["image-metadata.json"]).hexdigest(),
+            "toolchainLockSha256": hashlib.sha256(LOCK.read_bytes()).hexdigest(),
+            "reportAggregateSha256": gate.aggregate_hash(blobs, gate.LEGACY_INPUTS),
+            "bundleAggregateSha256": gate.aggregate_hash(
+                blobs, gate.EXPECTED_INPUTS - {"collector-contract.json"}
+            ),
+        }
+    )
+    for name, data in blobs.items():
+        write_private(source / name, data)
     return source, repo
 
 
@@ -248,7 +329,7 @@ def refresh_provenance_hashes(source: Path) -> None:
     values = gate.parse_pairs(path.read_bytes(), gate.PROVENANCE_KEYS, "provenance")
     values["reportHashes"] = ",".join(
         f"{name}:{hashlib.sha256((source / name).read_bytes()).hexdigest()}"
-        for name in sorted(gate.EXPECTED_INPUTS - {"provenance.txt"})
+        for name in sorted(gate.LEGACY_INPUTS - {"provenance.txt"})
     )
     for key, name in {
         "expressBeforeSha256": "express-before.txt",
@@ -258,6 +339,38 @@ def refresh_provenance_hashes(source: Path) -> None:
     }.items():
         values[key] = hashlib.sha256((source / name).read_bytes()).hexdigest()
     write_private(path, b"".join(f"{key}={value}\n".encode() for key, value in values.items()))
+    refresh_control_hashes(source)
+
+
+def refresh_control_hashes(source: Path) -> None:
+    image_path = source / "image-metadata.json"
+    image = json.loads(image_path.read_text(encoding="utf-8"))
+    image["securityProvenanceSha256"] = hashlib.sha256(
+        (source / "provenance.txt").read_bytes()
+    ).hexdigest()
+    image["qualificationProvenanceSha256"] = hashlib.sha256(
+        (source / "qualification-provenance.json").read_bytes()
+    ).hexdigest()
+    image["collectorAttestationSha256"] = hashlib.sha256(
+        (source / "collector-attestation.json").read_bytes()
+    ).hexdigest()
+    write_private(image_path, dump(image))
+    blobs = {name: (source / name).read_bytes() for name in gate.EXPECTED_INPUTS}
+    contract_path = source / "collector-contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["securityProvenanceSha256"] = hashlib.sha256(blobs["provenance.txt"]).hexdigest()
+    contract["qualificationProvenanceSha256"] = hashlib.sha256(
+        blobs["qualification-provenance.json"]
+    ).hexdigest()
+    contract["collectorAttestationSha256"] = hashlib.sha256(
+        blobs["collector-attestation.json"]
+    ).hexdigest()
+    contract["imageMetadataSha256"] = hashlib.sha256(blobs["image-metadata.json"]).hexdigest()
+    contract["reportAggregateSha256"] = gate.aggregate_hash(blobs, gate.LEGACY_INPUTS)
+    contract["bundleAggregateSha256"] = gate.aggregate_hash(
+        blobs, gate.EXPECTED_INPUTS - {"collector-contract.json"}
+    )
+    write_private(contract_path, dump(contract))
 
 
 def validate(source: Path, repo: Path) -> None:
@@ -289,6 +402,285 @@ def test_valid_bundle_publishes_immutable_pass(tmp_path: Path) -> None:
     assert result["status"] == "INCOMPLETE"
     assert result["readinessAssertionsSatisfied"] is False
     assert result["overallReplacementReady"] is False
+    status = (output / "result.status").read_text(encoding="utf-8")
+    assert "TOOLCHAIN_LOCK_UNFROZEN" in status
+    assert "CONTROLLED_COLLECTOR_REQUIRED" in status
+
+
+def test_checked_in_toolchain_lock_is_exact_and_unfrozen() -> None:
+    lock = json.loads(LOCK.read_text(encoding="utf-8"))
+    assert lock == gate.TOOLCHAIN_LOCK
+    assert lock["status"] == "UNFROZEN"
+    assert lock["collectionNetwork"] == "disabled"
+    assert lock["daemonPolicy"] == "isolated-disposable"
+    assert lock["builderImageDigest"] is None
+    assert lock["collectorImageDigest"] is None
+    assert all(value is None for value in lock["scannerImages"].values())
+    assert all(value is None for value in lock["scannerVersions"].values())
+
+
+def test_collector_contract_schema_only_accepts_unverified_hash_bindings() -> None:
+    schema = json.loads(CONTRACT_SCHEMA.read_text(encoding="utf-8"))
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == gate.COLLECTOR_CONTRACT_FIELDS
+    assert schema["properties"]["status"] == {"const": "UNVERIFIED"}
+    hash_fields = {field for field in gate.COLLECTOR_CONTRACT_FIELDS if field.endswith("Sha256")}
+    assert all(schema["properties"][field]["pattern"] == "^[0-9a-f]{64}$" for field in hash_fields)
+
+
+@pytest.mark.parametrize(
+    ("name", "status"),
+    [
+        ("collector-contract.json", "VERIFIED"),
+        ("collector-contract.json", "PASS"),
+        ("collector-attestation.json", "VERIFIED"),
+        ("image-metadata.json", "PASS"),
+    ],
+)
+def test_external_verified_or_pass_claim_is_rejected(
+    tmp_path: Path, name: str, status: str
+) -> None:
+    source, repo = make_input(tmp_path)
+    path = source / name
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["status"] = status
+    write_private(path, dump(document))
+    with pytest.raises(gate.Failed):
+        validate(source, repo)
+
+
+def test_qualification_repository_hash_chain_is_exact(tmp_path: Path) -> None:
+    source, repo = make_input(tmp_path)
+    qualification_path = source / "qualification-provenance.json"
+    qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
+    qualification["fastapiApplicationTreeSha256"] = "d" * 64
+    write_private(qualification_path, dump(qualification))
+    refresh_control_hashes(source)
+    with pytest.raises(gate.Failed, match="repo-fastapiApplicationTreeSha256"):
+        validate(source, repo)
+
+
+@pytest.mark.parametrize("field", ["imageId", "imageConfig", "baseImage"])
+def test_image_metadata_is_bound_to_legacy_security_provenance(tmp_path: Path, field: str) -> None:
+    source, repo = make_input(tmp_path)
+    image_path = source / "image-metadata.json"
+    image = json.loads(image_path.read_text(encoding="utf-8"))
+    image[field] = f"sha256:{'d' * 64}" if field == "imageId" else "d" * 64
+    write_private(image_path, dump(image))
+    refresh_control_hashes(source)
+    with pytest.raises(gate.Failed, match="image-metadata:hash-or-image-binding"):
+        validate(source, repo)
+
+
+def test_caller_toolchain_lock_file_is_refused_as_extra(tmp_path: Path) -> None:
+    source, repo = make_input(tmp_path)
+    write_private(source / "controlled-toolchain-lock.json", LOCK.read_bytes())
+    with pytest.raises(gate.Failed, match="unexpected-files"):
+        validate(source, repo)
+
+
+def test_checked_in_lock_replacement_is_refused_even_with_rewritten_hash_claim(
+    tmp_path: Path,
+) -> None:
+    source, repo = make_input(tmp_path)
+    replacement = {**gate.TOOLCHAIN_LOCK, "status": "FROZEN"}
+    snapshot = gate.repository_snapshot(repo)
+    replacement_bytes = dump(replacement)
+    pinned_blobs = dict(snapshot.pinned_blobs)
+    pinned_blobs[gate.PINNED_FILES["toolchainLockSha256"]] = replacement_bytes
+    forged_snapshot = gate.RepositorySnapshot(snapshot.provenance, pinned_blobs)
+    provenance = gate.parse_pairs(
+        (source / "provenance.txt").read_bytes(), gate.PROVENANCE_KEYS, "provenance"
+    )
+    provenance["toolchainLockSha256"] = hashlib.sha256(replacement_bytes).hexdigest()
+    blobs = {name: (source / name).read_bytes() for name in gate.EXPECTED_INPUTS}
+    with pytest.raises(gate.Failed, match="toolchain-lock:exact-unfrozen-contract"):
+        gate.validate_control_attachments(blobs, "security-test", forged_snapshot, provenance)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schemaVersion", True),
+        ("status", True),
+        ("collectionNetwork", True),
+        ("daemonPolicy", True),
+        (
+            "scannerImages",
+            {name: (False if name == "trivy" else None) for name in gate.SCANNER_NAMES},
+        ),
+    ],
+)
+def test_toolchain_lock_rejects_boolean_scalar_coercion(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    source, repo = make_input(tmp_path)
+    snapshot = gate.repository_snapshot(repo)
+    lock = {**gate.TOOLCHAIN_LOCK, field: value}
+    lock_bytes = dump(lock)
+    pinned_blobs = dict(snapshot.pinned_blobs)
+    pinned_blobs[gate.PINNED_FILES["toolchainLockSha256"]] = lock_bytes
+    forged_snapshot = gate.RepositorySnapshot(snapshot.provenance, pinned_blobs)
+    provenance = gate.parse_pairs(
+        (source / "provenance.txt").read_bytes(), gate.PROVENANCE_KEYS, "provenance"
+    )
+    provenance["toolchainLockSha256"] = hashlib.sha256(lock_bytes).hexdigest()
+    blobs = {name: (source / name).read_bytes() for name in gate.EXPECTED_INPUTS}
+    with pytest.raises(gate.Failed, match="toolchain-lock:exact-unfrozen-contract"):
+        gate.validate_control_attachments(blobs, "security-test", forged_snapshot, provenance)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "collectorId",
+        "collectorRevision",
+        "collectorTreeObject",
+        "expressImageId",
+        "fastapiImageId",
+    ],
+)
+def test_collector_identifiers_reject_numeric_coercion(tmp_path: Path, field: str) -> None:
+    source, repo = make_input(tmp_path)
+    attestation_path = source / "collector-attestation.json"
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    attestation[field] = 123
+    write_private(attestation_path, dump(attestation))
+    blobs = {name: (source / name).read_bytes() for name in gate.EXPECTED_INPUTS}
+    provenance = gate.parse_pairs(blobs["provenance.txt"], gate.PROVENANCE_KEYS, "provenance")
+    with pytest.raises(gate.Failed, match="collector-attestation:exact-unverified-contract"):
+        gate.validate_control_attachments(
+            blobs, "security-test", gate.repository_snapshot(repo), provenance
+        )
+
+
+def test_repository_snapshot_accepts_safely_bound_linked_worktree(tmp_path: Path) -> None:
+    primary = tmp_path / "primary"
+    revision, _ = initialize_repo(primary)
+    linked = tmp_path / "linked"
+    subprocess.run(  # noqa: S603 - fixed Git executable in an isolated fixture
+        ["/usr/bin/git", "worktree", "add", "-q", "-b", "linked-test", str(linked)],
+        cwd=primary,
+        check=True,
+    )
+    snapshot = gate.repository_snapshot(linked)
+    assert snapshot.provenance["sourceRevision"] == revision
+
+
+def test_core_worktree_cannot_hide_mutated_real_runner_with_refreshed_claims(
+    tmp_path: Path,
+) -> None:
+    source, repo = make_input(tmp_path)
+    alternate = tmp_path / "alternate-clean-worktree"
+    shutil.copytree(repo, alternate, ignore=shutil.ignore_patterns(".git"))
+    runner = repo / gate.PINNED_FILES["runnerSha256"]
+    runner.write_text("attacker-controlled runner\n", encoding="utf-8")
+    subprocess.run(  # noqa: S603 - fixed Git executable in an isolated fixture
+        ["/usr/bin/git", "config", "core.worktree", str(alternate)], cwd=repo, check=True
+    )
+    provenance_path = source / "provenance.txt"
+    provenance = gate.parse_pairs(provenance_path.read_bytes(), gate.PROVENANCE_KEYS, "provenance")
+    provenance["runnerSha256"] = hashlib.sha256(runner.read_bytes()).hexdigest()
+    write_private(
+        provenance_path,
+        b"".join(f"{key}={value}\n".encode() for key, value in provenance.items()),
+    )
+    refresh_control_hashes(source)
+    with pytest.raises(gate.Failed, match="repo:unsafe-local-config"):
+        validate(source, repo)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("include.path", "untrusted.config"),
+        ("includeIf.gitdir:/**.path", "untrusted.config"),
+        ("extensions.partialclone", "origin"),
+        ("remote.origin.promisor", "true"),
+        ("objects.alternate", "alternate-objects"),
+    ],
+)
+def test_repository_snapshot_rejects_unsafe_object_and_include_config(
+    tmp_path: Path, key: str, value: str
+) -> None:
+    repo = tmp_path / "repo"
+    initialize_repo(repo)
+    subprocess.run(  # noqa: S603 - fixed Git executable in an isolated fixture
+        ["/usr/bin/git", "config", key, value], cwd=repo, check=True
+    )
+    with pytest.raises(gate.Failed, match="repo:unsafe-local-config"):
+        gate.repository_snapshot(repo)
+
+
+def test_repository_snapshot_rejects_object_alternates_file(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    initialize_repo(repo)
+    alternate = tmp_path / "alternate-objects"
+    alternate.mkdir()
+    (repo / ".git" / "objects" / "info" / "alternates").write_text(
+        f"{alternate}\n", encoding="utf-8"
+    )
+    with pytest.raises(gate.Failed, match="repo:object-alternates"):
+        gate.repository_snapshot(repo)
+
+
+def test_validation_invokes_only_git_not_docker_or_scanners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, repo = make_input(tmp_path)
+    invoked: list[str] = []
+    real_run = gate.subprocess.run
+
+    def recording_run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        invoked.append(arguments[0])
+        return cast(subprocess.CompletedProcess[bytes], real_run(arguments, **kwargs))
+
+    monkeypatch.setattr(gate.subprocess, "run", recording_run)
+    validate(source, repo)
+    assert invoked
+    assert set(invoked) == {"/usr/bin/git"}
+
+
+def test_wrapper_clears_poisoned_environment_without_docker(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    phase7 = clone / "fastapi-auth-server" / "ops" / "phase7"
+    security = phase7 / "security"
+    security.mkdir(parents=True)
+    copied_wrapper = phase7 / WRAPPER.name
+    shutil.copy2(WRAPPER, copied_wrapper)
+    shutil.copy2(GATE, security / GATE.name)
+    poisoned = tmp_path / "poisoned"
+    poisoned.mkdir()
+    marker = tmp_path / "poison-ran"
+    for command in ("dirname", "docker", "git", "python3"):
+        executable = poisoned / command
+        executable.write_text(f"#!/bin/sh\n: > {marker}\nexit 99\n", encoding="utf-8")
+        executable.chmod(0o755)
+    startup = poisoned / "startup.sh"
+    startup.write_text(f": > {marker}\n", encoding="utf-8")
+    (poisoned / "sitecustomize.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n", encoding="utf-8"
+    )
+    source = tmp_path / "missing-input"
+    source.mkdir(mode=0o700)
+    completed = subprocess.run(  # noqa: S603 - copied fixed checked-in wrapper
+        ["/bin/sh", str(copied_wrapper), str(source), "poison-test"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": str(poisoned),
+            "PYTHONPATH": str(poisoned),
+            "PYTHONHOME": str(poisoned),
+            "ENV": str(startup),
+            "BASH_ENV": str(startup),
+        },
+    )
+    assert completed.returncode == 3
+    assert not marker.exists()
+    result_root = clone / "fastapi-auth-server" / "evidence" / "phase7-security"
+    result = json.loads((result_root / "poison-test" / "gate-result.json").read_text())
+    assert result["status"] == "INCOMPLETE"
 
 
 def test_missing_artifact_is_incomplete(tmp_path: Path) -> None:

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "status": "UNFROZEN",
+  "collectionNetwork": "disabled",
+  "daemonPolicy": "isolated-disposable",
+  "builderImageDigest": null,
+  "collectorImageDigest": null,
+  "scannerDatabaseSnapshotSha256": null,
+  "scannerImages": {
+    "gitleaks": null,
+    "npm-audit": null,
+    "pip-audit": null,
+    "ruff": null,
+    "semgrep": null,
+    "trivy": null
+  },
+  "scannerVersions": {
+    "gitleaks": null,
+    "npm-audit": null,
+    "pip-audit": null,
+    "ruff": null,
+    "semgrep": null,
+    "trivy": null
+  }
+}

@@ -359,9 +359,42 @@ regular non-link files named `provenance.txt`, the three
 `sbom.cdx.json`, `licenses.json`, `hardening.status`, `negative-tests.xml`,
 `negative-tests.status`, `sanitization.status`, and `cleanup.status`.
 The exact set also includes `express-before.txt`, `express-after.txt`, and
-`candidate-inventory.json`. Files must be single-link and owned by the caller;
+`candidate-inventory.json`, plus `collector-contract.json`,
+`qualification-provenance.json`, `collector-attestation.json`, and
+`image-metadata.json`. A caller-supplied toolchain lock or any other extra file
+is rejected. Files must be single-link and owned by the caller;
 the controller checks stable inode, size, owner, link count, mtime, and ctime
 while copying them through descriptors into a private snapshot before parsing.
+
+The checked-in `security/controlled-toolchain-lock.json` is exact and deliberately
+`UNFROZEN`. Collection networking is fixed to disabled and the daemon policy to
+isolated-disposable, but builder/collector image digests, scanner image digests,
+scanner versions, and the scanner-database snapshot hash remain null rather than
+being invented. The external `collector-contract.json` follows
+`security/controlled-collector-contract.schema.json`, accepts only
+`status=UNVERIFIED`, and binds the checked-in lock hash, the legacy report
+aggregate, the complete non-contract bundle aggregate, and all three companion
+attachment hashes.
+
+The qualification provenance is the Phase 7 version-2 security record. Its
+revision, Git tree, Express/FastAPI application aggregates, schema, lock, and
+configuration aggregates are recomputed from the current clean repository.
+The controller binds explicit Git-directory and work-tree descriptors to the
+canonical standalone or linked-worktree metadata, disables replacement and
+lazy object retrieval, and rejects config includes, `core.worktree`, partial
+clones, promisors, configured alternates, and object-alternates files. Clean
+status is therefore evaluated against the named real worktree. Pinned runner,
+policy, rules, lockfiles, Dockerfile, and toolchain-lock bytes—as well as every
+repository aggregate—come from immutable HEAD blobs, not caller-mutated
+worktree files.
+The attestation hash and Express/FastAPI image IDs must match the unverified
+collector attestation. Image metadata separately binds the FastAPI image ID,
+config digest, base-image digest, legacy security provenance hash, qualification
+provenance hash, attestation hash, and repository lock hash. `VERIFIED` or
+`PASS` claims in any external control record fail rather than unlocking the
+gate. The wrapper uses absolute `dirname`, clears its environment, fixes PATH,
+and invokes `/usr/bin/python3 -I`, so ambient shell/Python startup variables
+cannot select the controller or execute startup code.
 
 Provenance is an exact key/value contract that pins the run, committed HEAD and
 tree, runner/policy/rule/lock/Dockerfile hashes, exact image ID/config/base
@@ -401,7 +434,8 @@ hash-bound; cleanup labels alone cannot establish these claims.
 Missing required evidence exits `3` as `INCOMPLETE`; malformed, unsafe, stale,
 unlinked, policy-violating, dirty-source, or colliding input exits `2` as
 `FAIL`. The external-artifact controller currently keeps even a fully validated
-bundle at `INCOMPLETE` with `CONTROLLED_COLLECTOR_REQUIRED`: opaque caller-authored
+bundle at `INCOMPLETE` with both `TOOLCHAIN_LOCK_UNFROZEN` and
+`CONTROLLED_COLLECTOR_REQUIRED`: opaque caller-authored
 runtime snapshots and JUnit cannot authenticate execution. A future controlled,
 pinned launcher must produce structured subject-bound Express/runtime evidence
 and a source/tree/image-bound negative-test attestation before `PASS` can be

@@ -17,10 +17,11 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-EXPECTED_INPUTS = {
+LEGACY_INPUTS = {
     "provenance.txt",
     "dependency-python.json",
     "dependency-node-runtime.json",
@@ -41,6 +42,13 @@ EXPECTED_INPUTS = {
     "express-after.txt",
     "candidate-inventory.json",
 }
+CONTROL_ATTACHMENTS = {
+    "collector-contract.json",
+    "qualification-provenance.json",
+    "collector-attestation.json",
+    "image-metadata.json",
+}
+EXPECTED_INPUTS = LEGACY_INPUTS | CONTROL_ATTACHMENTS
 JSON_REPORTS = {
     "dependency-python.json",
     "dependency-node-runtime.json",
@@ -85,6 +93,7 @@ PROVENANCE_KEYS = {
     "nodeLockSha256",
     "nodeBuildLockSha256",
     "dockerfileSha256",
+    "toolchainLockSha256",
     "imageId",
     "imageConfig",
     "baseImage",
@@ -158,6 +167,7 @@ REQUIRED_NEGATIVE_TESTS = {
 }
 ALLOWED_REASON_CODES = {
     "CONTROLLED_COLLECTOR_REQUIRED",
+    "TOOLCHAIN_LOCK_UNFROZEN",
     "MISSING_EVIDENCE",
     "UNSAFE_INPUT",
     "MALFORMED_INPUT",
@@ -177,6 +187,108 @@ PINNED_FILES = {
     "nodeLockSha256": "auth-server/package-lock.json",
     "nodeBuildLockSha256": "auth-server/package-lock.json",
     "dockerfileSha256": "fastapi-auth-server/Dockerfile",
+    "toolchainLockSha256": (
+        "fastapi-auth-server/ops/phase7/security/controlled-toolchain-lock.json"
+    ),
+}
+TOOLCHAIN_LOCK = {
+    "schemaVersion": 1,
+    "status": "UNFROZEN",
+    "collectionNetwork": "disabled",
+    "daemonPolicy": "isolated-disposable",
+    "builderImageDigest": None,
+    "collectorImageDigest": None,
+    "scannerDatabaseSnapshotSha256": None,
+    "scannerImages": {name: None for name in sorted(SCANNER_NAMES)},
+    "scannerVersions": {name: None for name in sorted(SCANNER_NAMES)},
+}
+QUALIFICATION_PROVENANCE_FIELDS = {
+    "schemaVersion",
+    "gateId",
+    "topology",
+    "runId",
+    "sourceRevision",
+    "gitTreeObject",
+    "expressApplicationTreeSha256",
+    "fastapiApplicationTreeSha256",
+    "schemaSha256",
+    "expressLockSha256",
+    "fastapiLockSha256",
+    "configSha256",
+    "expressImageId",
+    "fastapiImageId",
+    "collectorAttestationSha256",
+}
+COLLECTOR_ATTESTATION_FIELDS = {
+    "schemaVersion",
+    "collectorId",
+    "collectorRevision",
+    "collectorTreeObject",
+    "expressImageId",
+    "fastapiImageId",
+    "status",
+}
+IMAGE_METADATA_FIELDS = {
+    "schemaVersion",
+    "gateId",
+    "runId",
+    "status",
+    "sourceRevision",
+    "gitTreeObject",
+    "imageId",
+    "imageConfig",
+    "baseImage",
+    "securityProvenanceSha256",
+    "qualificationProvenanceSha256",
+    "collectorAttestationSha256",
+    "toolchainLockSha256",
+}
+COLLECTOR_CONTRACT_FIELDS = {
+    "schemaVersion",
+    "gateId",
+    "topology",
+    "runId",
+    "status",
+    "sourceRevision",
+    "gitTreeObject",
+    "securityProvenanceSha256",
+    "qualificationProvenanceSha256",
+    "collectorAttestationSha256",
+    "imageMetadataSha256",
+    "toolchainLockSha256",
+    "reportAggregateSha256",
+    "bundleAggregateSha256",
+}
+EXPRESS_APPLICATION_FILES = {"auth-server/package.json", "auth-server/tsconfig.json"}
+EXPRESS_APPLICATION_PREFIXES = (
+    "auth-server/src/",
+    "auth-server/public/",
+    "auth-server/prisma/migrations/",
+)
+FASTAPI_APPLICATION_FILES = {
+    "fastapi-auth-server/pyproject.toml",
+    "fastapi-auth-server/README.md",
+}
+FASTAPI_APPLICATION_PREFIXES = ("fastapi-auth-server/src/",)
+REPOSITORY_INPUT_GROUPS = {
+    "expressApplicationTreeSha256": (EXPRESS_APPLICATION_FILES, EXPRESS_APPLICATION_PREFIXES),
+    "fastapiApplicationTreeSha256": (FASTAPI_APPLICATION_FILES, FASTAPI_APPLICATION_PREFIXES),
+    "schemaSha256": ({"auth-server/prisma/schema.prisma"}, ()),
+    "expressLockSha256": ({"auth-server/package-lock.json"}, ()),
+    "fastapiLockSha256": ({"fastapi-auth-server/uv.lock"}, ()),
+    "configSha256": (
+        {
+            "auth-server/.dockerignore",
+            "auth-server/.env.example",
+            "auth-server/Dockerfile",
+            "auth-server/docker-compose.yml",
+            "fastapi-auth-server/.dockerignore",
+            "fastapi-auth-server/.env.example",
+            "fastapi-auth-server/Dockerfile",
+            "fastapi-auth-server/docker-compose.dev.yml",
+        },
+        (),
+    ),
 }
 SECRET_PATTERNS = (
     re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.I),
@@ -196,6 +308,14 @@ class Incomplete(ValueError):
 
 class Failed(ValueError):
     """Evidence is malformed, unsafe, inconsistent, or violates policy."""
+
+
+@dataclass(frozen=True)
+class RepositorySnapshot:
+    """Immutable HEAD-derived repository inputs bound to one real worktree."""
+
+    provenance: dict[str, str]
+    pinned_blobs: dict[str, bytes]
 
 
 def sha256(data: bytes) -> str:
@@ -309,6 +429,463 @@ def scan_structured(value: object, label: str) -> None:
 def validate_policy(data: bytes) -> None:
     if load_json(data, "security-policy") != EXPECTED_POLICY:
         raise Failed("security-policy:exact-contract")
+
+
+def aggregate_hash(blobs: dict[str, bytes], names: set[str]) -> str:
+    records = [name.encode() + b"\0" + sha256(blobs[name]).encode() + b"\n" for name in names]
+    return sha256(b"".join(sorted(records)))
+
+
+def git(
+    repo_descriptor: int,
+    git_descriptor: int,
+    *arguments: str,
+    allow_no_match: bool = False,
+) -> bytes:
+    environment = {
+        "HOME": "/nonexistent",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": "/usr/bin:/bin",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_NO_LAZY_FETCH": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    completed = subprocess.run(  # noqa: S603 - fixed Git binary and sanitized environment
+        [
+            "/usr/bin/git",
+            "--no-replace-objects",
+            f"--git-dir=/proc/self/fd/{git_descriptor}",
+            f"--work-tree=/proc/self/fd/{repo_descriptor}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+            *arguments,
+        ],
+        cwd=f"/proc/self/fd/{repo_descriptor}",
+        check=False,
+        capture_output=True,
+        env=environment,
+        pass_fds=(repo_descriptor, git_descriptor),
+    )
+    if completed.returncode != 0 and not (allow_no_match and completed.returncode == 1):
+        raise subprocess.CalledProcessError(
+            completed.returncode, completed.args, completed.stdout, completed.stderr
+        )
+    return completed.stdout
+
+
+def _regular_metadata_file(path: Path, label: str) -> bytes:
+    state = path.lstat()
+    if path.is_symlink() or not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+        raise Failed(f"repo:{label}")
+    return path.read_bytes()
+
+
+def _config_is_unsafe(data: bytes) -> bool:
+    try:
+        lines = data.decode("utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        raise Failed("repo:git-config") from exc
+    for line in lines:
+        key = line.split(maxsplit=1)[0].lower()
+        if (
+            key == "core.worktree"
+            or key == "extensions.partialclone"
+            or key == "include.path"
+            or (key.startswith("includeif.") and key.endswith(".path"))
+            or "promisor" in key
+            or "alternate" in key
+        ):
+            return True
+    return False
+
+
+def repository_snapshot(repo: Path) -> RepositorySnapshot:
+    if not repo.is_absolute() or repo.resolve() != repo or repo.is_symlink() or not repo.is_dir():
+        raise Failed("repo:unsafe")
+    repo_descriptor = os.open(repo, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        repo_identity = os.fstat(repo_descriptor)
+        dotgit = repo / ".git"
+        dotgit_state = dotgit.lstat()
+        if stat.S_ISDIR(dotgit_state.st_mode) and not dotgit.is_symlink():
+            git_dir = dotgit
+            common_dir = dotgit
+        elif stat.S_ISREG(dotgit_state.st_mode) and not dotgit.is_symlink():
+            lines = _regular_metadata_file(dotgit, "gitfile").decode("utf-8").splitlines()
+            if len(lines) != 1 or not lines[0].startswith("gitdir: "):
+                raise Failed("repo:gitfile")
+            git_dir = Path(lines[0][8:])
+            if (
+                not git_dir.is_absolute()
+                or git_dir.resolve() != git_dir
+                or git_dir.is_symlink()
+                or not git_dir.is_dir()
+            ):
+                raise Failed("repo:gitfile-target")
+            commondir = _regular_metadata_file(git_dir / "commondir", "commondir")
+            backlink = _regular_metadata_file(git_dir / "gitdir", "gitdir")
+            if commondir.decode("utf-8").strip() != "../.." or backlink.decode(
+                "utf-8"
+            ).strip() != str(dotgit):
+                raise Failed("repo:linked-worktree-binding")
+            common_dir = (git_dir / "../..").resolve()
+            if git_dir.parent != common_dir / "worktrees":
+                raise Failed("repo:linked-worktree-namespace")
+        else:
+            raise Failed("repo:git-metadata")
+        if common_dir.is_symlink() or not common_dir.is_dir():
+            raise Failed("repo:common-dir")
+        git_descriptor = os.open(
+            git_dir, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        common_descriptor = os.open(
+            common_dir, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            git_identity = os.fstat(git_descriptor)
+            common_identity = os.fstat(common_descriptor)
+            for relative in ("objects/info/alternates", "objects/info/http-alternates"):
+                try:
+                    os.stat(relative, dir_fd=common_descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise Failed("repo:object-alternates")
+            for relative in ("HEAD", "index"):
+                state = os.stat(relative, dir_fd=git_descriptor, follow_symlinks=False)
+                if not stat.S_ISREG(state.st_mode):
+                    raise Failed(f"repo:{relative}")
+            local_config = git(
+                repo_descriptor,
+                git_descriptor,
+                "config",
+                "--no-includes",
+                "--local",
+                "--get-regexp",
+                ".*",
+                allow_no_match=True,
+            )
+            if _config_is_unsafe(local_config):
+                raise Failed("repo:unsafe-local-config")
+            worktree_enabled = git(
+                repo_descriptor,
+                git_descriptor,
+                "config",
+                "--no-includes",
+                "--local",
+                "--type=bool",
+                "--get",
+                "extensions.worktreeConfig",
+                allow_no_match=True,
+            ).strip()
+            if worktree_enabled == b"true":
+                worktree_config = git(
+                    repo_descriptor,
+                    git_descriptor,
+                    "config",
+                    "--no-includes",
+                    "--worktree",
+                    "--get-regexp",
+                    ".*",
+                    allow_no_match=True,
+                )
+                if _config_is_unsafe(worktree_config):
+                    raise Failed("repo:unsafe-worktree-config")
+            if git(
+                repo_descriptor,
+                git_descriptor,
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/replace/",
+            ):
+                raise Failed("repo:replace-refs")
+            top = (
+                git(repo_descriptor, git_descriptor, "rev-parse", "--show-toplevel")
+                .decode()
+                .strip()
+            )
+            if (
+                os.stat(top).st_dev != repo_identity.st_dev
+                or os.stat(top).st_ino != repo_identity.st_ino
+            ):
+                raise Failed("repo:worktree-binding")
+            actual_git = (
+                git(repo_descriptor, git_descriptor, "rev-parse", "--absolute-git-dir")
+                .decode()
+                .strip()
+            )
+            if (
+                os.stat(actual_git).st_dev != git_identity.st_dev
+                or os.stat(actual_git).st_ino != git_identity.st_ino
+            ):
+                raise Failed("repo:git-dir-binding")
+            common_value = (
+                git(repo_descriptor, git_descriptor, "rev-parse", "--git-common-dir")
+                .decode()
+                .strip()
+            )
+            actual_common = Path(common_value)
+            if not actual_common.is_absolute():
+                actual_common = repo / actual_common
+            common_state = actual_common.stat()
+            if (common_state.st_dev, common_state.st_ino) != (
+                common_identity.st_dev,
+                common_identity.st_ino,
+            ):
+                raise Failed("repo:common-dir-binding")
+            index_path = Path(
+                git(repo_descriptor, git_descriptor, "rev-parse", "--git-path", "index")
+                .decode()
+                .strip()
+            )
+            index_state = index_path.stat()
+            expected_index = os.stat("index", dir_fd=git_descriptor, follow_symlinks=False)
+            if (index_state.st_dev, index_state.st_ino) != (
+                expected_index.st_dev,
+                expected_index.st_ino,
+            ):
+                raise Failed("repo:index-binding")
+            if git(
+                repo_descriptor, git_descriptor, "status", "--porcelain=v1", "--untracked-files=all"
+            ):
+                raise Failed("source:dirty")
+            revision = (
+                git(repo_descriptor, git_descriptor, "rev-parse", "--verify", "HEAD")
+                .decode()
+                .strip()
+            )
+            tree = (
+                git(
+                    repo_descriptor, git_descriptor, "rev-parse", "--verify", f"{revision}^{{tree}}"
+                )
+                .decode()
+                .strip()
+            )
+            if TREE.fullmatch(revision) is None or TREE.fullmatch(tree) is None:
+                raise Failed("repo:revision")
+            tracked: dict[str, tuple[str, str]] = {}
+            tree_data = git(
+                repo_descriptor, git_descriptor, "ls-tree", "-r", "-z", "--full-tree", revision
+            )
+            for record in tree_data.rstrip(b"\0").split(b"\0"):
+                try:
+                    metadata, raw_path = record.split(b"\t", 1)
+                    mode, object_type, object_id = metadata.decode("ascii").split(" ")
+                    path = raw_path.decode("utf-8")
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise Failed("repo:tree") from exc
+                if object_type != "blob" or mode not in {"100644", "100755"} or not path:
+                    raise Failed("repo:tree")
+                tracked[path] = (mode, object_id)
+            pinned_blobs: dict[str, bytes] = {}
+            for relative in set(PINNED_FILES.values()):
+                if relative not in tracked:
+                    raise Incomplete(f"missing-pinned-input:{relative}")
+                pinned_blobs[relative] = git(
+                    repo_descriptor, git_descriptor, "cat-file", "blob", tracked[relative][1]
+                )
+            result = {"sourceRevision": revision, "gitTreeObject": tree}
+            for field, (exact_paths, prefixes) in REPOSITORY_INPUT_GROUPS.items():
+                paths = set(exact_paths) | {
+                    path for path in tracked if any(path.startswith(prefix) for prefix in prefixes)
+                }
+                if not paths or any(path not in tracked for path in paths):
+                    raise Failed(f"repo:missing-{field}")
+                records = []
+                for path in paths:
+                    blob = git(
+                        repo_descriptor, git_descriptor, "cat-file", "blob", tracked[path][1]
+                    )
+                    records.append(path.encode() + b"\0" + sha256(blob).encode() + b"\n")
+                result[field] = sha256(b"".join(sorted(records)))
+            if (
+                git(repo_descriptor, git_descriptor, "rev-parse", "--verify", "HEAD")
+                .decode()
+                .strip()
+                != revision
+                or git(
+                    repo_descriptor,
+                    git_descriptor,
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                )
+                or (
+                    os.fstat(repo_descriptor).st_dev,
+                    os.fstat(repo_descriptor).st_ino,
+                )
+                != (repo_identity.st_dev, repo_identity.st_ino)
+            ):
+                raise Failed("source:changed")
+            return RepositorySnapshot(result, pinned_blobs)
+        finally:
+            os.close(common_descriptor)
+            os.close(git_descriptor)
+    finally:
+        os.close(repo_descriptor)
+
+
+def repository_provenance(repo: Path) -> dict[str, str]:
+    return repository_snapshot(repo).provenance
+
+
+def validate_control_attachments(
+    blobs: dict[str, bytes],
+    run_id: str,
+    repo_snapshot: RepositorySnapshot,
+    security_provenance: dict[str, str],
+) -> None:
+    lock_bytes = repo_snapshot.pinned_blobs[PINNED_FILES["toolchainLockSha256"]]
+    lock = exact(load_json(lock_bytes, "toolchain-lock"), set(TOOLCHAIN_LOCK), "toolchain-lock")
+    if (
+        type(lock["schemaVersion"]) is not int
+        or lock["schemaVersion"] != 1
+        or not isinstance(lock["status"], str)
+        or lock["status"] != "UNFROZEN"
+        or not isinstance(lock["collectionNetwork"], str)
+        or lock["collectionNetwork"] != "disabled"
+        or not isinstance(lock["daemonPolicy"], str)
+        or lock["daemonPolicy"] != "isolated-disposable"
+        or lock["builderImageDigest"] is not None
+        or lock["collectorImageDigest"] is not None
+        or lock["scannerDatabaseSnapshotSha256"] is not None
+    ):
+        raise Failed("toolchain-lock:exact-unfrozen-contract")
+    for field in ("scannerImages", "scannerVersions"):
+        values = exact(lock[field], SCANNER_NAMES, f"toolchain-lock:{field}")
+        if any(value is not None for value in values.values()):
+            raise Failed("toolchain-lock:exact-unfrozen-contract")
+    lock_hash = sha256(lock_bytes)
+    if security_provenance["toolchainLockSha256"] != lock_hash:
+        raise Failed("provenance:toolchain-lock")
+
+    attestation = exact(
+        load_json(blobs["collector-attestation.json"], "collector-attestation"),
+        COLLECTOR_ATTESTATION_FIELDS,
+        "collector-attestation",
+    )
+    if (
+        type(attestation["schemaVersion"]) is not int
+        or attestation["schemaVersion"] != 1
+        or not isinstance(attestation["status"], str)
+        or attestation["status"] != "UNVERIFIED"
+        or not isinstance(attestation["collectorId"], str)
+        or SAFE_ID.fullmatch(attestation["collectorId"]) is None
+        or not isinstance(attestation["collectorRevision"], str)
+        or TREE.fullmatch(attestation["collectorRevision"]) is None
+        or not isinstance(attestation["collectorTreeObject"], str)
+        or TREE.fullmatch(attestation["collectorTreeObject"]) is None
+        or not isinstance(attestation["expressImageId"], str)
+        or IMAGE.fullmatch(attestation["expressImageId"]) is None
+        or not isinstance(attestation["fastapiImageId"], str)
+        or IMAGE.fullmatch(attestation["fastapiImageId"]) is None
+    ):
+        raise Failed("collector-attestation:exact-unverified-contract")
+
+    qualification = exact(
+        load_json(blobs["qualification-provenance.json"], "qualification-provenance"),
+        QUALIFICATION_PROVENANCE_FIELDS,
+        "qualification-provenance",
+    )
+    expected_repo = repo_snapshot.provenance
+    if (
+        type(qualification["schemaVersion"]) is not int
+        or qualification["schemaVersion"] != 2
+        or qualification["gateId"] != "security"
+        or qualification["topology"] != "controlled-security-v1"
+        or qualification["runId"] != run_id
+    ):
+        raise Failed("qualification-provenance:identity")
+    for field, expected in expected_repo.items():
+        if qualification[field] != expected:
+            raise Failed(f"qualification-provenance:repo-{field}")
+    for field in (
+        "expressApplicationTreeSha256",
+        "fastapiApplicationTreeSha256",
+        "schemaSha256",
+        "expressLockSha256",
+        "fastapiLockSha256",
+        "configSha256",
+        "collectorAttestationSha256",
+    ):
+        if SHA256.fullmatch(str(qualification[field])) is None:
+            raise Failed(f"qualification-provenance:{field}")
+    if qualification["collectorAttestationSha256"] != sha256(blobs["collector-attestation.json"]):
+        raise Failed("qualification-provenance:collector-attestation-hash")
+    for field in ("expressImageId", "fastapiImageId"):
+        if qualification[field] != attestation[field]:
+            raise Failed(f"collector-attestation:image-{field}")
+    if qualification["fastapiImageId"] != security_provenance["imageId"]:
+        raise Failed("qualification-provenance:fastapi-image")
+    if (
+        qualification["sourceRevision"] != security_provenance["sourceRevision"]
+        or qualification["gitTreeObject"] != security_provenance["applicationTree"]
+    ):
+        raise Failed("qualification-provenance:legacy-source")
+
+    image_metadata = exact(
+        load_json(blobs["image-metadata.json"], "image-metadata"),
+        IMAGE_METADATA_FIELDS,
+        "image-metadata",
+    )
+    if (
+        type(image_metadata["schemaVersion"]) is not int
+        or image_metadata["schemaVersion"] != 1
+        or image_metadata["gateId"] != "security"
+        or image_metadata["runId"] != run_id
+        or image_metadata["status"] != "UNVERIFIED"
+    ):
+        raise Failed("image-metadata:exact-unverified-contract")
+    image_expected = {
+        "sourceRevision": qualification["sourceRevision"],
+        "gitTreeObject": qualification["gitTreeObject"],
+        "imageId": security_provenance["imageId"],
+        "imageConfig": security_provenance["imageConfig"],
+        "baseImage": security_provenance["baseImage"],
+        "securityProvenanceSha256": sha256(blobs["provenance.txt"]),
+        "qualificationProvenanceSha256": sha256(blobs["qualification-provenance.json"]),
+        "collectorAttestationSha256": sha256(blobs["collector-attestation.json"]),
+        "toolchainLockSha256": lock_hash,
+    }
+    if any(image_metadata[field] != value for field, value in image_expected.items()):
+        raise Failed("image-metadata:hash-or-image-binding")
+
+    contract = exact(
+        load_json(blobs["collector-contract.json"], "collector-contract"),
+        COLLECTOR_CONTRACT_FIELDS,
+        "collector-contract",
+    )
+    if (
+        type(contract["schemaVersion"]) is not int
+        or contract["schemaVersion"] != 1
+        or contract["gateId"] != "security"
+        or contract["topology"] != qualification["topology"]
+        or contract["runId"] != run_id
+        or contract["status"] != "UNVERIFIED"
+    ):
+        raise Failed("collector-contract:exact-unverified-contract")
+    contract_expected = {
+        "sourceRevision": qualification["sourceRevision"],
+        "gitTreeObject": qualification["gitTreeObject"],
+        "securityProvenanceSha256": sha256(blobs["provenance.txt"]),
+        "qualificationProvenanceSha256": sha256(blobs["qualification-provenance.json"]),
+        "collectorAttestationSha256": sha256(blobs["collector-attestation.json"]),
+        "imageMetadataSha256": sha256(blobs["image-metadata.json"]),
+        "toolchainLockSha256": lock_hash,
+        "reportAggregateSha256": aggregate_hash(blobs, LEGACY_INPUTS),
+        "bundleAggregateSha256": aggregate_hash(
+            blobs, EXPECTED_INPUTS - {"collector-contract.json"}
+        ),
+    }
+    if any(contract[field] != value for field, value in contract_expected.items()):
+        raise Failed("collector-contract:hash-binding")
 
 
 def validate_scanner(
@@ -472,7 +1049,9 @@ def validate_sarif(
         validate_findings(run["results"], "sast" if label == "sast.sarif" else "secrets", now)
 
 
-def validate_provenance(data: bytes, run_id: str, repo: Path, now: dt.datetime) -> dict[str, str]:
+def validate_provenance(
+    data: bytes, run_id: str, repo_snapshot: RepositorySnapshot, now: dt.datetime
+) -> dict[str, str]:
     values = parse_pairs(data, PROVENANCE_KEYS, "provenance")
     if values["schemaVersion"] != "1" or values["runId"] != run_id:
         raise Failed("provenance:identity")
@@ -505,43 +1084,13 @@ def validate_provenance(data: bytes, run_id: str, repo: Path, now: dt.datetime) 
     if age < dt.timedelta(0) or age > dt.timedelta(hours=24):
         raise Failed("provenance:scanner-database-stale")
     for key, relative in PINNED_FILES.items():
-        path = repo / relative
-        try:
-            data = path.read_bytes()
-        except OSError as exc:
-            raise Incomplete(f"missing-pinned-input:{relative}") from exc
-        if (
-            path.resolve() != path
-            or path.is_symlink()
-            or not path.is_file()
-            or sha256(data) != values[key]
-        ):
+        if sha256(repo_snapshot.pinned_blobs[relative]) != values[key]:
             raise Failed(f"provenance:pinned-input:{key}")
-    validate_policy((repo / PINNED_FILES["policySha256"]).read_bytes())
-    revision = subprocess.run(
-        ["/usr/bin/git", "rev-parse", "HEAD"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    tree = subprocess.run(
-        ["/usr/bin/git", "rev-parse", "HEAD^{tree}"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    dirty = subprocess.run(
-        ["/usr/bin/git", "status", "--porcelain", "--untracked-files=all"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    if dirty:
-        raise Failed("source:dirty")
-    if values["sourceRevision"] != revision or values["applicationTree"] != tree:
+    validate_policy(repo_snapshot.pinned_blobs[PINNED_FILES["policySha256"]])
+    if (
+        values["sourceRevision"] != repo_snapshot.provenance["sourceRevision"]
+        or values["applicationTree"] != repo_snapshot.provenance["gitTreeObject"]
+    ):
         raise Failed("provenance:source-mismatch")
     return values
 
@@ -575,9 +1124,10 @@ def validate_bundle(
         entry.name for entry in source.iterdir()
     } != EXPECTED_INPUTS:
         raise Failed("input-directory:changed")
-    provenance = validate_provenance(blobs["provenance.txt"], run_id, repo, now)
+    repo_snapshot = repository_snapshot(repo)
+    provenance = validate_provenance(blobs["provenance.txt"], run_id, repo_snapshot, now)
     expected_hashes = ",".join(
-        f"{name}:{sha256(blobs[name])}" for name in sorted(EXPECTED_INPUTS - {"provenance.txt"})
+        f"{name}:{sha256(blobs[name])}" for name in sorted(LEGACY_INPUTS - {"provenance.txt"})
     )
     if provenance["reportHashes"] != expected_hashes:
         raise Failed("provenance:report-hashes")
@@ -589,6 +1139,7 @@ def validate_bundle(
     }
     if any(provenance[key] != sha256(blobs[name]) for key, name in linked_hashes.items()):
         raise Failed("provenance:runtime-evidence-hash")
+    validate_control_attachments(blobs, run_id, repo_snapshot, provenance)
     for name, (scanner, category) in DEPENDENCY_REPORTS.items():
         validate_report(blobs[name], scanner, category, provenance, now)
     for name, category in IMAGE_REPORTS.items():
@@ -845,7 +1396,7 @@ def publish(
 ) -> Path:
     if status == "PASS":
         status = "INCOMPLETE"
-        reasons = ["CONTROLLED_COLLECTOR_REQUIRED"]
+        reasons = ["TOOLCHAIN_LOCK_UNFROZEN", "CONTROLLED_COLLECTOR_REQUIRED"]
     # Until a controlled collector can authenticate opaque runtime/test artifacts,
     # never republish caller-authored bytes, even after structural validation.
     blobs = {}
@@ -930,7 +1481,13 @@ def main() -> int:
             os.chmod(snapshot, 0o700)
             snapshot_inputs(args.input, snapshot)
             blobs, reasons = validate_bundle(snapshot, args.run_id, args.repo.resolve(), now)
-        status, reasons = "INCOMPLETE", ["CONTROLLED_COLLECTOR_REQUIRED"]
+        status, reasons = (
+            "INCOMPLETE",
+            [
+                "TOOLCHAIN_LOCK_UNFROZEN",
+                "CONTROLLED_COLLECTOR_REQUIRED",
+            ],
+        )
     except Incomplete as exc:
         status, reasons = "INCOMPLETE", [reason_code(exc)]
     except (Failed, OSError, subprocess.SubprocessError) as exc:

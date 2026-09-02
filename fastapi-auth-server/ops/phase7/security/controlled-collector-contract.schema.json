@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.local/schemas/phase7-security-controlled-collector-contract-v1.json",
+  "title": "WiseAcct Phase 7 unverified security collector contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "gateId",
+    "topology",
+    "runId",
+    "status",
+    "sourceRevision",
+    "gitTreeObject",
+    "securityProvenanceSha256",
+    "qualificationProvenanceSha256",
+    "collectorAttestationSha256",
+    "imageMetadataSha256",
+    "toolchainLockSha256",
+    "reportAggregateSha256",
+    "bundleAggregateSha256"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "gateId": {"const": "security"},
+    "topology": {"const": "controlled-security-v1"},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "status": {"const": "UNVERIFIED"},
+    "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "gitTreeObject": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "securityProvenanceSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "qualificationProvenanceSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "collectorAttestationSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "imageMetadataSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "toolchainLockSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reportAggregateSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "bundleAggregateSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
