@@ -349,6 +349,43 @@ therefore cannot form a group or be promoted by rewriting their old claims.
 
 ## Security evidence gate
 
+### Online stager / offline intake contract
+
+`ops/phase7/run-security-stager-intake.sh ABSOLUTE_PRIVATE_STAGER_INPUT_DIR RUN_ID`
+is a schema-only offline intake boundary for artifacts that a separate, restricted
+online stager may eventually collect. It never starts Docker, scanners, or network
+clients. The private input directory must be owned by the caller, mode `0700`, and
+contain only a mode-`0600`, single-link `online-stager-manifest.json` plus its
+exactly referenced artifacts. The manifest contract is pinned in
+`security/online-stager-manifest.schema.json`.
+
+The manifest can assert only `STAGED_UNVERIFIED`. It binds the current clean HEAD
+and Git tree through the same hardened repository snapshot implementation as the
+security gate, as well as the checked-in `UNFROZEN` toolchain-lock hash. It admits
+only Linux amd64/arm64 image bundles with unique builder, collector, and six
+scanner-image roles; subject-bound signatures and attestations; fresh Trivy database
+artifacts; request-bound pip/npm advisory responses; and an evidenced default-deny
+network scope whose declared destinations are HTTPS port 443 only. Every referenced
+file is descriptor-read, ownership/mode/link checked, and verified against its size,
+SHA-256, and the bundle aggregate.
+
+Image archives, Trivy payloads, signature and attestation material, network
+observations, and advisory request/response bodies remain opaque raw artifacts; the
+intake never parses archives or executes them. Separate exact `UNVERIFIED`
+descriptors bind their raw hashes to image role/repository/digests/platform, Trivy
+kind/update window, advisory lock/origin/request-response chain, or network
+destination set as applicable. Every image and Trivy registry host must also appear
+in the default-deny HTTPS:443 destination list. These bindings detect swaps without
+mistaking self-asserted metadata for cryptographic verification.
+
+A structurally valid bundle produces controller-authored evidence only and exits
+`3` as `INCOMPLETE` with `intakeValidated=true`, `TOOLCHAIN_LOCK_UNFROZEN`, and
+`CONTROLLED_COLLECTOR_REQUIRED`. Caller bytes are never republished, and this
+intake can never emit `PASS`, `VERIFIED`, or replacement approval. Missing input is
+incomplete; unsafe, stale, expired, malformed, unbound, or unexpected input fails.
+The wrapper clears its environment and uses fixed `/usr/bin` tools plus Python
+isolated mode. This contract does not invent candidate image or scanner digests.
+
 `ops/phase7/run-security-gate.sh ABSOLUTE_SANITIZED_INPUT_DIR RUN_ID` validates
 externally generated, offline security evidence; it does not install or run
 scanners, start Docker, or access the network. The input directory must be a
