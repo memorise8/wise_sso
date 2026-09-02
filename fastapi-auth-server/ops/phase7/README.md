@@ -416,3 +416,67 @@ are never republished.
 Publication fsyncs every staged file, the staging directory, the renamed
 evidence root, and a newly created root's parent. FAIL/INCOMPLETE status retains
 only bounded sanitized reason codes.
+
+## Synthetic backup/restore evidence gate
+
+`ops/phase7/run-backup-restore-gate.sh ABSOLUTE_SANITIZED_INPUT_DIR RUN_ID`
+is a read-only controller for evidence from a future controlled disposable
+collector. It does not invoke PostgreSQL tools, start services, use Docker,
+connect to a database, or perform a backup. The private mode-0700 input
+directory must contain exactly three owned, single-link, mode-0600 regular files:
+`backup-restore-evidence.json`, `provenance.json`, and
+`collector-attestation.json`. The controller snapshots them through stable
+descriptors and rejects symlinks, hardlinks, unsafe modes, directory changes,
+oversize input, unexpected files, and read races.
+The wrapper resolves `dirname` by absolute path, clears the environment, supplies
+only a fixed system `PATH`, and invokes `/usr/bin/python3 -I`; ambient `PATH`,
+`PYTHONPATH`, `PYTHONHOME`, `ENV`, and `BASH_ENV` cannot select commands or load
+Python/shell startup code. Database identifiers are ASCII, contain `_test_`,
+and are limited to PostgreSQL's 63-byte identifier boundary before distinctness
+is evaluated.
+
+The exact contract and explicitly unfrozen policy are
+`backup_restore/backup-restore-evidence.schema.json` and
+`backup_restore/backup-restore-policy.json`. Evidence must identify versioned
+`pg_dump` and `pg_restore` executables, two distinct `_test_` database names
+with version-2 synthetic-only provenance, and an encrypted PostgreSQL custom
+artifact. Encryption is exactly `AES-256-GCM`; the fixed local-runner key owner
+and run-bound ephemeral URN are required, never a raw key or URL. The ciphertext
+hash must differ from the plaintext dump hash, while the decrypted restore-input
+hash must equal that dump hash. Sizes, deletion hash, accessors,
+expiry, and deletion confirmation must reconcile. Plaintext publication,
+retention, or discovery is a policy failure.
+
+Schema/catalog and core-auth-state digests must match before and after restore.
+Every Prisma auth table must appear exactly once with matching row count and
+content digest. The FastAPI smoke is an exact read-only synthetic check set
+against the restore database with zero mutations. Structured Express identity,
+image, state, restart count, and start time must be identical before and after.
+Cleanup requires both disposable databases dropped, encrypted artifact and
+private temporary material removed, deletion confirmed, and an empty candidate
+inventory. Start/end timestamps and derived durations are mandatory. The policy
+records `status=UNFROZEN`, a 67108864-byte plaintext maximum, null artifact
+retention/RPO/RTO thresholds, `synthetic-only` source scope, and
+`ephemeral-not-backed-up` Redis disposition. No operational threshold is
+invented by this gate.
+
+Exact Phase 7 provenance-v2 and unverified collector-attestation attachments
+bind the current gate/run, disposable topology, Express and FastAPI image IDs,
+collector identity, and the SHA-256 of the complete attestation. Missing
+attachments are incomplete; mismatched identities, hashes, or images fail.
+The checked-in `backup-restore-fixture-manifest.json` freezes one canonical
+identity projection for each User, password credential, role, and refresh-token
+session sentinel. Each manifest digest is recomputed from canonical
+`{table,recordId}` JSON. Evidence binds the manifest hash and proves the exact
+non-zero source/restore count and digest for all four sentinels; empty databases
+cannot satisfy the gate.
+
+Missing evidence publishes `INCOMPLETE`; unsafe, malformed, inconsistent, or
+policy-violating evidence publishes `FAIL`. Even a fully valid external bundle
+publishes `INCOMPLETE` with `POLICY_UNFROZEN` and
+`CONTROLLED_COLLECTOR_REQUIRED`, because a caller
+cannot authenticate its own execution. Only controller-generated
+`result.status` and `gate-result.json` are atomically published without
+replacement under `evidence/phase7-backup-restore/<run-id>/`; caller bytes are
+never republished. The result always records `gateId=backup-restore` and
+`overallReplacementReady=false`.

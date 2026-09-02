@@ -1,0 +1,1 @@
+{"encryptionAlgorithm":"AES-256-GCM","keyOwner":"phase7-local-qualification-runner","keyReferenceTemplate":"urn:wiseacct:phase7:backup-restore:ephemeral:{runId}","maxArtifactRetentionSeconds":null,"maxPlaintextBytes":67108864,"redisDisposition":"ephemeral-not-backed-up","rpoSeconds":null,"rtoSeconds":null,"schemaVersion":1,"sourceScope":"synthetic-only","status":"UNFROZEN"}
