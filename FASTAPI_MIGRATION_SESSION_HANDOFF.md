@@ -4,6 +4,42 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+Active continuation after `ac2d1fe`: the user reaffirmed that the stopping target is
+the reviewed READY_FOR_APPROVAL plan, not an intermediate development checkpoint.
+Mail A01b/A02/A03 development integration is committed as `69a948d` with independent
+code APPROVE + architecture CLEAR. Real-engine/live-store qualification is still open.
+A05 Google flow and its new owned launcher/fixture adapter remain in progress.
+A04 test-only provider transport is committed as `ac605cd`; its private invocation
+pipe continuation is `d9a6eb4` (code APPROVE + architecture CLEAR). This closes the
+transport-channel WATCH but not downstream Google launcher/flow integration.
+B02 dormant blob verifier consumer is committed as `fb24115` (code APPROVE,
+architecture CLEAR for the dormant slice, not authenticated activation).
+See the provider-transport and verifier-consumer development evidence documents.
+C01a is committed
+as `d13de9d`, and R04 dormant backfill/merge as `20e649e` after scoped code review
+approval (45 combined ops/database/no-DDL tests). Google changes remain
+uncommitted and need integration/review. The current
+working tree must be inspected before resuming, not reset to the historical counts below.
+C02/C03 development scaffold is also committed as `72872b5`, with code APPROVE and
+architecture WATCH (combined COMMENT): see
+[`performance-collector-development.md`](contracts/evidence/performance-collector-development.md).
+Actual flow actions, owned backend cleanup, authentication and 20k-times-three runs
+are absent; this commit does not complete either parent task.
+Latest leader FastAPI regression: `1416 passed, 79 skipped`, one existing Starlette
+deprecation warning; Ruff passed, format checked 156 files, strict mypy passed
+111 configured source/test files and a separate 70-file src/ops check. Mail exact
+pre-teardown state and malformed-input fixes are implemented. Full-phase cleanup
+fixes (startup, process, consumed pidfd, capture and session) passed independent
+code APPROVE and architecture CLEAR. Leader mail/assets tests: 59 passed/120 subtests.
+A04's new private invocation pipe also has code APPROVE + architecture CLEAR,
+and 14 leader-run tests/11 subtests. A05 is
+implementing the actual owned-process/pipe consumer after closing issuer/state/
+cleanup defects; its canonical integration and final review remain open.
+These are development regression results while work continues, not final gate evidence.
+All parents and replacement remain NOT_READY. No production/Prisma ownership transfer,
+Express source modification, active lock freeze or performance-policy selection occurred.
+Continue safe local tasks; missing external inputs block only their dependent live steps.
+
 Native-subagent continuation (2026-09-06): execution now follows the approved
 six-group/25-task decomposition in `.omx/plans/ready-packages/README.md`, with
 current progress in `.omx/plans/ready-packages/execution.md`. New development
