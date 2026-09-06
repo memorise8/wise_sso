@@ -4,6 +4,27 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+Execution-boundary continuation (2026-09-06):
+`fastapi-auth-server/ops/phase7/security/execution_boundary.py` now implements
+local admission of a private Unix socket and descriptor-pinned verifier/trust-root
+files with reviewed hash inputs. It rejects unsafe permissions, links, mutations
+and replacements, and closes its descriptors on context exit or admission failure.
+It does not start/connect to Docker or perform cryptographic verification and is
+not wired into the online stager. The active lock remains unchanged; both stager
+modes still reject a synthetic complete `FROZEN` lock. Treat this as execution
+infrastructure only, not a completed daemon/verifier or qualification result.
+Next: establish authenticated verifier/trust-root inputs and implement the
+isolated daemon lifecycle and verifier invocation under a reviewed network
+boundary. Path revalidation alone is not atomic execution or daemon identity
+proof. The existing freeze decision's identity and provenance blockers still apply.
+Independent read-only review approved this admission-only slice. Its follow-up
+requirement is to bind future execution/trust-root consumption to rehashed
+immutable snapshots; retained descriptors do not stop same-UID content mutation.
+Regression validation for this slice: `995 passed, 79 skipped` (45 added cases),
+Ruff lint/format passed, and strict mypy passed for four security modules plus
+the new boundary tests. The existing Starlette warning remains; skipped live
+tests are not new qualification evidence.
+
 Continuation update (2026-09-06): the next decision record is now
 [`TOOLCHAIN_FREEZE_DECISION.md`](fastapi-auth-server/ops/phase7/security/TOOLCHAIN_FREEZE_DECISION.md).
 It records all 11 candidate routes and unknown pins, with activation still blocked.

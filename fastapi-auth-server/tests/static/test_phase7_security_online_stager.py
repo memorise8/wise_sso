@@ -226,6 +226,21 @@ def test_dirty_repository_is_rejected_before_publication(tmp_path: Path, mode: s
     assert not (output_parent / f"dirty-{mode}").exists()
 
 
+@pytest.mark.parametrize("mode", ["check", "collect"])
+@pytest.mark.parametrize("platform", ["linux/amd64", "linux/arm64/v8"])
+def test_complete_synthetic_lock_cannot_activate_unimplemented_execution(
+    tmp_path: Path, mode: str, platform: str
+) -> None:
+    lock = frozen_lock()
+    assert controller.validate_lock(lock)["status"] == "FROZEN"
+    repo = tmp_path / "repo"
+    initialize_repo(repo, json.dumps(lock).encode())
+    output_parent = tmp_path / "output"
+    output_parent.mkdir(mode=0o700)
+    assert controller.run(mode, "frozen-refusal", platform, output_parent, repo) == 2
+    assert list(output_parent.iterdir()) == []
+
+
 def test_toolchain_lock_nested_records_are_independent() -> None:
     image_values = list(gate.TOOLCHAIN_LOCK["scanners"].values())
     assert len({id(value) for value in image_values}) == len(image_values)

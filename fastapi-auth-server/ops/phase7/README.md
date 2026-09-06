@@ -353,6 +353,38 @@ The [toolchain freeze decision](security/TOOLCHAIN_FREEZE_DECISION.md) records
 candidate routes, missing digest/signature evidence and activation prerequisites
 for all 11 subjects. It does not freeze the active lock or authorize collection.
 
+### Local execution-boundary admission
+
+`security/execution_boundary.py` provides a local admission lease for future
+controlled execution. It does not start or connect to a daemon, invoke a verifier,
+resolve registry artifacts, verify signatures, or enable the online stager.
+The existing controller still refuses a `FROZEN` lock in both modes.
+
+`admit_boundary(root, verifier_sha256=..., trust_root_sha256=...)` requires an
+absolute private directory with mode `0700`, a direct `daemon.sock` Unix socket
+with mode `0600`, `verifier.bin` with mode `0500`, and `trust-root.json` with mode
+`0400`. Hash arguments must come from independently reviewed policy, never from
+the untrusted material being admitted. Synthetic test hashes are not real pins.
+The verifier and trust-root bytes are opaque to this module.
+
+The lease retains file descriptors, refuses symlink traversal, checks ownership,
+file type, link count, exact permissions, bounded hashes and stable metadata, and
+revalidates pathname bindings. `revalidate()` detects replacement or mutation;
+the context manager closes retained descriptors on exit. Descriptions remain
+`UNVERIFIED` and supply no execution command or authorization.
+
+Socket metadata cannot prove the daemon process identity, namespace isolation or
+network policy. Matching file hashes cannot prove publisher authenticity or
+signature correctness. Revalidation also cannot make a subsequent path-based
+execution/connect atomic. A future controller must establish those properties,
+use the pinned resources safely at the actual operation boundary, and bind its
+verification results to the source and artifact subjects before collection is
+enabled. Retained descriptors pin inode identity, not immutable contents: a
+same-UID process can write after revalidation. Before execution or trust-root
+consumption, rehash and use an immutable snapshot (for example, a sealed memory
+file) rather than trusting the earlier metadata check. This module is not yet
+wired into the check-only controller.
+
 ### Online stager / offline intake contract
 
 `ops/phase7/run-security-online-stager.sh check RUN_ID linux/amd64
