@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,15 @@ assert SPEC and SPEC.loader
 transport_module = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = transport_module
 SPEC.loader.exec_module(transport_module)
+
+RECORD_PATH = ROOT / "contracts" / "bin" / "private_provider_record.py"
+RECORD_SPEC = importlib.util.spec_from_file_location(
+    "contract_private_provider_record", RECORD_PATH
+)
+assert RECORD_SPEC and RECORD_SPEC.loader
+record_module = importlib.util.module_from_spec(RECORD_SPEC)
+sys.modules[RECORD_SPEC.name] = record_module
+RECORD_SPEC.loader.exec_module(record_module)
 
 from wiseacct_sso.infrastructure.oauth_providers import (  # noqa: I001
     OAuthProviderClient,
@@ -355,6 +365,360 @@ class ExpressActualProviderBoundaryTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class PrivateProviderRecordBridgeTests(unittest.TestCase):
+    def _config(self, directory: Path) -> Path:
+        path = directory / "scenario.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "scenarios": [
+                        {
+                            "provider": "google",
+                            "issuer": transport_module.ENDPOINTS["google"].issuer,
+                            "code": "google-code",
+                            "accessToken": "google-access",
+                            "profile": {"sub": "google-subject"},
+                            "clientId": "google-client",
+                            "clientSecret": "google-secret",
+                            "redirectUri": "http://127.0.0.1:4000/auth/google/callback",
+                            "tokenOutcome": "success",
+                            "userOutcome": "success",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+        return path
+
+    def test_actual_node_child_emits_only_bound_secret_free_invocation_records(
+        self,
+    ) -> None:
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "the installed Node executable is required")
+        assert node is not None
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = Path(raw_directory)
+            config_path = self._config(directory)
+            entry = (
+                ROOT / "contracts" / "adapters" / "provider_transport_preload_entry.mjs"
+            )
+            with record_module.PrivateProviderRecordChannel(
+                run_id="a05-node-run", runtime="express"
+            ) as channel:
+                binding = channel.child_binding()
+                environment = {
+                    "WISEACCT_TEST_PROVIDER_CONFIG": str(config_path),
+                    **binding.environment,
+                }
+                script = f"""
+                    const token = await fetch({json.dumps(transport_module.ENDPOINTS["google"].token)}, {{
+                      method: 'POST', headers: {{'content-type':'application/x-www-form-urlencoded'}},
+                      body: new URLSearchParams({{
+                        grant_type:'authorization_code', client_id:'google-client',
+                        client_secret:'google-secret', redirect_uri:'http://127.0.0.1:4000/auth/google/callback',
+                        code:'google-code'
+                      }})
+                    }});
+                    const access = (await token.json()).access_token;
+                    await fetch({json.dumps(transport_module.ENDPOINTS["google"].user_info)}, {{
+                      headers: {{authorization: `Bearer ${{access}}`}}
+                    }});
+                """
+                process = subprocess.Popen(
+                    [
+                        node,
+                        "--import",
+                        entry.as_uri(),
+                        "--input-type=module",
+                        "--eval",
+                        script,
+                    ],
+                    cwd=ROOT,
+                    env=environment,
+                    pass_fds=(binding.fd,),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                channel.handoff()
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+                snapshot = channel.consume()
+        self.assertEqual(
+            snapshot["source"], "launcher-owned-private-provider-record-pipe-v1"
+        )
+        self.assertTrue(snapshot["consumed"])
+        self.assertEqual(
+            snapshot["records"],
+            [
+                {
+                    "schemaVersion": 1,
+                    "runId": "a05-node-run",
+                    "runtime": "express",
+                    "source": "provider-transport",
+                    "provider": "google",
+                    "operation": "token",
+                    "sequence": 1,
+                },
+                {
+                    "schemaVersion": 1,
+                    "runId": "a05-node-run",
+                    "runtime": "express",
+                    "source": "provider-transport",
+                    "provider": "google",
+                    "operation": "user-info",
+                    "sequence": 2,
+                },
+            ],
+        )
+        serialized = json.dumps(snapshot)
+        for secret in (
+            "google-code",
+            "google-access",
+            "google-secret",
+            "google-subject",
+        ):
+            self.assertNotIn(secret, serialized)
+
+    def test_actual_python_child_emits_fastapi_bound_records(self) -> None:
+        python = ROOT / "fastapi-auth-server" / ".venv" / "bin" / "python"
+        self.assertTrue(python.is_file() and os.access(python, os.X_OK))
+        with tempfile.TemporaryDirectory() as raw_directory:
+            directory = Path(raw_directory)
+            config_path = self._config(directory)
+            with record_module.PrivateProviderRecordChannel(
+                run_id="a05-fastapi-run", runtime="fastapi"
+            ) as channel:
+                binding = channel.child_binding()
+                environment = {
+                    "PYTHONPATH": str(FASTAPI_SRC),
+                    **binding.environment,
+                }
+                script = f"""
+import asyncio, importlib.util, pathlib, sys
+import httpx
+spec = importlib.util.spec_from_file_location('child_provider_transport', {str(TRANSPORT_PATH)!r})
+module = importlib.util.module_from_spec(spec); sys.modules[spec.name] = module; spec.loader.exec_module(module)
+from wiseacct_sso.infrastructure.oauth_providers import OAuthProviderClient, OAuthProviderConfig
+async def main():
+    scenarios = module.load_scenarios(pathlib.Path({str(config_path)!r}))
+    writer = module.PrivateProviderRecordWriter.from_environment()
+    transport = module.TestOnlyProviderTransport(scenarios, recorder=writer)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = OAuthProviderClient(http_client)
+        await client.fetch_profile('google', OAuthProviderConfig(
+            'https://accounts.google.com/authorize', module.ENDPOINTS['google'].token,
+            module.ENDPOINTS['google'].user_info, 'google-client', 'google-secret',
+            'http://127.0.0.1:4000/auth/google/callback', 'contract'), 'google-code')
+asyncio.run(main())
+"""
+                process = subprocess.Popen(
+                    [str(python), "-c", script],
+                    cwd=ROOT,
+                    env=environment,
+                    pass_fds=(binding.fd,),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                channel.handoff()
+                stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stdout + stderr)
+                snapshot = channel.consume()
+        records = snapshot["records"]
+        self.assertEqual(
+            [record["operation"] for record in records], ["token", "user-info"]
+        )
+        self.assertTrue(all(record["runId"] == "a05-fastapi-run" for record in records))
+        self.assertTrue(all(record["runtime"] == "fastapi" for record in records))
+
+    def test_consumer_rejects_cross_binding_oversize_and_replay(self) -> None:
+        def encoded(run_id: str, runtime: str, *, extra: str = "") -> bytes:
+            record = {
+                "schemaVersion": 1,
+                "runId": run_id,
+                "runtime": runtime,
+                "source": "provider-transport",
+                "provider": "google",
+                "operation": "token",
+                "sequence": 1,
+            }
+            if extra:
+                record["extra"] = extra
+            return json.dumps(record, separators=(",", ":")).encode() + b"\n"
+
+        for run_id, runtime in (("wrong-run", "express"), ("expected-run", "fastapi")):
+            with (
+                self.subTest(run_id=run_id, runtime=runtime),
+                record_module.PrivateProviderRecordChannel(
+                    run_id="expected-run", runtime="express"
+                ) as channel,
+            ):
+                binding = channel.child_binding()
+                os.write(binding.fd, encoded(run_id, runtime))
+                channel.handoff()
+                with self.assertRaisesRegex(
+                    record_module.PrivateProviderRecordError,
+                    "binding does not match",
+                ):
+                    channel.consume()
+
+        with record_module.PrivateProviderRecordChannel(
+            run_id="oversize-run", runtime="express"
+        ) as channel:
+            binding = channel.child_binding()
+            os.write(binding.fd, b"{" + b"x" * 600 + b"}\n")
+            channel.handoff()
+            with self.assertRaisesRegex(
+                record_module.PrivateProviderRecordError, "record is too large"
+            ):
+                channel.consume()
+
+        with record_module.PrivateProviderRecordChannel(
+            run_id="replay-run", runtime="express"
+        ) as channel:
+            binding = channel.child_binding()
+            os.write(binding.fd, encoded("replay-run", "express"))
+            channel.handoff()
+            channel.consume()
+            with self.assertRaisesRegex(
+                record_module.PrivateProviderRecordError, "already consumed"
+            ):
+                channel.consume()
+
+    def test_descriptor_replacement_is_rejected_without_closing_reused_fd(self) -> None:
+        channel = record_module.PrivateProviderRecordChannel(
+            run_id="replace-run", runtime="express"
+        )
+        binding = channel.child_binding()
+        os.close(binding.fd)
+        replacement = os.open(os.devnull, os.O_WRONLY)
+        try:
+            if replacement != binding.fd:
+                os.dup2(replacement, binding.fd)
+                os.close(replacement)
+                replacement = binding.fd
+            with self.assertRaisesRegex(
+                record_module.PrivateProviderRecordError, "identity changed"
+            ):
+                channel.child_binding()
+            channel.close()
+            os.fstat(replacement)
+        finally:
+            os.close(replacement)
+
+    def test_node_writer_rejects_read_end_and_blocking_write_end_before_emit(
+        self,
+    ) -> None:
+        node = shutil.which("node")
+        assert node is not None
+        library = ROOT / "contracts" / "adapters" / "provider_transport_preload.mjs"
+
+        def rejected(descriptor: int, expected: str) -> None:
+            environment = {
+                "WISEACCT_TEST_PROVIDER_RECORD_FD": str(descriptor),
+                "WISEACCT_TEST_PROVIDER_RUN_ID": "hostile-fd-run",
+                "WISEACCT_TEST_PROVIDER_RUNTIME": "express",
+            }
+            result = subprocess.run(
+                [
+                    node,
+                    "--input-type=module",
+                    "--eval",
+                    (
+                        f"const module = await import({json.dumps(library.as_uri())});"
+                        "module.createProviderRecordWriterFromEnvironment();"
+                    ),
+                ],
+                env=environment,
+                pass_fds=(descriptor,),
+                text=True,
+                capture_output=True,
+                timeout=3,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(expected, result.stderr)
+
+        read_fd, nonblocking_write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
+        try:
+            rejected(read_fd, "nonblocking write pipe")
+        finally:
+            os.close(read_fd)
+            os.close(nonblocking_write_fd)
+
+        blocking_read_fd, blocking_write_fd = os.pipe2(os.O_CLOEXEC)
+        try:
+            rejected(blocking_write_fd, "nonblocking write pipe")
+        finally:
+            os.close(blocking_read_fd)
+            os.close(blocking_write_fd)
+
+    def test_unhashable_record_values_fail_closed_and_pipe_init_failure_closes_fds(
+        self,
+    ) -> None:
+        for field, value in (("provider", []), ("operation", {})):
+            with (
+                self.subTest(field=field),
+                record_module.PrivateProviderRecordChannel(
+                    run_id="typed-record-run", runtime="express"
+                ) as channel,
+            ):
+                binding = channel.child_binding()
+                record = {
+                    "schemaVersion": 1,
+                    "runId": "typed-record-run",
+                    "runtime": "express",
+                    "source": "provider-transport",
+                    "provider": "google",
+                    "operation": "token",
+                    "sequence": 1,
+                }
+                record[field] = value
+                os.write(
+                    binding.fd,
+                    json.dumps(record, separators=(",", ":")).encode() + b"\n",
+                )
+                channel.handoff()
+                with self.assertRaisesRegex(
+                    record_module.PrivateProviderRecordError,
+                    "binding does not match",
+                ):
+                    channel.consume()
+
+        created: list[int] = []
+        real_pipe2 = os.pipe2
+        real_identity = record_module._identity
+        identity_calls = 0
+
+        def capture_pipe(flags: int) -> tuple[int, int]:
+            descriptors = real_pipe2(flags)
+            created.extend(descriptors)
+            return descriptors
+
+        def fail_second_identity(descriptor: int) -> object:
+            nonlocal identity_calls
+            identity_calls += 1
+            if identity_calls == 2:
+                raise RuntimeError("synthetic second identity failure")
+            return real_identity(descriptor)
+
+        with (
+            patch.object(record_module.os, "pipe2", side_effect=capture_pipe),
+            patch.object(record_module, "_identity", side_effect=fail_second_identity),
+            self.assertRaisesRegex(RuntimeError, "second identity failure"),
+        ):
+            record_module.PrivateProviderRecordChannel(
+                run_id="pipe-init-run", runtime="express"
+            )
+        self.assertEqual(len(created), 2)
+        for descriptor in created:
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
 
 
 if __name__ == "__main__":

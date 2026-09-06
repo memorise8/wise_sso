@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import stat
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,6 +57,155 @@ class ProviderTransportConfigurationError(ValueError):
     """The private test-only provider configuration failed closed."""
 
 
+class ProviderRecordEmissionError(RuntimeError):
+    """The launcher-owned private provider record pipe rejected an emission."""
+
+
+@dataclass(slots=True)
+class PrivateProviderRecordWriter:
+    fd: int
+    run_id: str
+    runtime: Literal["express", "fastapi"]
+    _identity: tuple[int, int, int, int] = field(init=False)
+    _sequence: int = field(default=0, init=False)
+    _closed: bool = field(default=False, init=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
+
+    def __post_init__(self) -> None:
+        if not 8 <= len(self.run_id) <= 64 or any(
+            not (character.isascii() and (character.isalnum() or character in "._-"))
+            for character in self.run_id
+        ):
+            raise ProviderRecordEmissionError(
+                "private provider record runId is invalid"
+            )
+        if self.runtime not in {"express", "fastapi"}:
+            raise ProviderRecordEmissionError(
+                "private provider record runtime is invalid"
+            )
+        try:
+            details = os.fstat(self.fd)
+            flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+        except OSError as error:
+            raise ProviderRecordEmissionError(
+                "private provider record descriptor is unavailable"
+            ) from error
+        if (
+            not stat.S_ISFIFO(details.st_mode)
+            or details.st_uid != os.getuid()
+            or stat.S_IMODE(details.st_mode) != 0o600
+            or flags & os.O_ACCMODE != os.O_WRONLY
+            or not flags & os.O_NONBLOCK
+        ):
+            raise ProviderRecordEmissionError(
+                "private provider record descriptor is not an owned nonblocking write pipe"
+            )
+        self._identity = (
+            details.st_dev,
+            details.st_ino,
+            details.st_mode,
+            details.st_uid,
+        )
+        os.set_inheritable(self.fd, False)
+
+    @classmethod
+    def from_environment(cls) -> PrivateProviderRecordWriter | None:
+        names = (
+            "WISEACCT_TEST_PROVIDER_RECORD_FD",
+            "WISEACCT_TEST_PROVIDER_RUN_ID",
+            "WISEACCT_TEST_PROVIDER_RUNTIME",
+        )
+        values = tuple(os.environ.get(name) for name in names)
+        if values == (None, None, None):
+            return None
+        if any(value is None for value in values):
+            raise ProviderRecordEmissionError(
+                "private provider record environment binding is incomplete"
+            )
+        fd_text, run_id, runtime = cast(tuple[str, str, str], values)
+        if (
+            not fd_text.isascii()
+            or not fd_text.isdecimal()
+            or str(int(fd_text)) != fd_text
+            or int(fd_text) < 3
+        ):
+            raise ProviderRecordEmissionError(
+                "private provider record descriptor is invalid"
+            )
+        if runtime not in {"express", "fastapi"}:
+            raise ProviderRecordEmissionError(
+                "private provider record runtime is invalid"
+            )
+        return cls(int(fd_text), run_id, cast(Literal["express", "fastapi"], runtime))
+
+    def emit(
+        self, provider: Provider, operation: Literal["token", "user-info"]
+    ) -> None:
+        with self._lock:
+            if provider not in ENDPOINTS or operation not in {"token", "user-info"}:
+                raise ProviderRecordEmissionError(
+                    "private provider record value is invalid"
+                )
+            if self._closed:
+                raise ProviderRecordEmissionError(
+                    "private provider record writer is closed"
+                )
+            if self._current_identity() != self._identity:
+                raise ProviderRecordEmissionError(
+                    "private provider record descriptor identity changed"
+                )
+            sequence = self._sequence + 1
+            if sequence > 16:
+                raise ProviderRecordEmissionError(
+                    "private provider record count is exhausted"
+                )
+            record = {
+                "schemaVersion": 1,
+                "runId": self.run_id,
+                "runtime": self.runtime,
+                "source": "provider-transport",
+                "provider": provider,
+                "operation": operation,
+                "sequence": sequence,
+            }
+            encoded = (
+                json.dumps(
+                    record, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+                ).encode()
+                + b"\n"
+            )
+            if len(encoded) > 512:
+                raise ProviderRecordEmissionError(
+                    "private provider record is too large"
+                )
+            try:
+                written = os.write(self.fd, encoded)
+            except OSError as error:
+                raise ProviderRecordEmissionError(
+                    "private provider record emission failed"
+                ) from error
+            if written != len(encoded):
+                raise ProviderRecordEmissionError(
+                    "private provider record emission was incomplete"
+                )
+            self._sequence = sequence
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            if self._current_identity() == self._identity:
+                os.close(self.fd)
+
+    def _current_identity(self) -> tuple[int, int, int, int] | None:
+        try:
+            details = os.fstat(self.fd)
+        except OSError:
+            return None
+        return (details.st_dev, details.st_ino, details.st_mode, details.st_uid)
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderScenario:
     provider: Provider
@@ -98,6 +249,7 @@ class TestOnlyProviderTransport(httpx.AsyncBaseTransport):
     """Intercept only the six fixed provider requests and never fall back to the network."""
 
     scenarios: tuple[ProviderScenario, ...]
+    recorder: PrivateProviderRecordWriter | None = None
     records: list[ProviderRequestRecord] = field(default_factory=list, init=False)
     _by_url: dict[str, tuple[ProviderScenario, Literal["token", "user-info"]]] = field(
         default_factory=dict, init=False
@@ -155,7 +307,18 @@ class TestOnlyProviderTransport(httpx.AsyncBaseTransport):
         self.records.append(
             ProviderRequestRecord(scenario.provider, operation, request.method, url)
         )
+        if self.recorder is not None:
+            try:
+                self.recorder.emit(scenario.provider, operation)
+            except ProviderRecordEmissionError as error:
+                raise ProviderTransportError(
+                    "private provider record emission failed", request=request
+                ) from error
         return self._response(request, outcome, payload)
+
+    async def aclose(self) -> None:
+        if self.recorder is not None:
+            self.recorder.close()
 
     @staticmethod
     def _validate_token_request(

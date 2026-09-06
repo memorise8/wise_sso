@@ -28,3 +28,29 @@ The independent full contracts run passed156 tests/163 subtests at review time.
 No production Express/FastAPI source, real provider credential, network provider,
 registry, schema or operational owner changed. A05–A07 actual callback/link/handoff/
 exchange consumers, mixed-runtime state proofs and live qualification remain open.
+
+## Private child invocation channel continuation
+
+`bin/private_provider_record.py` now supplies a launcher-owned anonymous pipe with
+one-shot child binding, parent write-end handoff and destructive consumption after
+child EOF. Actual Python and Node interceptors emit only schema/run/runtime/provider/
+operation/sequence fields. URLs, credentials, codes, tokens and provider subjects
+are excluded. Records are limited to 512 bytes each, 16 per stream and 8 KiB total;
+the reader has an absolute deadline and refuses incomplete or mismatched streams.
+
+Both writers require a nonblocking write descriptor. The Node writer checks Linux
+fd-info flags with a bounded read instead of risking a blocking `writeSync` on a
+caller-supplied FIFO. Channel initialization failures close both newly created
+descriptors; malformed provider/operation types raise controlled errors. Tests
+exercise real child-process output, cross-run/runtime bindings, replay, oversized
+records, descriptor replacement, wrong-end/blocking pipes and initialization failure.
+
+The scoped continuation has 14 tests/11 subtests and passing lint/format/strict
+Python and TypeScript checks. Independent code re-review is APPROVE with no findings
+and architecture is CLEAR; the combined bridge verdict is APPROVE. The architecture
+review also repeated actual Node/Python child bridge checks 40 times. This closes the
+earlier A04 invocation-channel WATCH, not the downstream A05 tasks.
+A04-to-A05 launcher consumption and canonical registration are
+being implemented separately; a matching snapshot marker is not pipe provenance.
+This channel is a development observation boundary, not authenticated collector
+attestation, verified runtime code identity or a qualification result.

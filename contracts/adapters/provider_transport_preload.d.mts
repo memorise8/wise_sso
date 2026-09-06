@@ -30,6 +30,11 @@ export type ProviderRequestRecord = Readonly<{
   url: string;
 }>;
 
+export type PrivateProviderRecordWriter = Readonly<{
+  emit(provider: ProviderName, operation: "token" | "user-info"): void;
+  close(): void;
+}>;
+
 export const endpoints: Readonly<Record<ProviderName, Readonly<{
   issuer: string;
   token: string;
@@ -39,4 +44,8 @@ export const endpoints: Readonly<Record<ProviderName, Readonly<{
 export function validateConfig(value: unknown): ProviderTransportConfig;
 export function readConfig(file: string): ProviderTransportConfig;
 export function readBoundedConfigBytes(descriptor: number): Buffer;
-export function installProviderTransport(config: ProviderTransportConfig): ProviderRequestRecord[];
+export function createProviderRecordWriterFromEnvironment(): PrivateProviderRecordWriter | null;
+export function installProviderTransport(
+  config: ProviderTransportConfig,
+  recorder?: PrivateProviderRecordWriter | null
+): ProviderRequestRecord[];

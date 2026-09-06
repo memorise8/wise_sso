@@ -46,7 +46,10 @@ def create_test_app() -> FastAPI:
     scenarios = transport_module.load_scenarios(Path(config_path))
 
     def new_test_oauth_client() -> OAuthProviderClient:
-        transport = transport_module.TestOnlyProviderTransport(scenarios)
+        recorder = transport_module.PrivateProviderRecordWriter.from_environment()
+        transport = transport_module.TestOnlyProviderTransport(
+            scenarios, recorder=recorder
+        )
         return _OwnedTestOAuthProviderClient(transport)
 
     original_oauth_factory = runtime_main._new_oauth_client
