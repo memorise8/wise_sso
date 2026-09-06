@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.local/schemas/phase7-qualification-collector-statement-v2.json",
+  "title": "Unauthenticated collector v2 statement payload; requires external cryptographic verification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "gateId", "topology", "groupId", "runId", "collectorId", "sourceRevision", "gitTreeObject", "collectorRevision", "collectorTreeObject", "expressImageId", "fastapiImageId", "collectorImageId", "collectorConfigSha256", "inputAggregateSha256", "outputAggregateSha256", "platform", "startedAtUnixMs", "finishedAtUnixMs", "verifierSha256", "trustRootSha256", "policySha256", "signerIdentity", "oidcIssuer"],
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "revision": {"type": "string", "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"},
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "image": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "time": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    "identity": {"type": "string", "pattern": "^[!-~]{1,2048}$"}
+  },
+  "properties": {
+    "schemaVersion": {"const": 2, "type": "integer"},
+    "gateId": {"enum": ["independent-contract", "shared-state-core", "security", "performance", "backup-restore", "chaos", "local-rollback"]},
+    "groupId": {"$ref": "#/$defs/id"},
+    "topology": {"$ref": "#/$defs/id"},
+    "runId": {"$ref": "#/$defs/id"},
+    "collectorId": {"$ref": "#/$defs/id"},
+    "sourceRevision": {"$ref": "#/$defs/revision"},
+    "gitTreeObject": {"$ref": "#/$defs/revision"},
+    "collectorRevision": {"$ref": "#/$defs/revision"},
+    "collectorTreeObject": {"$ref": "#/$defs/revision"},
+    "expressImageId": {"$ref": "#/$defs/image"},
+    "fastapiImageId": {"$ref": "#/$defs/image"},
+    "collectorImageId": {"$ref": "#/$defs/image"},
+    "collectorConfigSha256": {"$ref": "#/$defs/digest"},
+    "inputAggregateSha256": {"$ref": "#/$defs/digest"},
+    "outputAggregateSha256": {"$ref": "#/$defs/digest"},
+    "platform": {"enum": ["linux/amd64", "linux/arm64"]},
+    "startedAtUnixMs": {"$ref": "#/$defs/time"},
+    "finishedAtUnixMs": {"$ref": "#/$defs/time"},
+    "verifierSha256": {"$ref": "#/$defs/digest"},
+    "trustRootSha256": {"$ref": "#/$defs/digest"},
+    "policySha256": {"$ref": "#/$defs/digest"},
+    "signerIdentity": {"$ref": "#/$defs/identity"},
+    "oidcIssuer": {"$ref": "#/$defs/identity"}
+  }
+}
