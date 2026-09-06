@@ -7,11 +7,13 @@ future controller to perform a separate authenticated operation.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import os
 import re
 import stat
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +30,14 @@ MAX_VERIFIER_BYTES = 64 * 1024 * 1024
 MAX_TRUST_ROOT_BYTES = 8 * 1024 * 1024
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+# Values from linux/fcntl.h; Python 3.12 does not expose them on every Linux build.
+_F_ADD_SEALS = 1_033
+_F_GET_SEALS = 1_034
+_F_SEAL_SEAL = 0x0001
+_F_SEAL_SHRINK = 0x0002
+_F_SEAL_GROW = 0x0004
+_F_SEAL_WRITE = 0x0008
+_REQUIRED_SEALS = _F_SEAL_WRITE | _F_SEAL_GROW | _F_SEAL_SHRINK | _F_SEAL_SEAL
 _STABLE_FIELDS = (
     "st_dev",
     "st_ino",
@@ -161,7 +171,14 @@ def _require_socket(root_fd: int, uid: int, gid: int) -> _PinnedMetadata:
     return _PinnedMetadata.capture(metadata)
 
 
+def _require_maximum(maximum: int, label: str) -> int:
+    if isinstance(maximum, bool) or not isinstance(maximum, int) or maximum <= 0:
+        raise BoundaryRefused(f"policy:invalid-{label}-maximum")
+    return maximum
+
+
 def _bounded_sha256(descriptor: int, maximum: int, label: str) -> str:
+    maximum = _require_maximum(maximum, label)
     before = os.fstat(descriptor)
     if before.st_size > maximum:
         raise BoundaryRefused(f"boundary:oversize-{label}")
@@ -186,6 +203,209 @@ def _require_reviewed_hash(value: str, label: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
         raise BoundaryRefused(f"policy:invalid-{label}-sha256")
     return value
+
+
+def _memfd_flags() -> int:
+    """Return the Linux memfd flags, or fail closed."""
+    create = getattr(os, "memfd_create", None)
+    allow_sealing = getattr(os, "MFD_ALLOW_SEALING", None)
+    close_on_exec = getattr(os, "MFD_CLOEXEC", None)
+    if (
+        sys.platform != "linux"
+        or create is None
+        or not isinstance(allow_sealing, int)
+        or not isinstance(close_on_exec, int)
+    ):
+        raise BoundaryRefused("boundary:sealed-material-unavailable")
+    return allow_sealing | close_on_exec
+
+
+def _write_all(descriptor: int, data: bytes, label: str) -> None:
+    view = memoryview(data)
+    written = 0
+    while written < len(view):
+        try:
+            count = os.write(descriptor, view[written:])
+        except OSError as exc:
+            raise BoundaryRefused(f"boundary:snapshot-{label}") from exc
+        if count <= 0:
+            raise BoundaryRefused(f"boundary:snapshot-{label}")
+        written += count
+
+
+def _sha256_exact_pread(descriptor: int, size: int, label: str) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while offset < size:
+        chunk = os.pread(descriptor, min(1024 * 1024, size - offset), offset)
+        if not chunk:
+            raise BoundaryRefused(f"boundary:snapshot-{label}")
+        digest.update(chunk)
+        offset += len(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_descriptor(
+    source: int,
+    expected_metadata: _PinnedMetadata,
+    expected_sha256: str,
+    *,
+    maximum: int,
+    mode: int,
+    label: str,
+) -> tuple[int, _PinnedMetadata]:
+    maximum = _require_maximum(maximum, label)
+    flags = _memfd_flags()
+    destination = -1
+    try:
+        before = os.fstat(source)
+        if not expected_metadata.matches(before):
+            raise BoundaryRefused(f"boundary:changed-{label}")
+        if before.st_size <= 0:
+            raise BoundaryRefused(f"boundary:empty-{label}")
+        if before.st_size > maximum:
+            raise BoundaryRefused(f"boundary:oversize-{label}")
+
+        destination = os.memfd_create(f"phase7-{label}", flags)
+        os.fchmod(destination, mode)
+        digest = hashlib.sha256()
+        offset = 0
+        while offset < before.st_size:
+            count = min(1024 * 1024, before.st_size - offset)
+            chunk = os.pread(source, count, offset)
+            if not chunk:
+                raise BoundaryRefused(f"boundary:changed-{label}")
+            _write_all(destination, chunk, label)
+            digest.update(chunk)
+            offset += len(chunk)
+
+        after = os.fstat(source)
+        if not expected_metadata.matches(after):
+            raise BoundaryRefused(f"boundary:changed-{label}")
+        if not hmac.compare_digest(digest.hexdigest(), expected_sha256):
+            raise BoundaryRefused(f"boundary:{label}-sha256")
+        copied = os.fstat(destination)
+        if copied.st_size != before.st_size or stat.S_IMODE(copied.st_mode) != mode:
+            raise BoundaryRefused(f"boundary:snapshot-{label}")
+        fcntl.fcntl(destination, _F_ADD_SEALS, _REQUIRED_SEALS)
+        applied = fcntl.fcntl(destination, _F_GET_SEALS)
+        if not isinstance(applied, int) or applied & _REQUIRED_SEALS != _REQUIRED_SEALS:
+            raise BoundaryRefused(f"boundary:unsealed-{label}")
+        sealed = os.fstat(destination)
+        if sealed.st_size != before.st_size or stat.S_IMODE(sealed.st_mode) != mode:
+            raise BoundaryRefused(f"boundary:snapshot-{label}")
+        sealed_sha256 = _sha256_exact_pread(destination, before.st_size, label)
+        if not hmac.compare_digest(sealed_sha256, expected_sha256):
+            raise BoundaryRefused(f"boundary:{label}-sha256")
+        os.lseek(destination, 0, os.SEEK_SET)
+        result = destination, _PinnedMetadata.capture(sealed)
+        destination = -1
+        return result
+    except BoundaryRefused:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise BoundaryRefused(f"boundary:snapshot-{label}") from exc
+    finally:
+        if destination >= 0:
+            try:
+                os.close(destination)
+            except OSError:
+                pass
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class SealedMaterial:
+    """Immutable local copies that confer no execution authorization."""
+
+    _verifier_fd: int
+    _trust_root_fd: int
+    _verifier_metadata: _PinnedMetadata
+    _trust_root_metadata: _PinnedMetadata
+    _verifier_sha256: str
+    _trust_root_sha256: str
+    _closed_state: list[bool]
+
+    def __enter__(self) -> Self:
+        try:
+            self._require_open()
+        except Exception:
+            self.close()
+            raise
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    def _require_open(self) -> None:
+        if self._closed_state[0]:
+            raise BoundaryRefused("boundary:sealed-material-closed")
+        try:
+            self._revalidate_descriptor(self._verifier_fd, self._verifier_metadata, "verifier")
+            self._revalidate_descriptor(
+                self._trust_root_fd, self._trust_root_metadata, "trust-root"
+            )
+        except BoundaryRefused:
+            self.close()
+            raise
+
+    @staticmethod
+    def _revalidate_descriptor(descriptor: int, expected: _PinnedMetadata, label: str) -> None:
+        try:
+            current = os.fstat(descriptor)
+            applied = fcntl.fcntl(descriptor, _F_GET_SEALS)
+        except OSError as exc:
+            raise BoundaryRefused(f"boundary:changed-sealed-{label}") from exc
+        if (
+            not expected.matches(current)
+            or not isinstance(applied, int)
+            or applied & _REQUIRED_SEALS != _REQUIRED_SEALS
+        ):
+            raise BoundaryRefused(f"boundary:changed-sealed-{label}")
+
+    @property
+    def verifier_fd(self) -> int:
+        self._require_open()
+        return self._verifier_fd
+
+    @property
+    def trust_root_fd(self) -> int:
+        self._require_open()
+        return self._trust_root_fd
+
+    def close(self) -> None:
+        if self._closed_state[0]:
+            return
+        self._closed_state[0] = True
+        pairs = (
+            (self._trust_root_fd, self._trust_root_metadata),
+            (self._verifier_fd, self._verifier_metadata),
+        )
+        for descriptor, expected in pairs:
+            try:
+                current = os.fstat(descriptor)
+            except OSError:
+                continue
+            if (current.st_dev, current.st_ino) == expected.identity:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+    def describe(self) -> Mapping[str, object]:
+        self._require_open()
+        return MappingProxyType(
+            {
+                "status": "UNVERIFIED",
+                "immutableMaterial": True,
+                "verifierSha256": self._verifier_sha256,
+                "trustRootSha256": self._trust_root_sha256,
+                "limitations": (
+                    "sealed copies do not authenticate a publisher",
+                    "sealed copies do not prove daemon isolation",
+                    "no verifier, daemon, process, or network operation was performed",
+                ),
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -294,6 +514,49 @@ class BoundaryLease:
                 ),
             }
         )
+
+    def snapshot_material(self) -> SealedMaterial:
+        """Copy reviewed inputs into sealed memfds without executing either input."""
+        self.revalidate()
+        verifier_fd = -1
+        trust_root_fd = -1
+        try:
+            verifier_fd, verifier_metadata = _snapshot_descriptor(
+                self._verifier_fd,
+                self._verifier_metadata,
+                self._verifier_sha256,
+                maximum=MAX_VERIFIER_BYTES,
+                mode=0o500,
+                label="verifier",
+            )
+            trust_root_fd, trust_root_metadata = _snapshot_descriptor(
+                self._trust_root_fd,
+                self._trust_root_metadata,
+                self._trust_root_sha256,
+                maximum=MAX_TRUST_ROOT_BYTES,
+                mode=0o400,
+                label="trust-root",
+            )
+            self.revalidate()
+            result = SealedMaterial(
+                _verifier_fd=verifier_fd,
+                _trust_root_fd=trust_root_fd,
+                _verifier_metadata=verifier_metadata,
+                _trust_root_metadata=trust_root_metadata,
+                _verifier_sha256=self._verifier_sha256,
+                _trust_root_sha256=self._trust_root_sha256,
+                _closed_state=[False],
+            )
+            verifier_fd = -1
+            trust_root_fd = -1
+            return result
+        finally:
+            for descriptor in (trust_root_fd, verifier_fd):
+                if descriptor >= 0:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
 
 
 def admit_boundary(

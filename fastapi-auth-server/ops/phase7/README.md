@@ -352,6 +352,9 @@ therefore cannot form a group or be promoted by rewriting their old claims.
 The [toolchain freeze decision](security/TOOLCHAIN_FREEZE_DECISION.md) records
 candidate routes, missing digest/signature evidence and activation prerequisites
 for all 11 subjects. It does not freeze the active lock or authorize collection.
+The [readiness inventory](READINESS_BLOCKERS.md) separates the remaining gate
+implementations, existing performance policy, and observed execution-environment
+blockers. It is not qualifying evidence.
 
 ### Local execution-boundary admission
 
@@ -380,10 +383,30 @@ execution/connect atomic. A future controller must establish those properties,
 use the pinned resources safely at the actual operation boundary, and bind its
 verification results to the source and artifact subjects before collection is
 enabled. Retained descriptors pin inode identity, not immutable contents: a
-same-UID process can write after revalidation. Before execution or trust-root
-consumption, rehash and use an immutable snapshot (for example, a sealed memory
-file) rather than trusting the earlier metadata check. This module is not yet
-wired into the check-only controller.
+same-UID process can write after revalidation.
+
+`with lease.snapshot_material() as material:` creates independent, bounded Linux
+memory-file copies of the verifier and trust roots. The copied inputs must match
+the reviewed hashes; source metadata and the original boundary are revalidated.
+The copies receive write/grow/shrink/seal locks, and the sealed destination bytes
+are hashed before returning `verifier_fd` and `trust_root_fd`. These descriptors
+are close-on-exec by default and are closed on context exit. Missing sealing
+support or any copy, seal, hash or boundary failure refuses the snapshot and
+closes partially created copies. Original-file mutation after sealing cannot
+change the snapshot bytes.
+
+Descriptor properties are borrowed handles owned by the snapshot context;
+consumers must not close them. Access and descriptions recheck their identity and
+seals. Cleanup must not close an unrelated descriptor if a consumer has violated
+ownership and the original number has been reused. The future executor must also
+control descriptor lifetime across the actual child-process launch.
+
+Snapshot descriptions retain `status=UNVERIFIED`; `immutableMaterial=true`
+describes bytes only. It does not prove publisher identity, certificate or Rekor
+verification, daemon isolation, or that this kernel permits execution of a memory
+file. A future controller must consume the sealed descriptors and bind actual
+verification results to its artifact subjects. Neither admission nor snapshots
+are wired into the check-only controller yet.
 
 ### Online stager / offline intake contract
 

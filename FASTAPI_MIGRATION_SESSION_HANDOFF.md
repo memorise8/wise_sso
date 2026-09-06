@@ -4,6 +4,31 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+READY-path continuation (2026-09-06): see
+[`READINESS_BLOCKERS.md`](fastapi-auth-server/ops/phase7/READINESS_BLOCKERS.md)
+for the full seven-gate inventory and execution-environment observations.
+The performance profile already fixes p95 at 120% of Express; only recovery
+policy thresholds remain unselected. Current unprivileged `unshare` and `bwrap`
+isolation probes both failed with permission errors. Installed `gh` 2.45.0 lacks
+attestation verification and no `cosign` executable is on PATH. No host setting,
+production Docker endpoint, or signing/registry configuration was changed.
+
+The local admission lease now has `snapshot_material()`: verifier/trust-root
+bytes are copied to sealed memory files and checked against reviewed hash inputs.
+Copies are immutable after sealing and descriptors close on failure/context exit.
+This closes the prior same-UID content-mutation gap for snapshot consumers, but
+does not authenticate a publisher or implement verifier/daemon execution.
+Project signing/registry configuration, an isolation-capable disposable runner,
+and recovery policy inputs remain needed for live qualification. No gate or lock
+has been promoted.
+Independent security review approved the sealed-material slice after closing
+append-before-seal and borrowed-descriptor reuse defects. Final regression:
+`1021 passed, 79 skipped` in the FastAPI suite; separate contract suite:
+`91 passed, 125 subtests passed`. Ruff lint/format and strict mypy for the four
+security modules and two boundary test modules passed. These results do not
+replace the seven live qualification gates. The Linux kernel sealing tests are
+local byte-integrity evidence, not cryptographic verification or daemon isolation.
+
 Execution-boundary continuation (2026-09-06):
 `fastapi-auth-server/ops/phase7/security/execution_boundary.py` now implements
 local admission of a private Unix socket and descriptor-pinned verifier/trust-root
