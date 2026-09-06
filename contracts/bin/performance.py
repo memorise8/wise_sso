@@ -53,6 +53,27 @@ SAMPLE_KEYS = {
     "outlierRemoved",
     "resetId",
 }
+PROFILE_KEYS = {
+    "$schema",
+    "schemaVersion",
+    "suiteId",
+    "manifestPath",
+    "manifestSha256",
+    "flowIds",
+    "loginFlowIds",
+    "expectedFailureFlowIds",
+    "outcomeContract",
+    "epochs",
+    "warmupTrialsPerFlowRuntimeEpoch",
+    "measuredTrialsPerFlowRuntimeEpoch",
+    "successTrialsPerApplicableFlowRuntimeEpoch",
+    "expectedFailureTrialsPerApplicableFlowRuntimeEpoch",
+    "epochRuntimeOrder",
+    "load",
+    "latency",
+    "policy",
+    "overallReplacementReady",
+}
 
 
 class IncompleteEvidence(Exception):
@@ -143,27 +164,12 @@ def load_profile(
         manifest = json.loads(manifest_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise IncompleteEvidence("unreadable-contract-input") from exc
-    expected_keys = {
-        "$schema",
-        "schemaVersion",
-        "suiteId",
-        "manifestPath",
-        "manifestSha256",
-        "flowIds",
-        "loginFlowIds",
-        "expectedFailureFlowIds",
-        "outcomeContract",
-        "epochs",
-        "warmupTrialsPerFlowRuntimeEpoch",
-        "measuredTrialsPerFlowRuntimeEpoch",
-        "successTrialsPerApplicableFlowRuntimeEpoch",
-        "expectedFailureTrialsPerApplicableFlowRuntimeEpoch",
-        "epochRuntimeOrder",
-        "load",
-        "latency",
-        "policy",
-        "overallReplacementReady",
-    }
+    if not isinstance(profile, dict):
+        raise IncompleteEvidence("invalid-profile-shape")
+    schema_version = profile.get("schemaVersion")
+    if not _integer(schema_version) or schema_version not in {1, 2}:
+        raise IncompleteEvidence("unsupported-profile-version")
+    expected_keys = PROFILE_KEYS | ({"policyVersion"} if schema_version == 2 else set())
     profile = _exact_object(profile, expected_keys, "profile")
     manifest_flows = manifest.get("phase7ApprovedCoreFlows") if isinstance(manifest, dict) else None
     manifest_ids = (
@@ -175,10 +181,7 @@ def load_profile(
     alternating = [
         list(RUNTIMES) if index % 2 == 0 else list(reversed(RUNTIMES)) for index in range(10)
     ]
-    frozen = {
-        "$schema": "profile.schema.json",
-        "schemaVersion": 1,
-        "suiteId": "phase7-performance-v1",
+    frozen: dict[str, Any] = {
         "manifestPath": "contracts/manifest.json",
         "flowIds": list(FROZEN_FLOW_IDS),
         "loginFlowIds": ["password-direct-login-token"],
@@ -201,17 +204,47 @@ def load_profile(
             "interval": "scheduled-to-completed",
             "percentile": "nearest-rank-p95",
         },
-        "policy": {
-            "allowOverrides": False,
-            "retries": 0,
-            "allowOutlierRemoval": False,
-            "unexpectedOutcomeCountMax": 0,
-            "candidateP95MaxPercentOfBaseline": 120,
-            "candidateErrorIncreasePer1000": 10,
-            "candidateLoginSuccessDecreasePer1000": 20,
-        },
         "overallReplacementReady": False,
     }
+    policy: dict[str, Any] = {
+        "allowOverrides": False,
+        "retries": 0,
+        "allowOutlierRemoval": False,
+        "unexpectedOutcomeCountMax": 0,
+        "candidateP95MaxPercentOfBaseline": 120,
+        "candidateErrorIncreasePer1000": 10,
+        "candidateLoginSuccessDecreasePer1000": 20,
+    }
+    if schema_version == 1:
+        frozen.update(
+            {
+                "$schema": "profile.schema.json",
+                "schemaVersion": 1,
+                "suiteId": "phase7-performance-v1",
+                "policy": policy,
+            }
+        )
+    else:
+        if profile.get("policyVersion") != 2:
+            raise IncompleteEvidence("profile-drift-policy-version")
+        policy_value = profile.get("policy")
+        p50_cutoff = (
+            policy_value.get("candidateP50MaxPercentOfBaseline")
+            if isinstance(policy_value, dict)
+            else None
+        )
+        if not _integer(p50_cutoff) or cast(int, p50_cutoff) <= 0:
+            raise IncompleteEvidence("profile-p50-cutoff-unset")
+        policy["candidateP50MaxPercentOfBaseline"] = p50_cutoff
+        frozen.update(
+            {
+                "$schema": "profile-v2.schema.json",
+                "schemaVersion": 2,
+                "suiteId": "phase7-performance-v2",
+                "policyVersion": 2,
+                "policy": policy,
+            }
+        )
     for key, expected in frozen.items():
         if not _same_json(profile.get(key), expected):
             raise IncompleteEvidence(f"profile-drift-{_reason_label(key)}")
@@ -251,7 +284,7 @@ def generate_plan(profile: dict[str, Any], profile_hash: str) -> dict[str, Any]:
                         }
                     )
     return {
-        "schemaVersion": 1,
+        "schemaVersion": profile["schemaVersion"],
         "suiteId": profile["suiteId"],
         "profileSha256": profile_hash,
         "manifestSha256": profile["manifestSha256"],
@@ -464,11 +497,11 @@ def _validate_samples(
     return samples
 
 
-def _p95(values: list[int]) -> int:
+def _percentile(values: list[int], percentile: int) -> int:
     if not values:
         raise IncompleteEvidence("empty-metric-sample")
     ordered = sorted(values)
-    return ordered[(95 * len(ordered) + 99) // 100 - 1]
+    return ordered[(percentile * len(ordered) + 99) // 100 - 1]
 
 
 def _metrics(
@@ -492,22 +525,39 @@ def _metrics(
                 ]
                 for row in rows
             )
-            runtime_metrics[runtime] = {
+            runtime_metric = {
                 "samples": len(rows),
-                "p95Ns": _p95(latencies),
+                "p95Ns": _percentile(latencies, 95),
                 "errors": errors,
             }
+            if profile["schemaVersion"] == 2:
+                runtime_metric["p50Ns"] = _percentile(latencies, 50)
+            runtime_metrics[runtime] = runtime_metric
         baseline = runtime_metrics["express"]
         candidate = runtime_metrics["fastapi"]
         for runtime in RUNTIMES:
             if runtime_metrics[runtime]["errors"] > profile["policy"]["unexpectedOutcomeCountMax"]:
                 reasons.append(f"absolute-error-{runtime}-{group}")
-        if candidate["p95Ns"] * 100 > baseline["p95Ns"] * 120:
+        if (
+            profile["schemaVersion"] == 2
+            and candidate["p50Ns"] * 100
+            > baseline["p50Ns"] * profile["policy"]["candidateP50MaxPercentOfBaseline"]
+        ):
+            reasons.append(f"p50-threshold-{group}")
+        if (
+            candidate["p95Ns"] * 100
+            > baseline["p95Ns"] * profile["policy"]["candidateP95MaxPercentOfBaseline"]
+        ):
             reasons.append(f"p95-threshold-{group}")
         error_delta_scaled = (
             candidate["errors"] * baseline["samples"] - baseline["errors"] * candidate["samples"]
         ) * 1000
-        if error_delta_scaled > 10 * candidate["samples"] * baseline["samples"]:
+        if (
+            error_delta_scaled
+            > profile["policy"]["candidateErrorIncreasePer1000"]
+            * candidate["samples"]
+            * baseline["samples"]
+        ):
             reasons.append(f"error-threshold-{group}")
         if group == "aggregate":
             metrics["aggregate"] = runtime_metrics
@@ -531,7 +581,12 @@ def _metrics(
         baseline_login["successes"] * candidate_login["samples"]
         - candidate_login["successes"] * baseline_login["samples"]
     ) * 1000
-    if decrease_scaled > 20 * baseline_login["samples"] * candidate_login["samples"]:
+    if (
+        decrease_scaled
+        > profile["policy"]["candidateLoginSuccessDecreasePer1000"]
+        * baseline_login["samples"]
+        * candidate_login["samples"]
+    ):
         reasons.append("login-success-threshold-aggregate")
     metrics["loginSuccess"] = login
     return metrics, reasons
@@ -560,6 +615,20 @@ def evaluate(
     }
     try:
         profile_bytes = _read_bounded_regular(profile_path, "profile")
+        # Select only the error-envelope version here, never policy authority.
+        # Recognizable v2 profiles must report v2 INCOMPLETE even when unfrozen.
+        try:
+            header = json.loads(profile_bytes.decode("utf-8"))
+        except (UnicodeError, ValueError, RecursionError):
+            header = None
+        if (
+            isinstance(header, dict)
+            and type(header.get("schemaVersion")) is int
+            and header["schemaVersion"] == 2
+            and header.get("suiteId") == "phase7-performance-v2"
+        ):
+            result["schemaVersion"] = 2
+            result["suiteId"] = "phase7-performance-v2"
         manifest_bytes = _read_bounded_regular(manifest_path, "manifest")
         profile_hash = _sha256(profile_bytes)
         manifest_hash = _sha256(manifest_bytes)
@@ -571,6 +640,8 @@ def evaluate(
             profile_bytes=profile_bytes,
             manifest_bytes=manifest_bytes,
         )
+        result["schemaVersion"] = profile["schemaVersion"]
+        result["suiteId"] = profile["suiteId"]
         evidence = _exact_object(
             document,
             {
@@ -592,7 +663,7 @@ def evaluate(
             result["observedSampleCountCapped"] = len(samples_value) > MAX_INPUT_BYTES
         if (
             not _integer(evidence.get("schemaVersion"))
-            or evidence.get("schemaVersion") != 1
+            or evidence.get("schemaVersion") != profile["schemaVersion"]
             or evidence.get("suiteId") != profile["suiteId"]
         ):
             raise IncompleteEvidence("evidence-version-or-suite-mismatch")

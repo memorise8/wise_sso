@@ -28,7 +28,7 @@ Do not edit historical smoke evidence into a new passing bundle. Canonical
 refreeze/replay and original runtime prerequisite/post-deploy validation remain
 required by the handoff. Production cutover remains a separate approval.
 
-## Existing performance policy: no new selection needed
+## Performance policy: existing v1 limits plus an unfrozen v2 p50 decision
 
 `contracts/performance/profile-v1.json` already fixes p95 at at most 120% of the
 Express baseline, zero unexpected outcomes, error increase at most 10/1000 and
@@ -37,6 +37,13 @@ login-success decrease at most 20/1000. It specifies ten flows, ten epochs,
 5-second timeout and at most 16 in flight. The evaluator is not a load generator
 and even a structurally passing result has `qualifyingEvidence=false` until its
 submitted event claims are authenticated by a controlled launcher.
+
+The reviewed READY plan additionally requires a pre-measurement p50 relative
+cutoff, version-2 profile binding and three separately passing full runs. The v2
+evaluator and schemas now exist; `profile-v2.template.json` intentionally has null
+p50 and manifest inputs and cannot authorize measurement or PASS. No measured
+result may be used to choose these thresholds. The active v1 profile remains
+unchanged; completing evaluator code alone does not complete C01/C02/C03.
 
 In contrast, `backup_restore/backup-restore-policy.json` still has null
 `rpoSeconds`, `rtoSeconds`, and `maxArtifactRetentionSeconds`. These values need

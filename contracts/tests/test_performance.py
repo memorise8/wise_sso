@@ -8,13 +8,14 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 JsonObject = dict[str, Any]
 
 CONTRACTS = Path(__file__).resolve().parents[1]
 PROFILE = CONTRACTS / "performance" / "profile-v1.json"
+PROFILE_V2_TEMPLATE = CONTRACTS / "performance" / "profile-v2.template.json"
 MANIFEST = CONTRACTS / "manifest.json"
 SPEC = importlib.util.spec_from_file_location(
     "contract_performance", CONTRACTS / "bin" / "performance.py"
@@ -111,6 +112,23 @@ def make_evidence() -> JsonObject:
         "epochs": epochs,
         "samples": samples,
     }
+
+
+def make_v2_profile(p50_cutoff: int | None = 100) -> JsonObject:
+    profile = json.loads(PROFILE.read_text(encoding="utf-8"))
+    profile["$schema"] = "profile-v2.schema.json"
+    profile["schemaVersion"] = 2
+    profile["suiteId"] = "phase7-performance-v2"
+    profile["policyVersion"] = 2
+    profile["policy"]["candidateP50MaxPercentOfBaseline"] = p50_cutoff
+    return cast(JsonObject, profile)
+
+
+def bind_v2_evidence(evidence: JsonObject, profile_path: Path) -> JsonObject:
+    evidence["schemaVersion"] = 2
+    evidence["suiteId"] = "phase7-performance-v2"
+    evidence["profileSha256"] = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    return evidence
 
 
 def selected(
@@ -271,6 +289,99 @@ class PerformanceContractTests(unittest.TestCase):
         self.assertEqual(result["status"], "FAIL")
         self.assertIn(f"p95-threshold-{flow}", result["reasonCodes"])
 
+    def test_v2_requires_and_enforces_reviewed_p50_cutoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile_path = Path(directory) / "profile-v2.json"
+            profile_path.write_text(json.dumps(make_v2_profile(101)), encoding="utf-8")
+            evidence = bind_v2_evidence(copy.deepcopy(self.base), profile_path)
+            passing = performance.evaluate(evidence, profile_path=profile_path)
+            self.assertEqual(passing["status"], "PASS")
+            self.assertEqual(passing["schemaVersion"], 2)
+            self.assertEqual(passing["suiteId"], "phase7-performance-v2")
+            self.assertEqual(passing["metrics"]["aggregate"]["fastapi"]["p50Ns"], 100_000)
+            self.assertFalse(passing["qualifyingEvidence"])
+
+            for row in evidence["samples"]:
+                if row["runtime"] == "fastapi":
+                    row["completedNs"] += 2_000
+            result = performance.evaluate(evidence, profile_path=profile_path)
+            self.assertEqual(result["status"], "FAIL")
+            self.assertIn("p50-threshold-aggregate", result["reasonCodes"])
+            self.assertNotIn("p95-threshold-aggregate", result["reasonCodes"])
+
+    def test_v2_rejects_missing_null_and_boolean_p50_cutoffs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            for label, cutoff in (("null", None), ("boolean", True)):
+                with self.subTest(cutoff=label):
+                    profile = make_v2_profile(cutoff)
+                    profile_path = directory_path / f"profile-v2-{label}.json"
+                    profile_path.write_text(json.dumps(profile), encoding="utf-8")
+                    evidence = bind_v2_evidence(copy.deepcopy(self.base), profile_path)
+                    result = performance.evaluate(evidence, profile_path=profile_path)
+                    self.assertEqual(result["status"], "INCOMPLETE")
+                    self.assertEqual(result["reasonCodes"], ["profile-p50-cutoff-unset"])
+                    self.assertEqual(result["schemaVersion"], 2)
+                    self.assertEqual(result["suiteId"], "phase7-performance-v2")
+
+            missing = make_v2_profile()
+            del missing["policy"]["candidateP50MaxPercentOfBaseline"]
+            missing_path = directory_path / "profile-v2-missing.json"
+            missing_path.write_text(json.dumps(missing), encoding="utf-8")
+            evidence = bind_v2_evidence(copy.deepcopy(self.base), missing_path)
+            result = performance.evaluate(evidence, profile_path=missing_path)
+            self.assertEqual(result["status"], "INCOMPLETE")
+            self.assertEqual(result["reasonCodes"], ["profile-p50-cutoff-unset"])
+            self.assertEqual(result["schemaVersion"], 2)
+
+    def test_unfrozen_v2_error_preserves_result_schema_constants(self) -> None:
+        schema = json.loads(
+            (CONTRACTS / "performance" / "result-v2.schema.json").read_text(encoding="utf-8")
+        )
+        result = performance.evaluate({}, profile_path=PROFILE_V2_TEMPLATE)
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertEqual(set(result), set(schema["required"]))
+        for name, contract in schema["properties"].items():
+            if "const" in contract:
+                self.assertEqual(result[name], contract["const"])
+        self.assertEqual(result["validatedSampleCount"], 0)
+        self.assertEqual(result["metrics"], {})
+
+    def test_p50_uses_nearest_rank_not_interpolated_even_sample_median(self) -> None:
+        self.assertEqual(performance._percentile([90, 10, 20, 100], 50), 20)
+        self.assertEqual(performance._percentile([90, 10, 20, 100], 95), 100)
+
+    def test_v2_rejects_policy_version_and_mixed_profile_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            directory_path = Path(directory)
+            profile = make_v2_profile()
+            profile["policyVersion"] = 1
+            wrong_policy_path = directory_path / "wrong-policy.json"
+            wrong_policy_path.write_text(json.dumps(profile), encoding="utf-8")
+            evidence = bind_v2_evidence(copy.deepcopy(self.base), wrong_policy_path)
+            result = performance.evaluate(evidence, profile_path=wrong_policy_path)
+            self.assertEqual(result["status"], "INCOMPLETE")
+            self.assertEqual(result["reasonCodes"], ["profile-drift-policy-version"])
+
+            profile = make_v2_profile()
+            profile_path = directory_path / "profile-v2.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            old_evidence = copy.deepcopy(self.base)
+            result = performance.evaluate(old_evidence, profile_path=profile_path)
+            self.assertEqual(result["status"], "INCOMPLETE")
+            self.assertEqual(result["reasonCodes"], ["evidence-version-or-suite-mismatch"])
+
+            mixed_manifest = directory_path / "manifest.json"
+            mixed_manifest.write_text(MANIFEST.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+            evidence = bind_v2_evidence(copy.deepcopy(self.base), profile_path)
+            result = performance.evaluate(
+                evidence,
+                profile_path=profile_path,
+                manifest_path=mixed_manifest,
+            )
+            self.assertEqual(result["status"], "INCOMPLETE")
+            self.assertEqual(result["reasonCodes"], ["manifest-hash-mismatch"])
+
     def test_login_outcome_contract_precedes_comparative_threshold(self) -> None:
         flow = "password-direct-login-token"
         at_boundary = copy.deepcopy(self.base)
@@ -387,11 +498,32 @@ class PerformanceContractTests(unittest.TestCase):
     ) -> None:
         for name in (
             "profile.schema.json",
+            "profile-v2.schema.json",
             "evidence.schema.json",
+            "evidence-v2.schema.json",
             "result.schema.json",
+            "result-v2.schema.json",
         ):
             schema = json.loads((CONTRACTS / "performance" / name).read_text(encoding="utf-8"))
             self.assertFalse(schema["additionalProperties"])
+
+        evidence_v2_schema = json.loads(
+            (CONTRACTS / "performance" / "evidence-v2.schema.json").read_text(encoding="utf-8")
+        )
+        result_v2_schema = json.loads(
+            (CONTRACTS / "performance" / "result-v2.schema.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(evidence_v2_schema["properties"]["schemaVersion"]["const"], 2)
+        self.assertIn("p50Ns", result_v2_schema["$defs"]["metric"]["required"])
+
+        template = json.loads(PROFILE_V2_TEMPLATE.read_text(encoding="utf-8"))
+        self.assertIsNone(template["manifestSha256"])
+        self.assertIsNone(template["policy"]["candidateP50MaxPercentOfBaseline"])
+        with self.assertRaisesRegex(
+            performance.IncompleteEvidence,
+            "profile-p50-cutoff-unset",
+        ):
+            performance.load_profile(PROFILE_V2_TEMPLATE, MANIFEST)
 
     def test_cli_bounds_json_before_decoding(self) -> None:
         with tempfile.NamedTemporaryFile() as input_file:

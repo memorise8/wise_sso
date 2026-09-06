@@ -1,0 +1,84 @@
+{
+  "$schema": "profile-v2.schema.json",
+  "schemaVersion": 2,
+  "suiteId": "phase7-performance-v2",
+  "policyVersion": 2,
+  "manifestPath": "contracts/manifest.json",
+  "manifestSha256": null,
+  "flowIds": [
+    "password-direct-login-token",
+    "password-handoff-exchange",
+    "email-verification-attach-handoff-exchange",
+    "password-reset-session-revoke",
+    "oauth-google",
+    "oauth-naver",
+    "oauth-kakao",
+    "refresh-logout-race",
+    "admin-status-role-session-audit",
+    "global-rate-limit"
+  ],
+  "loginFlowIds": ["password-direct-login-token"],
+  "expectedFailureFlowIds": [
+    "password-direct-login-token",
+    "password-handoff-exchange",
+    "email-verification-attach-handoff-exchange",
+    "password-reset-session-revoke",
+    "oauth-google",
+    "oauth-naver",
+    "oauth-kakao",
+    "refresh-logout-race",
+    "admin-status-role-session-audit",
+    "global-rate-limit"
+  ],
+  "outcomeContract": {
+    "password-direct-login-token": {"success": "success", "expectedFailure": "expected-failure"},
+    "password-handoff-exchange": {"success": "success", "expectedFailure": "expected-failure"},
+    "email-verification-attach-handoff-exchange": {"success": "success", "expectedFailure": "expected-failure"},
+    "password-reset-session-revoke": {"success": "success", "expectedFailure": "expected-failure"},
+    "oauth-google": {"success": "success", "expectedFailure": "expected-failure"},
+    "oauth-naver": {"success": "success", "expectedFailure": "expected-failure"},
+    "oauth-kakao": {"success": "success", "expectedFailure": "expected-failure"},
+    "refresh-logout-race": {"success": "success", "expectedFailure": "expected-failure"},
+    "admin-status-role-session-audit": {"success": "success", "expectedFailure": "expected-failure"},
+    "global-rate-limit": {"success": "success", "expectedFailure": "expected-failure"}
+  },
+  "epochs": 10,
+  "warmupTrialsPerFlowRuntimeEpoch": 20,
+  "measuredTrialsPerFlowRuntimeEpoch": 100,
+  "successTrialsPerApplicableFlowRuntimeEpoch": 80,
+  "expectedFailureTrialsPerApplicableFlowRuntimeEpoch": 20,
+  "epochRuntimeOrder": [
+    ["express", "fastapi"],
+    ["fastapi", "express"],
+    ["express", "fastapi"],
+    ["fastapi", "express"],
+    ["express", "fastapi"],
+    ["fastapi", "express"],
+    ["express", "fastapi"],
+    ["fastapi", "express"],
+    ["express", "fastapi"],
+    ["fastapi", "express"]
+  ],
+  "load": {
+    "model": "open-loop",
+    "ratePerSecond": 20,
+    "timeoutMs": 5000,
+    "maxInFlight": 16
+  },
+  "latency": {
+    "clock": "monotonic",
+    "interval": "scheduled-to-completed",
+    "percentile": "nearest-rank-p95"
+  },
+  "policy": {
+    "allowOverrides": false,
+    "retries": 0,
+    "allowOutlierRemoval": false,
+    "unexpectedOutcomeCountMax": 0,
+    "candidateP50MaxPercentOfBaseline": null,
+    "candidateP95MaxPercentOfBaseline": 120,
+    "candidateErrorIncreasePer1000": 10,
+    "candidateLoginSuccessDecreasePer1000": 20
+  },
+  "overallReplacementReady": false
+}

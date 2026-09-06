@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "profile-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "suiteId", "policyVersion", "manifestPath", "manifestSha256", "flowIds", "loginFlowIds", "expectedFailureFlowIds", "outcomeContract", "epochs", "warmupTrialsPerFlowRuntimeEpoch", "measuredTrialsPerFlowRuntimeEpoch", "successTrialsPerApplicableFlowRuntimeEpoch", "expectedFailureTrialsPerApplicableFlowRuntimeEpoch", "epochRuntimeOrder", "load", "latency", "policy", "overallReplacementReady"],
+  "properties": {
+    "$schema": {"const": "profile-v2.schema.json"},
+    "schemaVersion": {"const": 2},
+    "suiteId": {"const": "phase7-performance-v2"},
+    "policyVersion": {"const": 2},
+    "manifestPath": {"const": "contracts/manifest.json"},
+    "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "flowIds": {"$ref": "profile.schema.json#/$defs/exactFlowIds"},
+    "loginFlowIds": {"const": ["password-direct-login-token"]},
+    "expectedFailureFlowIds": {"$ref": "profile.schema.json#/$defs/exactFlowIds"},
+    "outcomeContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["password-direct-login-token", "password-handoff-exchange", "email-verification-attach-handoff-exchange", "password-reset-session-revoke", "oauth-google", "oauth-naver", "oauth-kakao", "refresh-logout-race", "admin-status-role-session-audit", "global-rate-limit"],
+      "properties": {
+        "password-direct-login-token": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "password-handoff-exchange": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "email-verification-attach-handoff-exchange": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "password-reset-session-revoke": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "oauth-google": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "oauth-naver": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "oauth-kakao": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "refresh-logout-race": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "admin-status-role-session-audit": {"$ref": "profile.schema.json#/$defs/outcomePair"},
+        "global-rate-limit": {"$ref": "profile.schema.json#/$defs/outcomePair"}
+      }
+    },
+    "epochs": {"const": 10},
+    "warmupTrialsPerFlowRuntimeEpoch": {"const": 20},
+    "measuredTrialsPerFlowRuntimeEpoch": {"const": 100},
+    "successTrialsPerApplicableFlowRuntimeEpoch": {"const": 80},
+    "expectedFailureTrialsPerApplicableFlowRuntimeEpoch": {"const": 20},
+    "epochRuntimeOrder": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["express", "fastapi"]}}},
+    "load": {"type": "object", "additionalProperties": false, "required": ["model", "ratePerSecond", "timeoutMs", "maxInFlight"], "properties": {"model": {"const": "open-loop"}, "ratePerSecond": {"const": 20}, "timeoutMs": {"const": 5000}, "maxInFlight": {"const": 16}}},
+    "latency": {"type": "object", "additionalProperties": false, "required": ["clock", "interval", "percentile"], "properties": {"clock": {"const": "monotonic"}, "interval": {"const": "scheduled-to-completed"}, "percentile": {"const": "nearest-rank-p95"}}},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowOverrides", "retries", "allowOutlierRemoval", "unexpectedOutcomeCountMax", "candidateP50MaxPercentOfBaseline", "candidateP95MaxPercentOfBaseline", "candidateErrorIncreasePer1000", "candidateLoginSuccessDecreasePer1000"],
+      "properties": {
+        "allowOverrides": {"const": false},
+        "retries": {"const": 0},
+        "allowOutlierRemoval": {"const": false},
+        "unexpectedOutcomeCountMax": {"const": 0},
+        "candidateP50MaxPercentOfBaseline": {"type": "integer", "minimum": 1},
+        "candidateP95MaxPercentOfBaseline": {"const": 120},
+        "candidateErrorIncreasePer1000": {"const": 10},
+        "candidateLoginSuccessDecreasePer1000": {"const": 20}
+      }
+    },
+    "overallReplacementReady": {"const": false}
+  }
+}
