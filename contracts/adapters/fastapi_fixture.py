@@ -41,6 +41,7 @@ class _SharedAdapter(Protocol):
     refresh_fixture_token: Callable[[FixtureConfig, str], str]
     seed_refresh_token: Callable[[FixtureConfig, str, str], None]
     setup: Callable[[FixtureConfig, str], dict[str, Any]]
+    expire: Callable[[FixtureConfig, str], dict[str, Any]]
     snapshot: Callable[[FixtureConfig, str], Any]
     load_config: Callable[[], FixtureConfig]
     preflight: Callable[[FixtureConfig], dict[str, Any]]
@@ -48,7 +49,9 @@ class _SharedAdapter(Protocol):
 
 def _load_shared_adapter() -> _SharedAdapter:
     path = Path(__file__).with_name("express_fixture.py")
-    spec = importlib.util.spec_from_file_location("wiseacct_contract_fixture_shared", path)
+    spec = importlib.util.spec_from_file_location(
+        "wiseacct_contract_fixture_shared", path
+    )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load shared fixture adapter from {path}")
     module: ModuleType = importlib.util.module_from_spec(spec)
@@ -77,6 +80,7 @@ seed = _shared.seed
 refresh_fixture_token = _shared.refresh_fixture_token
 seed_refresh_token = _shared.seed_refresh_token
 setup = _shared.setup
+expire = _shared.expire
 snapshot = _shared.snapshot
 
 _REQUIRED_SCHEMA_QUERY = r"""
@@ -116,19 +120,22 @@ def preflight(config: FixtureConfig) -> dict[str, Any]:
 def main(argv: list[str]) -> int:
     try:
         if len(argv) != 2 or argv[0] not in {
+            "expire",
             "preflight",
             "setup",
             "snapshot",
             "teardown",
         }:
             raise AdapterError(
-                "usage: fastapi_fixture.py {preflight|setup|snapshot|teardown} <name>"
+                "usage: fastapi_fixture.py {preflight|setup|expire|snapshot|teardown} <name>"
             )
         command, name = argv
         config = load_config()
         result: Any = preflight(config)
         if command == "setup":
             result = setup(config, name)
+        elif command == "expire":
+            result = expire(config, name)
         elif command == "snapshot":
             result = snapshot(config, name)
         elif command == "teardown":

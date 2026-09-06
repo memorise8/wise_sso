@@ -11,9 +11,11 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Mapping
@@ -22,7 +24,12 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib import error, parse, request
 
-FLOWS = ("password-direct-login-token", "password-handoff-exchange")
+FLOWS = (
+    "password-direct-login-token",
+    "password-handoff-exchange",
+    "email-verification-attach-handoff-exchange",
+    "password-reset-session-revoke",
+)
 RUNTIMES = ("express", "fastapi")
 SAFE_PROVENANCE = {"runId", "sourceRevision", "harnessRevision"}
 SENSITIVE_MARKERS = (
@@ -80,6 +87,19 @@ def _load_differential() -> Any:
 DIFFERENTIAL = _load_differential()
 
 
+def _load_mail_launcher() -> Any:
+    module_path = Path(__file__).with_name("private_mail_flow_launcher.py")
+    spec = importlib.util.spec_from_file_location(
+        "flow_driver_private_mail", module_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load private mail launcher from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 class ContractFailure(Exception):
     """The requested flow could not be proven."""
 
@@ -89,6 +109,17 @@ class Adapter(Protocol):
     isolation_identity: tuple[str, str]
 
     def invoke(self, command: str, name: str) -> Any: ...
+
+
+class PrivateMailBinding(Protocol):
+    environment: Mapping[str, str]
+    runtime_name: str
+    process_pid: int
+    health_origin: str
+
+
+class PrivateMailTokenSource(Protocol):
+    def take(self, *, user_id: str, kind: str) -> Any: ...
 
 
 @dataclass(frozen=True)
@@ -190,7 +221,13 @@ def call(
 
 
 class FixtureAdapter:
-    def __init__(self, executable: Path, environment: dict[str, str], base_url: str):
+    def __init__(
+        self,
+        executable: Path,
+        environment: dict[str, str],
+        base_url: str,
+        private_mail_binding: PrivateMailBinding | None = None,
+    ):
         metadata = executable.lstat()
         if (
             not stat.S_ISREG(metadata.st_mode)
@@ -200,11 +237,56 @@ class FixtureAdapter:
             raise ContractFailure("fixture adapter must be an executable regular file")
         required_guards = {
             "CONTRACT_FIXTURE_MODE": "1",
-            "CONTRACT_SERVER_MAIL_MODE": "dev",
             "CONTRACT_REDIS_ISOLATED_DB": "1",
         }
         if any(environment.get(key) != value for key, value in required_guards.items()):
             raise ContractFailure("fixture config omitted required isolation guards")
+        self.runtime_identity: tuple[str, object]
+        mail_mode = environment.get("CONTRACT_SERVER_MAIL_MODE")
+        if mail_mode == "private-loopback-smtp":
+            if private_mail_binding is None:
+                raise ContractFailure(
+                    "private mail fixture requires an owned launcher binding"
+                )
+            bound_environment = dict(private_mail_binding.environment)
+            protected = set(bound_environment)
+            if any(
+                key in environment and environment[key] != value
+                for key, value in bound_environment.items()
+            ):
+                raise ContractFailure(
+                    "fixture config conflicts with its private mail binding"
+                )
+            environment = {**environment, **bound_environment}
+            if environment.get("CONTRACT_SERVER_MAIL_MODE") != "private-loopback-smtp":
+                raise ContractFailure(
+                    "private mail fixture binding has an invalid mode"
+                )
+            if not protected.issuperset(
+                {
+                    "CONTRACT_PRIVATE_MAIL_SESSION_FILE",
+                    "CONTRACT_PRIVATE_MAIL_SESSION_CAPABILITY",
+                    "CONTRACT_PRIVATE_MAIL_CA_SHA256",
+                    "SMTP_HOST",
+                    "SMTP_PORT",
+                    "SSL_CERT_FILE",
+                }
+            ):
+                raise ContractFailure("private mail fixture binding is incomplete")
+            if private_mail_binding.health_origin != base_url:
+                raise ContractFailure(
+                    "private mail fixture binding origin does not match"
+                )
+            self.runtime_identity = (
+                private_mail_binding.runtime_name,
+                private_mail_binding.process_pid,
+            )
+        elif mail_mode != "dev" or private_mail_binding is not None:
+            raise ContractFailure(
+                "fixture config omitted a supported mail isolation mode"
+            )
+        else:
+            self.runtime_identity = ("external-development-runtime", base_url)
         self.executable = executable
         self.environment = environment
         self.base_url = base_url
@@ -252,18 +334,44 @@ class FixtureAdapter:
 
 
 def load_adapter_environment(path: Path) -> dict[str, str]:
-    info = path.lstat()
-    if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-        raise ContractFailure(
-            "fixture config must be a regular file with exact mode 0600"
-        )
-    document = json.loads(path.read_text(encoding="utf-8"))
+    document = _read_secure_json(path, "fixture config")
     if not isinstance(document, dict) or any(
         not isinstance(key, str) or not isinstance(value, str)
         for key, value in document.items()
     ):
         raise ContractFailure("fixture config must contain a flat string JSON object")
     return document
+
+
+def _read_secure_json(path: Path, label: str) -> Any:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ContractFailure(f"{label} secure open is unavailable")
+    descriptor = os.open(path, os.O_RDONLY | nofollow)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or stat.S_IMODE(before.st_mode) != 0o600:
+            raise ContractFailure(
+                f"{label} must be a regular file with exact mode 0600"
+            )
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(descriptor, min(65536, 1_048_577 - size))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > 1_048_576:
+                raise ContractFailure(f"{label} exceeds the bounded read limit")
+        after = os.fstat(descriptor)
+        before_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mode)
+        after_identity = (after.st_dev, after.st_ino, after.st_size, after.st_mode)
+        if before_identity != after_identity or size != before.st_size:
+            raise ContractFailure(f"{label} changed while being read")
+    finally:
+        os.close(descriptor)
+    return json.loads(b"".join(chunks).decode("utf-8"))
 
 
 def _require_object(value: Any, label: str) -> dict[str, Any]:
@@ -429,8 +537,8 @@ def _verify_token_pair(
     return access, refresh
 
 
-def _auth_state(adapter: Adapter) -> dict[str, Any]:
-    state = _require_object(adapter.invoke("snapshot", "auth-lifecycle"), "auth-state")
+def _auth_state(adapter: Adapter, probe: str = "auth-lifecycle") -> dict[str, Any]:
+    state = _require_object(adapter.invoke("snapshot", probe), "auth-state")
     required = ("activeRefreshTokens", "authHandoffKeys", "activeTokenHashes")
     if any(key not in state for key in required):
         raise ContractFailure("malformed-auth-state")
@@ -461,6 +569,32 @@ def _state_empty(state: dict[str, Any]) -> None:
         or state["activeTokenHashes"] != []
     ):
         raise ContractFailure("fixture-initial-state-not-empty")
+
+
+def _expect_exact_auth_state(
+    state: dict[str, Any], *, active_hashes: set[str], handoff_keys: int = 0
+) -> None:
+    if (
+        state["activeRefreshTokens"] != len(active_hashes)
+        or state["authHandoffKeys"] != handoff_keys
+        or set(state["activeTokenHashes"]) != active_hashes
+    ):
+        raise ContractFailure("auth-state-transition-mismatch")
+
+
+def _digest_set(value: Any, failure: str) -> set[str]:
+    if (
+        not isinstance(value, list)
+        or any(
+            not isinstance(item, str)
+            or len(item) != 64
+            or any(character not in "0123456789abcdef" for character in item)
+            for item in value
+        )
+        or len(value) != len(set(value))
+    ):
+        raise ContractFailure(failure)
+    return set(value)
 
 
 def _state_delta(
@@ -562,6 +696,656 @@ def _exchange(
         timeout,
         observations,
     )
+
+
+def _expect_accepted(result: HttpResult) -> None:
+    if (
+        result.status != 202
+        or result.body != {"status": "accepted"}
+        or not _json_media_type(result.headers.get("content-type", ""))
+    ):
+        raise ContractFailure("mail-request-contract-mismatch")
+
+
+def _expect_captured_digest(captured: Any, ledger: dict[str, Any], label: str) -> None:
+    digest = getattr(captured, "token_sha256", None)
+    digests = ledger.get("digests")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or not isinstance(digests, list)
+        or digests != [digest]
+    ):
+        raise ContractFailure(f"{label}-digest-state-mismatch")
+
+
+def _validate_mail_topology(
+    request_origin: str,
+    confirm_origin: str,
+    producer: Adapter,
+    consumer: Adapter | None,
+) -> None:
+    if consumer is None:
+        if request_origin != confirm_origin:
+            raise ContractFailure("mail-flow-consumer-adapter-required")
+        return
+    if request_origin == confirm_origin:
+        raise ContractFailure("mixed-topology-requires-distinct-runtime-origins")
+    if producer.isolation_identity != consumer.isolation_identity:
+        raise ContractFailure("mixed-topology-requires-shared-isolated-stores")
+    producer_runtime = getattr(producer, "runtime_identity", None)
+    consumer_runtime = getattr(consumer, "runtime_identity", None)
+    if (
+        not isinstance(producer_runtime, tuple)
+        or not isinstance(consumer_runtime, tuple)
+        or producer_runtime == consumer_runtime
+    ):
+        raise ContractFailure("mixed-topology-requires-distinct-owned-runtimes")
+
+
+def run_email_verification_flow(
+    *,
+    url: str,
+    adapter: Adapter,
+    token_source: PrivateMailTokenSource,
+    timeout: float = 5.0,
+    consumer_url: str | None = None,
+    consumer_adapter: Adapter | None = None,
+    expected_issuer: str = "https://auth.financenow.kr",
+) -> dict[str, Any]:
+    """Exercise request -> private SMTP capture -> confirm -> replay over HTTP."""
+
+    observations: list[HttpResult] = []
+    fixture = _require_object(adapter.invoke("setup", "pending-email-user"), "fixture")
+    try:
+        handoff = consumer_url is not None or consumer_adapter is not None
+        if handoff and (consumer_url is None or consumer_adapter is None):
+            raise ContractFailure("verification-handoff-requires-consumer-runtime")
+        required = {"userId", "email", "attachUserId", "attachEmail"}
+        if handoff:
+            required |= {
+                "name",
+                "roles",
+                "audience",
+                "clientId",
+                "redirectUri",
+                "state",
+                "codeChallenge",
+                "codeVerifier",
+            }
+        if required - fixture.keys():
+            raise ContractFailure("malformed-fixture")
+        request_origin = _origin(url, "verification request runtime")
+        confirm_origin = _origin(
+            consumer_url if consumer_url is not None else url,
+            "verification confirm runtime",
+        )
+        _validate_mail_topology(
+            request_origin, confirm_origin, adapter, consumer_adapter
+        )
+    except (ContractFailure, KeyError):
+        adapter.invoke("teardown", "pending-email-user")
+        raise
+    try:
+        request_body: dict[str, Any] = {"email": fixture["email"]}
+        if handoff:
+            request_body.update(
+                clientId=fixture["clientId"],
+                redirectUri=fixture["redirectUri"],
+                state=fixture["state"],
+                codeChallenge=fixture["codeChallenge"],
+                codeChallengeMethod="S256",
+            )
+        requested = call(
+            request_origin,
+            "POST",
+            "/auth/email-verification/request",
+            request_body,
+            timeout,
+            observations,
+        )
+        _expect_accepted(requested)
+        issued = _require_object(
+            adapter.invoke("snapshot", "email-verification-ledger"),
+            "email-verification-ledger",
+        )
+        if issued.get("unusedTokens") != 1:
+            raise ContractFailure("verification-token-state-mismatch")
+        expired_capture = token_source.take(
+            user_id=fixture["userId"], kind="email-verification"
+        )
+        _expect_captured_digest(expired_capture, issued, "verification")
+        expired_token = getattr(expired_capture, "token", None)
+        if not isinstance(expired_token, str) or not expired_token:
+            raise ContractFailure("private-mail-token-contract-mismatch")
+        adapter.invoke("expire", "latest-email-verification")
+        expired = call(
+            confirm_origin,
+            "POST",
+            "/auth/email-verification/confirm",
+            {"token": expired_token},
+            timeout,
+            observations,
+        )
+        _expect_error(
+            expired,
+            400,
+            "INVALID_VERIFICATION_TOKEN",
+            "Invalid or expired verification token",
+        )
+        requested_again = call(
+            request_origin,
+            "POST",
+            "/auth/email-verification/request",
+            request_body,
+            timeout,
+            observations,
+        )
+        _expect_accepted(requested_again)
+        reissued = _require_object(
+            adapter.invoke("snapshot", "email-verification-ledger"),
+            "email-verification-ledger",
+        )
+        captured = token_source.take(
+            user_id=fixture["userId"], kind="email-verification"
+        )
+        _expect_captured_digest(captured, reissued, "verification")
+        token = getattr(captured, "token", None)
+        if not isinstance(token, str) or not token:
+            raise ContractFailure("private-mail-token-contract-mismatch")
+        confirmed = call(
+            confirm_origin,
+            "POST",
+            "/auth/email-verification/confirm",
+            {"token": token},
+            timeout,
+            observations,
+        )
+        confirmed_body = _require_object(confirmed.body, "verification-confirm")
+        if confirmed.status != 200 or confirmed_body.get("status") != "verified":
+            raise ContractFailure("verification-confirm-contract-mismatch")
+        refresh: str | None = None
+        if handoff:
+            if set(confirmed_body) != {"status", "redirectUrl"}:
+                raise ContractFailure("verification-confirm-contract-mismatch")
+            redirect_result = HttpResult(
+                confirmed.status,
+                confirmed.headers,
+                {"redirectUrl": confirmed_body["redirectUrl"]},
+                confirmed.started_ns,
+                confirmed.ended_ns,
+            )
+            code = _handoff_code(redirect_result, fixture)
+            assert consumer_adapter is not None
+            exchanged = _exchange(confirm_origin, fixture, code, timeout, observations)
+            _access, refresh = _verify_token_pair(
+                exchanged,
+                confirm_origin,
+                fixture,
+                timeout,
+                expected_issuer,
+                consumer_adapter.refresh_secret,
+                observations,
+            )
+            _expect_exact_auth_state(
+                _auth_state(consumer_adapter, "pending-email-auth-lifecycle"),
+                active_hashes={hashlib.sha256(refresh.encode()).hexdigest()},
+            )
+            exchange_replay = _exchange(
+                confirm_origin, fixture, code, timeout, observations
+            )
+            _expect_error(
+                exchange_replay,
+                400,
+                "INVALID_AUTH_HANDOFF_CODE",
+                "Invalid authorization code",
+            )
+        elif set(confirmed_body) != {"status"}:
+            raise ContractFailure("verification-confirm-contract-mismatch")
+        state = _require_object(
+            adapter.invoke("snapshot", "email-verification-result"),
+            "email-verification-result",
+        )
+        expected = {
+            "userId": fixture["userId"],
+            "email": fixture["email"],
+            "status": "ACTIVE",
+            "emailVerified": True,
+            "unusedTokens": 0,
+            "usedTokens": 1,
+            "passwordCredentials": 1,
+            "duplicateUsers": 1,
+            "defaultRoles": 1,
+        }
+        if any(state.get(key) != value for key, value in expected.items()):
+            raise ContractFailure("verification-result-state-mismatch")
+        replay = call(
+            confirm_origin,
+            "POST",
+            "/auth/email-verification/confirm",
+            {"token": token},
+            timeout,
+            observations,
+        )
+        _expect_error(
+            replay,
+            400,
+            "INVALID_VERIFICATION_TOKEN",
+            "Invalid or expired verification token",
+        )
+        if refresh is not None:
+            assert consumer_adapter is not None
+            logout = call(
+                confirm_origin,
+                "POST",
+                "/auth/logout",
+                {"refreshToken": refresh},
+                timeout,
+                observations,
+            )
+            if logout.status != 204 or logout.body is not None:
+                raise ContractFailure("logout-contract-mismatch")
+            _expect_exact_auth_state(
+                _auth_state(consumer_adapter, "pending-email-auth-lifecycle"),
+                active_hashes=set(),
+            )
+        attach_checked = False
+        attach_user = fixture.get("attachUserId")
+        attach_email = fixture.get("attachEmail")
+        if isinstance(attach_user, str) and isinstance(attach_email, str):
+            attach_request = call(
+                request_origin,
+                "POST",
+                "/auth/email-verification/request",
+                {"email": attach_email},
+                timeout,
+                observations,
+            )
+            _expect_accepted(attach_request)
+            attach_issued = _require_object(
+                adapter.invoke("snapshot", "attach-email-verification-ledger"),
+                "attach-email-verification-ledger",
+            )
+            if attach_issued.get("unusedTokens") != 1:
+                raise ContractFailure("verification-attach-token-state-mismatch")
+            attach_capture = token_source.take(
+                user_id=attach_user, kind="email-verification"
+            )
+            _expect_captured_digest(
+                attach_capture, attach_issued, "verification-attach"
+            )
+            attach_token = getattr(attach_capture, "token", None)
+            if not isinstance(attach_token, str) or not attach_token:
+                raise ContractFailure("private-mail-token-contract-mismatch")
+            attached = call(
+                confirm_origin,
+                "POST",
+                "/auth/email-verification/confirm",
+                {"token": attach_token},
+                timeout,
+                observations,
+            )
+            if attached.status != 200 or attached.body != {"status": "verified"}:
+                raise ContractFailure("verification-attach-contract-mismatch")
+            attach_state = _require_object(
+                adapter.invoke("snapshot", "pending-password-attach-result"),
+                "pending-password-attach-result",
+            )
+            attach_expected = {
+                "userId": attach_user,
+                "email": attach_email,
+                "status": "ACTIVE",
+                "passwordCredentials": 1,
+                "pendingPasswordCredentials": 0,
+                "duplicateUsers": 1,
+            }
+            if any(
+                attach_state.get(key) != value for key, value in attach_expected.items()
+            ):
+                raise ContractFailure("verification-attach-state-mismatch")
+            attach_checked = True
+        if not attach_checked:
+            raise ContractFailure("verification-attach-fixture-mismatch")
+        audits = _require_object(
+            adapter.invoke("snapshot", "email-verification-audits"),
+            "email-verification-audits",
+        )
+        expected_audits = {
+            "requests": 3 if attach_checked else 2,
+            "confirmationSuccesses": 2 if attach_checked else 1,
+            "confirmationFailures": 2,
+        }
+        if any(audits.get(key) != value for key, value in expected_audits.items()):
+            raise ContractFailure("verification-audit-state-mismatch")
+        return {
+            "http": {"attempted": len(observations), "passed": len(observations)},
+            "mail": {
+                "privateCaptureConsumed": True,
+                "mailDigestObserved": isinstance(
+                    getattr(captured, "token_sha256", None), str
+                ),
+            },
+            "state": {
+                "userActivated": True,
+                "credentialAttached": True,
+                "tokenConsumed": True,
+                "handoffExchanged": handoff,
+                "pendingPasswordAttached": attach_checked,
+            },
+            "negative": {
+                "expiredTokenRejected": True,
+                "tokenReplayRejected": True,
+                "handoffReplayRejected": handoff,
+            },
+            "qualifyingEvidence": False,
+        }
+    finally:
+        adapter.invoke("teardown", "pending-email-user")
+
+
+def run_password_reset_flow(
+    *,
+    url: str,
+    adapter: Adapter,
+    token_source: PrivateMailTokenSource,
+    timeout: float = 5.0,
+    new_password: str = "ContractOnly!2026-reset",
+    expected_issuer: str = "https://auth.financenow.kr",
+    consumer_url: str | None = None,
+    consumer_adapter: Adapter | None = None,
+) -> dict[str, Any]:
+    """Exercise request -> private SMTP capture -> reset -> replay over HTTP."""
+
+    observations: list[HttpResult] = []
+    fixture = _require_object(
+        adapter.invoke("setup", "active-password-user"), "fixture"
+    )
+    try:
+        if {
+            "userId",
+            "email",
+            "password",
+            "name",
+            "roles",
+            "audience",
+        } - fixture.keys():
+            raise ContractFailure("malformed-fixture")
+        request_origin = _origin(url, "password reset request runtime")
+        confirm_origin = _origin(
+            consumer_url if consumer_url is not None else url,
+            "password reset confirm runtime",
+        )
+        _validate_mail_topology(
+            request_origin, confirm_origin, adapter, consumer_adapter
+        )
+    except (ContractFailure, KeyError):
+        adapter.invoke("teardown", "active-password-user")
+        raise
+    try:
+        original_login = _login(
+            request_origin,
+            fixture,
+            fixture["password"],
+            timeout,
+            False,
+            observations,
+        )
+        _original_access, original_refresh = _verify_token_pair(
+            original_login,
+            request_origin,
+            fixture,
+            timeout,
+            expected_issuer,
+            adapter.refresh_secret,
+            observations,
+        )
+        second_session_origin = confirm_origin
+        second_login = _login(
+            second_session_origin,
+            fixture,
+            fixture["password"],
+            timeout,
+            False,
+            observations,
+        )
+        _second_access, second_refresh = _verify_token_pair(
+            second_login,
+            second_session_origin,
+            fixture,
+            timeout,
+            expected_issuer,
+            (consumer_adapter or adapter).refresh_secret,
+            observations,
+        )
+        before_reset = _auth_state(adapter)
+        if before_reset["activeRefreshTokens"] != 2:
+            raise ContractFailure("reset-prerequisite-session-state-mismatch")
+        _token_is_active(before_reset, original_refresh)
+        _token_is_active(before_reset, second_refresh)
+        original_refresh_hashes = {
+            hashlib.sha256(original_refresh.encode()).hexdigest(),
+            hashlib.sha256(second_refresh.encode()).hexdigest(),
+        }
+        before_ledger = _require_object(
+            adapter.invoke("snapshot", "refresh-ledger"), "refresh-ledger"
+        )
+        if (
+            before_ledger.get("activeRefreshTokens") != 2
+            or _digest_set(
+                before_ledger.get("activeTokenHashes"),
+                "reset-prerequisite-session-state-mismatch",
+            )
+            != original_refresh_hashes
+            or before_ledger.get("revokedRefreshTokens") != 0
+            or _digest_set(
+                before_ledger.get("revokedTokenHashes"),
+                "reset-prerequisite-session-state-mismatch",
+            )
+            != set()
+        ):
+            raise ContractFailure("reset-prerequisite-session-state-mismatch")
+        requested = call(
+            request_origin,
+            "POST",
+            "/auth/password-reset/request",
+            {"email": fixture["email"]},
+            timeout,
+            observations,
+        )
+        _expect_accepted(requested)
+        issued = _require_object(
+            adapter.invoke("snapshot", "password-reset-ledger"),
+            "password-reset-ledger",
+        )
+        if issued.get("unusedTokens") != 1:
+            raise ContractFailure("reset-token-state-mismatch")
+        expired_capture = token_source.take(
+            user_id=fixture["userId"], kind="password-reset"
+        )
+        _expect_captured_digest(expired_capture, issued, "reset")
+        expired_token = getattr(expired_capture, "token", None)
+        if not isinstance(expired_token, str) or not expired_token:
+            raise ContractFailure("private-mail-token-contract-mismatch")
+        adapter.invoke("expire", "latest-password-reset")
+        expired = call(
+            confirm_origin,
+            "POST",
+            "/auth/password-reset/confirm",
+            {"token": expired_token, "password": new_password},
+            timeout,
+            observations,
+        )
+        _expect_error(
+            expired,
+            400,
+            "INVALID_RESET_TOKEN",
+            "Invalid or expired reset token",
+        )
+        requested_again = call(
+            request_origin,
+            "POST",
+            "/auth/password-reset/request",
+            {"email": fixture["email"]},
+            timeout,
+            observations,
+        )
+        _expect_accepted(requested_again)
+        reissued = _require_object(
+            adapter.invoke("snapshot", "password-reset-ledger"),
+            "password-reset-ledger",
+        )
+        captured = token_source.take(user_id=fixture["userId"], kind="password-reset")
+        _expect_captured_digest(captured, reissued, "reset")
+        token = getattr(captured, "token", None)
+        if not isinstance(token, str) or not token:
+            raise ContractFailure("private-mail-token-contract-mismatch")
+        confirmed = call(
+            confirm_origin,
+            "POST",
+            "/auth/password-reset/confirm",
+            {"token": token, "password": new_password},
+            timeout,
+            observations,
+        )
+        if confirmed.status != 204 or confirmed.body is not None:
+            raise ContractFailure("password-reset-confirm-contract-mismatch")
+        state = _require_object(
+            adapter.invoke("snapshot", "password-reset-result"),
+            "password-reset-result",
+        )
+        expected = {
+            "userId": fixture["userId"],
+            "unusedTokens": 0,
+            "usedTokens": 1,
+            "activeRefreshTokens": 0,
+        }
+        if any(state.get(key) != value for key, value in expected.items()):
+            raise ContractFailure("password-reset-result-state-mismatch")
+        refresh_ledger = _require_object(
+            adapter.invoke("snapshot", "refresh-ledger"), "refresh-ledger"
+        )
+        revoked_hashes = _digest_set(
+            refresh_ledger.get("revokedTokenHashes"),
+            "password-reset-refresh-revocation-state-mismatch",
+        )
+        if (
+            refresh_ledger.get("activeRefreshTokens") != 0
+            or _digest_set(
+                refresh_ledger.get("activeTokenHashes"),
+                "password-reset-refresh-revocation-state-mismatch",
+            )
+            != set()
+            or refresh_ledger.get("revokedRefreshTokens") != 2
+            or revoked_hashes != original_refresh_hashes
+        ):
+            raise ContractFailure("password-reset-refresh-revocation-state-mismatch")
+        old_password_login = _login(
+            confirm_origin,
+            fixture,
+            fixture["password"],
+            timeout,
+            False,
+            observations,
+        )
+        _expect_error(
+            old_password_login,
+            401,
+            "INVALID_CREDENTIALS",
+            "Invalid email or password",
+        )
+        revoked_refresh = call(
+            confirm_origin,
+            "POST",
+            "/auth/refresh",
+            {"refreshToken": original_refresh},
+            timeout,
+            observations,
+        )
+        _expect_error(
+            revoked_refresh, 401, "INVALID_REFRESH_TOKEN", "Invalid refresh token"
+        )
+        second_revoked_refresh = call(
+            request_origin,
+            "POST",
+            "/auth/refresh",
+            {"refreshToken": second_refresh},
+            timeout,
+            observations,
+        )
+        _expect_error(
+            second_revoked_refresh,
+            401,
+            "INVALID_REFRESH_TOKEN",
+            "Invalid refresh token",
+        )
+        new_login = _login(
+            confirm_origin,
+            fixture,
+            new_password,
+            timeout,
+            False,
+            observations,
+        )
+        _new_access, new_refresh = _verify_token_pair(
+            new_login,
+            confirm_origin,
+            fixture,
+            timeout,
+            expected_issuer,
+            (consumer_adapter or adapter).refresh_secret,
+            observations,
+        )
+        _token_is_active(_auth_state(consumer_adapter or adapter), new_refresh)
+        logout = call(
+            confirm_origin,
+            "POST",
+            "/auth/logout",
+            {"refreshToken": new_refresh},
+            timeout,
+            observations,
+        )
+        if logout.status != 204 or logout.body is not None:
+            raise ContractFailure("logout-contract-mismatch")
+        _state_empty(_auth_state(consumer_adapter or adapter))
+        replay = call(
+            _origin(url, "password reset runtime"),
+            "POST",
+            "/auth/password-reset/confirm",
+            {"token": token, "password": new_password},
+            timeout,
+            observations,
+        )
+        _expect_error(
+            replay,
+            400,
+            "INVALID_RESET_TOKEN",
+            "Invalid or expired reset token",
+        )
+        audits = _require_object(
+            adapter.invoke("snapshot", "password-reset-audits"),
+            "password-reset-audits",
+        )
+        expected_audits = {
+            "requests": 2,
+            "confirmationSuccesses": 1,
+            "confirmationFailures": 2,
+        }
+        if any(audits.get(key) != value for key, value in expected_audits.items()):
+            raise ContractFailure("password-reset-audit-state-mismatch")
+        return {
+            "http": {"attempted": len(observations), "passed": len(observations)},
+            "mail": {"privateCaptureConsumed": True},
+            "state": {"tokenConsumed": True, "refreshTokensRevoked": True},
+            "negative": {
+                "oldPasswordRejected": True,
+                "oldRefreshRejected": True,
+                "expiredTokenRejected": True,
+                "tokenReplayRejected": True,
+            },
+            "qualifyingEvidence": False,
+        }
+    finally:
+        adapter.invoke("teardown", "active-password-user")
 
 
 def _direct(
@@ -905,7 +1689,8 @@ def parse_provenance(items: list[str] | None) -> dict[str, str]:
 
 def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             for record in records:
@@ -913,10 +1698,12 @@ def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
                 stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        path.chmod(0o444)
+        temporary.chmod(0o444)
+        os.link(temporary, path)
+        temporary.unlink()
     except Exception:
         try:
-            path.unlink()
+            temporary.unlink()
         except FileNotFoundError:
             pass
         raise
@@ -934,24 +1721,184 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--issuer", required=True)
     result.add_argument("--jsonl", type=Path, required=True)
     result.add_argument("--provenance", action="append")
+    result.add_argument(
+        "--private-mail-launch-config",
+        type=Path,
+        help="mode-0600 owned-runtime JSON used only for verification/reset flows",
+    )
     return result
+
+
+def _load_private_launch_config(path: Path) -> dict[str, Any]:
+    document = _read_secure_json(path, "private mail launch config")
+    if not isinstance(document, dict) or document.get("version") != 1:
+        raise ContractFailure("private mail launch config is malformed")
+    if (
+        not isinstance(document.get("runId"), str)
+        or not isinstance(document.get("recipients"), dict)
+        or not isinstance(document.get("runtimes"), dict)
+    ):
+        raise ContractFailure("private mail launch config is malformed")
+    return document
+
+
+class _RuntimeDirectory:
+    """Delete artifacts only after the inner owned launcher exits cleanly."""
+
+    def __init__(self, prefix: str) -> None:
+        self.path = Path(tempfile.mkdtemp(prefix=prefix))
+
+    def __enter__(self) -> Path:
+        return self.path
+
+    def __exit__(self, exc_type: object, _value: object, _traceback: object) -> None:
+        if exc_type is None or not any(self.path.iterdir()):
+            shutil.rmtree(self.path)
+
+
+def run_mail_trial(
+    flow_id: str,
+    topology: str,
+    urls: Mapping[str, str],
+    adapters: Mapping[str, Adapter],
+    token_source: PrivateMailTokenSource,
+    timeout: float,
+    provenance: dict[str, str] | None = None,
+    expected_issuer: str = "https://auth.financenow.kr",
+) -> dict[str, Any]:
+    if flow_id not in {
+        "email-verification-attach-handoff-exchange",
+        "password-reset-session-revoke",
+    }:
+        raise ContractFailure("unknown-flow")
+    parts = topology.split("-")
+    if len(parts) not in {1, 2} or any(part not in RUNTIMES for part in parts):
+        raise ContractFailure("unknown-topology")
+    if len(parts) == 2 and parts[0] == parts[1]:
+        raise ContractFailure("mixed-topology-requires-cross-runtime-topology")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ContractFailure("timeout-must-be-positive-and-finite")
+    if (
+        not isinstance(expected_issuer, str)
+        or parse.urlparse(expected_issuer).scheme != "https"
+    ):
+        raise ContractFailure("expected-issuer-must-be-an-HTTPS-URL")
+    validated_provenance = validate_provenance(provenance or {})
+    normalized_urls = {
+        runtime: _origin(urls[runtime], runtime) for runtime in set(parts)
+    }
+    if len(parts) == 2 and normalized_urls[parts[0]] == normalized_urls[parts[1]]:
+        raise ContractFailure("mixed-topology-requires-distinct-runtime-origins")
+    producer = parts[0]
+    consumer = parts[1] if len(parts) == 2 else None
+    started_ns = time.monotonic_ns()
+    assertions: dict[str, Any] = {}
+    failure: str | None = None
+    cleanup: dict[str, str] = {"outcome": "not-proven"}
+    try:
+        for runtime in dict.fromkeys(parts):
+            adapters[runtime].invoke("preflight", "flow-driver-v1")
+        assertions = (
+            run_email_verification_flow(
+                url=normalized_urls[producer],
+                adapter=adapters[producer],
+                token_source=token_source,
+                timeout=timeout,
+                expected_issuer=expected_issuer,
+                consumer_url=normalized_urls[consumer] if consumer else None,
+                consumer_adapter=adapters[consumer] if consumer else None,
+            )
+            if flow_id == "email-verification-attach-handoff-exchange"
+            else run_password_reset_flow(
+                url=normalized_urls[producer],
+                adapter=adapters[producer],
+                token_source=token_source,
+                timeout=timeout,
+                expected_issuer=expected_issuer,
+                consumer_url=normalized_urls[consumer] if consumer else None,
+                consumer_adapter=adapters[consumer] if consumer else None,
+            )
+        )
+    except (ContractFailure, KeyError, subprocess.SubprocessError, OSError) as exc:
+        candidate = str(exc) if isinstance(exc, ContractFailure) else ""
+        failure = (
+            candidate
+            if candidate in PUBLIC_FAILURE_CATEGORIES
+            else "runtime-contract-failure"
+        )
+    try:
+        for runtime in dict.fromkeys(parts):
+            lifecycle_probe = (
+                "pending-email-auth-lifecycle"
+                if flow_id == "email-verification-attach-handoff-exchange"
+                else "auth-lifecycle"
+            )
+            _state_empty(_auth_state(adapters[runtime], lifecycle_probe))
+            residual = _require_object(
+                adapters[runtime].invoke("snapshot", "fixture-anonymous-audits"),
+                "residual-audit-state",
+            )
+            if residual.get("residualCount") != 0:
+                raise ContractFailure("fixture-residual-audit-mismatch")
+    except (ContractFailure, KeyError, subprocess.SubprocessError, OSError):
+        cleanup = {
+            "outcome": "fail",
+            "category": "fixture-residual-verification-failure",
+        }
+        failure = failure or "fixture-residual-verification-failure"
+    else:
+        cleanup = (
+            {"outcome": "not-proven", "category": "post-timeout-mutation-not-excluded"}
+            if failure in {"http-transport-failure", "http-response-read-failure"}
+            else {"outcome": "pass"}
+        )
+    ended_ns = time.monotonic_ns()
+    record: dict[str, Any] = {
+        "schemaVersion": 1,
+        "kind": "core-flow-trial",
+        "flowId": flow_id,
+        "fixtureId": (
+            "pending-email-user"
+            if flow_id == "email-verification-attach-handoff-exchange"
+            else "active-password-user"
+        ),
+        "trialId": str(uuid.uuid4()),
+        "topology": topology,
+        "outcome": "pass" if failure is None else "fail",
+        "timing": {
+            "clock": "monotonic",
+            "startedNs": started_ns,
+            "endedNs": ended_ns,
+            "durationNs": ended_ns - started_ns,
+        },
+        "attempt": 1,
+        "retryCount": 0,
+        "provenance": validated_provenance,
+        "assertions": assertions,
+        "cleanup": cleanup,
+        "qualifyingEvidence": False,
+    }
+    if failure is not None:
+        record["error"] = {"category": failure}
+    assert_sanitized(record)
+    return record
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    records: list[dict[str, Any]] = []
+    cleanup_error_type: type[BaseException] | None = None
     try:
         urls = {
             runtime: _origin(getattr(args, runtime), runtime) for runtime in RUNTIMES
         }
-        adapters = {
-            runtime: FixtureAdapter(
-                getattr(args, f"{runtime}_adapter"),
-                load_adapter_environment(getattr(args, f"{runtime}_adapter_config")),
-                urls[runtime],
+        adapter_environments = {
+            runtime: load_adapter_environment(
+                getattr(args, f"{runtime}_adapter_config")
             )
             for runtime in RUNTIMES
         }
-        selected_flows = args.flow or list(FLOWS)
+        selected_flows = args.flow or list(FLOWS[:2])
         selected_topologies = args.topology or [
             "express",
             "fastapi",
@@ -959,32 +1906,166 @@ def main(argv: list[str] | None = None) -> int:
             "fastapi-express",
         ]
         provenance = parse_provenance(args.provenance)
-        records: list[dict[str, Any]] = []
-        for flow in selected_flows:
-            for topology in selected_topologies:
-                applicable = (flow == FLOWS[0] and "-" not in topology) or (
-                    flow == FLOWS[1] and "-" in topology
+        private_flows = {
+            "email-verification-attach-handoff-exchange",
+            "password-reset-session-revoke",
+        }
+        if private_flows.intersection(selected_flows) and any(
+            flow not in private_flows for flow in selected_flows
+        ):
+            raise ContractFailure(
+                "private mail flows must run in a separate CLI invocation"
+            )
+        if private_flows.intersection(selected_flows):
+            if args.private_mail_launch_config is None:
+                raise ContractFailure("mail flows require --private-mail-launch-config")
+            launch_config = _load_private_launch_config(args.private_mail_launch_config)
+            launch_module = _load_mail_launcher()
+            cleanup_error_type = launch_module.LaunchCleanupError
+            runtime_configs = launch_config["runtimes"]
+            specs = []
+            protected = {
+                "CONTRACT_PRIVATE_MAIL_CAPTURE",
+                "CONTRACT_PRIVATE_MAIL_CA_SHA256",
+                "CONTRACT_PRIVATE_MAIL_SESSION_CAPABILITY",
+                "CONTRACT_PRIVATE_MAIL_SESSION_FILE",
+                "CONTRACT_SERVER_MAIL_MODE",
+                "MAIL_PROVIDER",
+                "NODE_EXTRA_CA_CERTS",
+                "SMTP_HOST",
+                "SMTP_PASSWORD",
+                "SMTP_PORT",
+                "SMTP_USERNAME",
+                "SSL_CERT_FILE",
+            }
+            for runtime in RUNTIMES:
+                raw = runtime_configs.get(runtime)
+                if not isinstance(raw, dict):
+                    raise ContractFailure(
+                        "private mail launch config omitted a runtime"
+                    )
+                command = raw.get("command")
+                if not isinstance(command, list) or any(
+                    not isinstance(value, str) for value in command
+                ):
+                    raise ContractFailure("private mail runtime command is malformed")
+                base_environment = adapter_environments[runtime]
+                if (
+                    base_environment.get("CONTRACT_SERVER_MAIL_MODE")
+                    != "private-loopback-smtp"
+                ):
+                    raise ContractFailure(
+                        "mail flow adapter must explicitly select private-loopback-smtp"
+                    )
+                specs.append(
+                    launch_module.RuntimeSpec.create(
+                        name=runtime,
+                        command=command,
+                        cwd=Path(raw.get("cwd", "")),
+                        health_url=raw.get("healthUrl", ""),
+                        environment={
+                            key: value
+                            for key, value in base_environment.items()
+                            if key not in protected
+                        },
+                    )
                 )
-                if not applicable:
-                    continue
-                record = run_trial(
-                    flow,
-                    topology,
-                    urls,
-                    adapters,
-                    args.timeout,
-                    provenance,
-                    args.issuer,
+            with (
+                _RuntimeDirectory(prefix="wiseacct-private-mail-") as directory,
+                launch_module.PrivateMailFlowLauncher(
+                    directory=directory,
+                    run_id=launch_config["runId"],
+                    recipients=launch_config["recipients"],
+                    runtimes=specs,
+                    readiness_timeout=args.timeout,
+                ) as mail,
+            ):
+                adapters = {
+                    runtime: FixtureAdapter(
+                        getattr(args, f"{runtime}_adapter"),
+                        adapter_environments[runtime],
+                        urls[runtime],
+                        mail.binding(runtime),
+                    )
+                    for runtime in RUNTIMES
+                }
+                for flow in selected_flows:
+                    if flow not in private_flows:
+                        continue
+                    for topology in selected_topologies:
+                        parts = topology.split("-")
+                        if any(part not in RUNTIMES for part in parts):
+                            continue
+                        if len(parts) not in {1, 2}:
+                            continue
+                        if len(parts) == 2 and parts[0] == parts[1]:
+                            continue
+                        records.append(
+                            run_mail_trial(
+                                flow,
+                                topology,
+                                urls,
+                                adapters,
+                                mail,
+                                args.timeout,
+                                provenance,
+                                args.issuer,
+                            )
+                        )
+        regular_flows = [flow for flow in selected_flows if flow not in private_flows]
+        if regular_flows:
+            adapters = {
+                runtime: FixtureAdapter(
+                    getattr(args, f"{runtime}_adapter"),
+                    adapter_environments[runtime],
+                    urls[runtime],
                 )
-                records.append(record)
-                if record["outcome"] == "fail":
+                for runtime in RUNTIMES
+            }
+            for flow in regular_flows:
+                for topology in selected_topologies:
+                    applicable = (flow == FLOWS[0] and "-" not in topology) or (
+                        flow == FLOWS[1] and "-" in topology
+                    )
+                    if not applicable:
+                        continue
+                    record = run_trial(
+                        flow,
+                        topology,
+                        urls,
+                        adapters,
+                        args.timeout,
+                        provenance,
+                        args.issuer,
+                    )
+                    records.append(record)
+                    if record["outcome"] == "fail":
+                        break
+                if records and records[-1]["outcome"] == "fail":
                     break
-            if records and records[-1]["outcome"] == "fail":
-                break
         if not records:
             raise ContractFailure("selection-produced-no-trials")
         write_jsonl(args.jsonl, records)
-    except (ContractFailure, OSError, json.JSONDecodeError) as exc:
+    except (ContractFailure, OSError, json.JSONDecodeError, RuntimeError) as exc:
+        is_cleanup_error = cleanup_error_type is not None and isinstance(
+            exc, cleanup_error_type
+        )
+        if records and is_cleanup_error and not args.jsonl.exists():
+            for record in records:
+                record["outcome"] = "fail"
+                record["cleanup"] = {
+                    "outcome": "fail",
+                    "category": "owned-runtime-cleanup-failure",
+                }
+                record["error"] = {"category": "runtime-contract-failure"}
+                assert_sanitized(record)
+            try:
+                write_jsonl(args.jsonl, records)
+            except OSError as write_error:
+                print(
+                    f"ERROR cleanup evidence persistence failed: {write_error}",
+                    file=sys.stderr,
+                )
         print(f"ERROR {exc}", file=sys.stderr)
         return 2
     failures = sum(record["outcome"] == "fail" for record in records)

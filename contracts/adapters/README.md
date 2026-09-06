@@ -10,6 +10,7 @@ The runner invokes:
 adapter setup <fixture-name>
 adapter snapshot <probe-name>
 adapter teardown <fixture-name>
+adapter expire <fixture-name>
 ```
 
 The concrete Express adapter is `express_fixture.py`. The FastAPI candidate uses
@@ -39,7 +40,9 @@ Required fixtures and fields:
   active ledger row. HS256 must rotate successfully; HS384/HS512 use the same
   isolated secret but must be rejected; `none` retains unsigned rejection.
 - `active-password-user`: `email`, `password`, `name`, `roles`, `audience`.
-- `pending-email-user`: `email`.
+- `pending-email-user`: pending-user identity, password, audience/roles,
+  client/redirect/state/PKCE fields, and mandatory `attachUserId`/`attachEmail`
+  for the separate pending-password attachment target.
 - `admin-and-active-target`: `authorization`, `targetStatusPath`.
 
 Required probes:
@@ -49,8 +52,17 @@ Required probes:
 - `auth-lifecycle`: active refresh count, sorted active token hashes for internal
   token-to-ledger linkage, and auth-handoff key count. The runner never publishes
   the hashes.
-- `password-reset-ledger`: `{ "unusedTokens": number }`
-- `email-verification-ledger`: `{ "unusedTokens": number }`
+- `pending-email-auth-lifecycle`: the same projection scoped to the pending
+  verification user, not the unrelated active-password fixture user.
+- `password-reset-ledger`, `email-verification-ledger`, and
+  `attach-email-verification-ledger`: `unusedTokens` and sorted `digests` for
+  unexpired unused tokens, scoped to the active, pending, and attachment users
+  respectively. Hashes are internal token-to-ledger assertions, not public output.
+- `email-verification-result`, `pending-password-attach-result`, and
+  `password-reset-result`: identity-specific persisted state after confirmation;
+  the driver also checks exact known-active refresh hashes become revoked.
+- `email-verification-audits` and `password-reset-audits`: counts scoped to the
+  fixture identities and expected failure reasons.
 - `target-user`: `{ "status": "ACTIVE" | "SUSPENDED" | ..., "auditEvents": number }`
 - `shared-rate-limit`: sanitized shared Redis counter counts and positive TTLs;
   raw keys and client addresses are never returned.
@@ -78,7 +90,9 @@ must contain a distinct `test`, `contract`, or `fixture` segment and cannot be
 - `CONTRACT_FASTAPI_RUNTIME=1` — additional acknowledgement required only by
   `fastapi_fixture.py`; prevents accidentally selecting it for another runtime.
 - `CONTRACT_SERVER_MAIL_MODE=dev` — asserts the isolated server is configured
-  with `MAIL_PROVIDER=dev`; the adapter refuses other values.
+  with `MAIL_PROVIDER=dev`. Connected mail trials instead explicitly select
+  `private-loopback-smtp` and require a binding issued by the owned private-mail
+  launcher. A caller-authored mode flag alone does not authorize SMTP fixtures.
 - `CONTRACT_REDIS_ISOLATED_DB=1` — explicit acknowledgement that the selected
   non-zero Redis logical database is reserved for this contract run.
 - `CONTRACT_REFRESH_SECRET` — required untracked value exactly matching the
@@ -108,6 +122,14 @@ are synthetic test constants. HMAC fixtures use only the required untracked
 isolated-server secret. The adapter deletes only
 those UUIDs/emails/audit reason and clears known WiseAcct prefixes only inside
 the preflight-approved isolated Redis database.
+
+`expire` is limited to the supported verification/reset fixture tokens; it
+changes their expiration in the same guarded disposable store for deterministic
+expired-token rejection. It is not a general SQL or production maintenance API.
+Private-mail launch bindings tie the session capability, runtime identity/PID,
+health origin and CA hash together. The launcher supplies the SMTP and CA settings;
+do not put forged session/capture values in adapter configuration. These local
+bindings are development ownership checks, not authenticated qualification evidence.
 
 For two isolated implementations, pass separate untracked JSON environment
 files with `--baseline-adapter-config` and `--candidate-adapter-config`. Each

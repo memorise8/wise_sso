@@ -737,6 +737,21 @@ class PrivateMailCaptureServer:
             "CONTRACT_PRIVATE_MAIL_CAPTURE": "1",
         }
 
+    def assert_active(self) -> None:
+        """Prove the owned thread still holds a responsive loopback SMTP socket."""
+
+        if self._closing or not self._thread.is_alive():
+            raise CaptureError("private capture server is not active")
+        try:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=1) as probe:
+                probe.settimeout(1)
+                if not probe.recv(128).startswith(b"220 private-mail-capture "):
+                    raise CaptureError("private capture server identity did not match")
+        except OSError as exc:
+            raise CaptureError(
+                "private capture server did not answer on its owned socket"
+            ) from exc
+
     def start(self) -> None:
         if self._closing:
             raise CaptureError("private capture server is closing")

@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 import unittest
@@ -20,7 +21,28 @@ class ContractAssetTests(unittest.TestCase):
         driver = manifest["phase7DevelopmentFlowDriver"]
         self.assertTrue((CONTRACTS / driver["runner"]).is_file())
         self.assertTrue((CONTRACTS / driver["tests"]).is_file())
-        for claim in ("qualifyingEvidence", "fullPhase7SampleSatisfied", "overallReplacementReady"):
+        for mail_test in driver["mailTests"]:
+            self.assertTrue((CONTRACTS / mail_test).is_file())
+        source = ast.parse((CONTRACTS / driver["runner"]).read_text(encoding="utf-8"))
+        flow_constants = [
+            ast.literal_eval(node.value)
+            for node in source.body
+            if isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "FLOWS"
+                for target in node.targets
+            )
+        ]
+        self.assertEqual(flow_constants, [tuple(driver["flows"])])
+        self.assertEqual(
+            driver["flows"],
+            [flow["id"] for flow in manifest["phase7ApprovedCoreFlows"][:4]],
+        )
+        for claim in (
+            "qualifyingEvidence",
+            "fullPhase7SampleSatisfied",
+            "overallReplacementReady",
+        ):
             self.assertIs(driver[claim], False)
         self.assertEqual(
             [flow["status"] for flow in manifest["phase7ApprovedCoreFlows"]],

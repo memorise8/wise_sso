@@ -159,7 +159,8 @@ metadata, not authenticated source attestation. Run only against the stated sour
 do not label dirty or differing runtime code as clean same-SHA qualification.
 
 The manifest binding in `performance/profile-v1.json` was refreshed when the driver
-was added. All numeric thresholds, flow order and load settings are unchanged.
+was added and when its four implemented password/mail flows were explicitly mapped.
+All numeric thresholds, flow order and load settings are unchanged.
 Old manifest/profile-bound measurement plans and evidence are invalid for the new
 corpus; generate a fresh plan, never rewrite historical evidence hashes. A future
 reviewed profile-v2/p50 policy is still required before final performance collection.
@@ -170,6 +171,32 @@ Local verification (uses the already locked development environment):
 uv run --locked --project fastapi-auth-server pytest -q contracts/tests/test_flow_driver.py
 uv run --locked --project fastapi-auth-server pytest -q contracts/tests
 ```
+
+### Connected private-mail development trials
+
+The same driver also accepts `email-verification-attach-handoff-exchange` and
+`password-reset-session-revoke`. Run mail flows in a separate invocation from
+password-only flows, with `--private-mail-launch-config /secure/untracked/mail.json`.
+This is a new owned-runtime launch, not permission to attach to an existing server.
+Both adapter configs must explicitly select
+`CONTRACT_SERVER_MAIL_MODE=private-loopback-smtp`; all disposable-store guards
+still apply. The launcher supplies private STARTTLS capture and CA/session settings.
+
+The launch file must be a same-owner regular mode-0600 JSON file with `version: 1`,
+an explicit `runId`, a `recipients` object mapping fixture user IDs to their synthetic
+mail addresses, and a `runtimes` object with `express` and `fastapi` entries. Each
+runtime entry supplies an argument-list `command`, an existing absolute `cwd`, and
+a loopback `healthUrl` matching that runtime's CLI origin. Commands and fixture
+configuration are operator-supplied for disposable runtimes; there are no production
+defaults. Both pending and attachment identities must be in the recipient map.
+
+The launcher verifies ownership of the actual health-request connection before
+sending the request, drains its owned process groups, and removes private material.
+This does not provide namespace containment or authenticated runtime code identity.
+Rows retain `qualifyingEvidence=false`; cleanup failure produces a failed row.
+The separate-process role regression uses hermetic HTTP/SQLite test implementations,
+not the real Express/FastAPI engines or a shared PostgreSQL/Redis qualification run.
+Do not count these tests as completing A02/A03 or any live gate.
 
 ## Evaluate Phase 7 performance evidence
 

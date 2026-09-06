@@ -9,7 +9,7 @@
     "express": "adapters/express_fixture.py",
     "protocol": "adapters/README.md",
     "dependencies": ["psql", "Python standard-library TCP/RESP"],
-    "safety": "loopback-only, test-named PostgreSQL database, acknowledged isolated Redis DB >= 1, dev mail acknowledgement"
+    "safety": "loopback-only, test-named PostgreSQL database, acknowledged isolated Redis DB >= 1, explicit dev mail or owned-launcher private STARTTLS binding"
   },
   "phase7FlowStatusSemantics": {
     "scope": "executable-contract-corpus-only",
@@ -34,11 +34,18 @@
   "phase7DevelopmentFlowDriver": {
     "runner": "bin/flow_driver.py",
     "tests": "tests/test_flow_driver.py",
-    "scope": "password-direct-login-token and password-handoff-exchange development trials",
+    "scope": "password login/handoff and private-mail verification/attach/reset development trials",
+    "flows": [
+      "password-direct-login-token",
+      "password-handoff-exchange",
+      "email-verification-attach-handoff-exchange",
+      "password-reset-session-revoke"
+    ],
+    "mailTests": ["tests/test_private_mail_flow_launcher.py", "tests/test_mail_independent_roles.py"],
     "qualifyingEvidence": false,
     "fullPhase7SampleSatisfied": false,
     "overallReplacementReady": false,
-    "note": "Local HTTP harness tests are not live DB/Redis qualification, full sample coverage, or authenticated collector evidence."
+    "note": "Local HTTP and hermetic independent-role mail tests are not real-engine/live DB/Redis qualification, full sample coverage, or authenticated collector evidence. Mail source review and integrated validation remain separate requirements."
   },
   "phase7ApprovedCoreFlows": [
     {
@@ -71,7 +78,7 @@
         "email-verification.confirm-rejects-invalid-request"
       ],
       "gaps": [
-        "Unsupported: dev-mail token capture, successful verification, account attachment, handoff/exchange, mixed-runtime ordering, and repeated samples remain outstanding."
+        "Unsupported: real Express/FastAPI execution of private-mail verification/attach/handoff assertions, live shared DB/Redis ordering, and approved repeated samples remain outstanding; hermetic driver tests are nonqualifying."
       ]
     },
     {
@@ -85,7 +92,7 @@
         "session.login-logout-replay"
       ],
       "gaps": [
-        "Unsupported: successful reset confirmation, reset-triggered session revocation, mixed-runtime ordering, and repeated samples remain outstanding."
+        "Unsupported: real Express/FastAPI execution of private-mail reset and exact session-revocation assertions, live shared DB/Redis ordering, and approved repeated samples remain outstanding; hermetic driver tests are nonqualifying."
       ]
     },
     {
@@ -191,7 +198,7 @@
         "email-verification.confirm-rejects-invalid-request"
       ],
       "gaps": [
-        "Unsupported: successful confirmation needs a deterministic dev-mail token capture and verified-user state probe."
+        "Unsupported: the connected private-mail confirmation/state driver still needs real-engine/live-store execution and qualification samples."
       ]
     },
     {
@@ -239,7 +246,7 @@
         "recovery.password-reset-confirm-rejects-invalid-request"
       ],
       "gaps": [
-        "Unsupported: successful reset confirmation needs deterministic dev-mail token capture and credential/revocation state probes."
+        "Unsupported: the connected private-mail reset/credential/revocation driver still needs real-engine/live-store execution and qualification samples."
       ]
     },
     {
