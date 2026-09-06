@@ -4,7 +4,25 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
-Latest implementation checkpoint (2026-09-06): the approved READY plan's first M1
+Native-subagent continuation (2026-09-06): execution now follows the approved
+six-group/25-task decomposition in `.omx/plans/ready-packages/README.md`, with
+current progress in `.omx/plans/ready-packages/execution.md`. New development
+checkpoints cover private loopback SMTP capture (A01a), same-process-group owned
+runtime lifecycle (B01a), synthetic backup/restore invocation (R01a), and the
+unauthenticated v2 statement interface (G01a). Parent A01/B01/R01/G01 tasks are
+still incomplete; R04 has an inventory, not ownership-transfer evidence.
+Do not repeat these checkpoints instead of completing their consumers.
+The next functional work is A01b controlled private-mail fixture/launcher integration,
+then A02 verification/attach and A03 reset/revoke. Existing `dev` guards are unchanged:
+the SMTP transport must not be falsely labeled `CONTRACT_SERVER_MAIL_MODE=dev`.
+Actual isolation, authenticated signing and all seven live gates remain unverified.
+Final checkpoint commands/reviews are in
+[`ready-package-foundations-development.md`](contracts/evidence/ready-package-foundations-development.md):
+FastAPI `1317 passed, 79 skipped`; contracts `126 passed, 149 subtests passed`;
+Ruff/format/strict mypy passed. Independent code and architecture reviews approve
+only these four development checkpoints. Express/source guards/active lock unchanged.
+
+Prior implementation checkpoint (2026-09-06): the approved READY plan's first M1
 password direct-login/handoff HTTP driver is implemented under `contracts/bin/flow_driver.py`.
 See [`password-flow-driver-development.md`](contracts/evidence/password-flow-driver-development.md)
 for its exact tests, review and limitations, and `contracts/README.md` for CLI inputs.
