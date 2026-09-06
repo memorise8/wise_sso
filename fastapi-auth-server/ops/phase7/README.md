@@ -349,6 +349,10 @@ therefore cannot form a group or be promoted by rewriting their old claims.
 
 ## Security evidence gate
 
+The [toolchain freeze decision](security/TOOLCHAIN_FREEZE_DECISION.md) records
+candidate routes, missing digest/signature evidence and activation prerequisites
+for all 11 subjects. It does not freeze the active lock or authorize collection.
+
 ### Online stager / offline intake contract
 
 `ops/phase7/run-security-online-stager.sh check RUN_ID linux/amd64

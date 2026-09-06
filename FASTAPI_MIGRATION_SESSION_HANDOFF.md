@@ -4,6 +4,18 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+Continuation update (2026-09-06): the next decision record is now
+[`TOOLCHAIN_FREEZE_DECISION.md`](fastapi-auth-server/ops/phase7/security/TOOLCHAIN_FREEZE_DECISION.md).
+It records all 11 candidate routes and unknown pins, with activation still blocked.
+Follow its review status and prerequisites before the historical sequence below.
+No active lock or runtime behavior changed. The next safe implementation slice is
+the private-daemon/verifier contract with check-only execution retained; real
+collection still depends on independently verified artifacts and signing identity.
+Local validation for this documentation slice: `950 passed, 79 skipped`, Ruff
+lint/format checks passed, and strict mypy passed for the three security
+controllers. The existing Starlette deprecation warning remains. These checks
+are regression evidence, not new live Phase 7 qualification evidence.
+
 The Express server remains the production implementation. The FastAPI migration is
 being developed and qualified in a separate provisional Git worktree. Do not route
 production traffic to FastAPI and do not modify production database, Redis, secrets,
