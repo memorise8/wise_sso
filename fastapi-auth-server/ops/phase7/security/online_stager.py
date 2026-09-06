@@ -77,6 +77,21 @@ def load_security_gate() -> ModuleType:
     return module
 
 
+def load_controlled_executor() -> ModuleType:
+    path = Path(__file__).with_name("controlled_executor.py")
+    spec = importlib.util.spec_from_file_location("phase7_controlled_executor_for_stager", path)
+    if spec is None or spec.loader is None:
+        raise Refused("controlled-executor:unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        sys.modules.pop(spec.name, None)
+        raise Refused("controlled-executor:unavailable") from exc
+    return module
+
+
 def validate_image(value: object, label: str, status: str) -> dict[str, Any]:
     image = exact(value, IMAGE_FIELDS, label)
     platform_digests = exact(image["platformDigests"], set(PLATFORMS), f"{label}:platform")
@@ -403,7 +418,16 @@ def run(
         snapshot = gate.repository_snapshot(repo)
         lock_bytes = snapshot.pinned_blobs[LOCK_RELATIVE]
         lock = validate_lock(json.loads(lock_bytes))
-        if lock["status"] != "UNFROZEN" or not gate.type_exact_equal(lock, gate.TOOLCHAIN_LOCK):
+        if not gate.type_exact_equal(lock, gate.TOOLCHAIN_LOCK):
+            raise Refused("check-only-controller:lock-projection")
+        if lock["status"] == "FROZEN":
+            controlled_executor = load_controlled_executor()
+            controlled_executor.verify_for_qualification(
+                lock_bytes=lock_bytes,
+                platform=platform,
+            )
+            raise Refused("controlled-executor:unexpected-return")
+        if lock["status"] != "UNFROZEN":
             raise Refused("check-only-controller:frozen-collection-not-implemented")
         output = publish(
             output_parent,
