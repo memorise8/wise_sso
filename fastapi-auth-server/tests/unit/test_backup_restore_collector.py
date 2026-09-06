@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -429,11 +430,18 @@ def test_subprocess_timeout_kills_the_descendant_process_group(tmp_path: Path) -
             timeout=1,
         )
     child_pid = int(pid_file.read_text(encoding="utf-8"))
-    try:
-        state = Path(f"/proc/{child_pid}/stat").read_text(encoding="utf-8").split()[2]
-    except OSError:
-        return
-    assert state == "Z"
+    stat_path = Path(f"/proc/{child_pid}/stat")
+    deadline = time.monotonic() + 0.5
+    while True:
+        try:
+            state = stat_path.read_text(encoding="utf-8").split()[2]
+        except OSError:
+            return
+        if state in {"X", "Z"}:
+            return
+        if time.monotonic() >= deadline:
+            pytest.fail(f"descendant remained in non-terminal process state {state!r}")
+        time.sleep(0.01)
 
 
 def test_process_group_cleanup_never_signals_after_the_leader_was_reaped(
