@@ -10,8 +10,8 @@ Paths to Python modules below are relative to `fastapi-auth-server/src/`.
 | job.tokens-cleanup | `wiseacct_sso/ops/refresh_cleanup.py` | Existing `python -m` entrypoint/unit tests; disposable integration, schedule and single owner unverified |
 | job.audit-cleanup | `wiseacct_sso/ops/audit_cleanup.py` | Existing `python -m` entrypoint/unit tests; retention approval, integration and single owner unverified |
 | job.grant-admin | `wiseacct_sso/ops/first_admin.py` | Existing `python -m` entrypoint/unit tests; controlled operator invocation and integration unverified |
-| job.backfill-default-roles | Express script retained | Explicitly unported; reviewed retain/package/replace decision needed before source retirement |
-| job.merge-split-identities | Express script retained | Explicitly unported; reviewed retain/package/replace decision needed before source retirement |
+| job.backfill-default-roles | Dormant `wiseacct_sso/ops/default_role_backfill.py`; Express script remains active owner | Atomic serializable candidate preserves existing roles and configured TEMIS default; unit/SQL tests only, disposable integration and owner transfer unverified |
+| job.merge-split-identities | Dormant `wiseacct_sso/ops/merge_split_identities.py`; Express script remains active owner | Default dry-run, explicit apply, per-candidate atomic revalidation and Prisma timestamp/cascade parity covered by unit/SQL tests; disposable integration and owner transfer unverified |
 | job.qa-seed-admin-flow | Express test-only fixture | Not a production successor; keep disposable-only boundary |
 | job.prisma-migrate-dev | Prisma | Sole schema source remains Prisma; migration owner packaging required before Express toolchain removal |
 | job.prisma-migrate-deploy | Prisma | Same sole schema owner; no Python runtime DDL |
@@ -27,7 +27,7 @@ the new R01 development collector is not yet their production replacement. Backu
 retention, encrypted artifact recovery, policy and actual restore evidence are open.
 
 The dormant module boundary is explicit in `wiseacct_sso/ops/__init__.py`. Existing
-unit coverage is in `tests/unit/test_{refresh_cleanup,audit_cleanup,first_admin}_ops.py`;
+unit coverage is in `tests/unit/test_{refresh_cleanup,audit_cleanup,first_admin,default_role_backfill,merge_split_identities}_ops.py`;
 `tests/static/test_no_database_ddl.py` preserves the runtime/schema boundary.
 
 Before cutover, discover external cron/systemd/CI/operator writers in addition to
