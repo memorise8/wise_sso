@@ -390,12 +390,15 @@ def verify_rs256(token: str, jwks: dict[str, Any], expected_claims: dict[str, An
         raise ContractFailure("JWT verification expected a compact token")
     header = _base64url_json(parts[0], "$.jwt.header")
     claims = _base64url_json(parts[1], "$.jwt.claims")
-    if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
+    if not isinstance(header, dict) or header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
         raise ContractFailure("JWT header must use RS256 and a string kid")
     keys = jwks.get("keys") if isinstance(jwks, dict) else None
-    key = next((item for item in keys or [] if item.get("kid") == header["kid"]), None)
-    if not key:
-        raise ContractFailure("JWT kid was not present in JWKS")
+    if not isinstance(keys, list) or any(not isinstance(item, dict) for item in keys):
+        raise ContractFailure("JWKS must contain an array of key objects")
+    matching = [item for item in keys if item.get("kid") == header["kid"]]
+    if len(matching) != 1:
+        raise ContractFailure("JWT kid must identify exactly one JWKS key")
+    key = matching[0]
     if key.get("kty") != "RSA" or key.get("use") != "sig" or key.get("alg") != "RS256":
         raise ContractFailure("JWT JWK must be an RSA RS256 signing key")
     try:
@@ -404,8 +407,13 @@ def verify_rs256(token: str, jwks: dict[str, Any], expected_claims: dict[str, An
         signature = base64.urlsafe_b64decode(parts[2] + "=" * (-len(parts[2]) % 4))
     except (KeyError, TypeError, ValueError) as exc:
         raise ContractFailure("JWKS RSA values or JWT signature were invalid") from exc
+    if not 2048 <= n.bit_length() <= 8192 or n % 2 != 1 or not 3 <= e < n or e % 2 != 1:
+        raise ContractFailure("JWKS RSA parameters are invalid")
     size = (n.bit_length() + 7) // 8
-    encoded = pow(int.from_bytes(signature, "big"), e, n).to_bytes(size, "big")
+    signature_number = int.from_bytes(signature, "big")
+    if len(signature) != size or signature_number >= n:
+        raise ContractFailure("JWT RSA signature has invalid length or range")
+    encoded = pow(signature_number, e, n).to_bytes(size, "big")
     digest_info = bytes.fromhex("3031300d060960864801650304020105000420") + hashlib.sha256(
         f"{parts[0]}.{parts[1]}".encode("ascii")
     ).digest()

@@ -112,6 +112,65 @@ The mixed failed-login schedule accepts a final failure count from 5 through
 request observes the lock, and an ingress-lifetime overlap cannot prove that all
 20 requests read the credential before the lock was written.
 
+## Password-flow development driver
+
+`bin/flow_driver.py` executes the first two approved core flows over loopback HTTP:
+direct password login/token and password handoff/exchange. It uses the existing
+fixture adapter setup/snapshot/teardown protocol, so state assertions can be run
+against disposable PostgreSQL/Redis without importing either application's code.
+The local regression suite uses synthetic HTTP servers and fixture state, not live
+production services. Run `--help` for the explicit runtime/config inputs.
+
+These are development trials, not a controlled qualification collector or a load
+generator. Its monotonic trial duration includes fixture lifecycle work and must not
+be used as the performance profile's scheduled-to-completed sample latency.
+Reports retain `qualifyingEvidence=false`; the manifest still marks nine
+flows partial and the global limiter unsupported. Never import development results
+as seven-gate PASS evidence.
+Use only explicitly configured disposable runtimes, dev mail, test-named databases
+and isolated nonzero Redis databases. Cross-runtime handoff needs shared fixture
+stores; two independent databases cannot prove shared-state consumption.
+
+Example for already prepared **disposable** runtimes (this command mutates fixture
+state, so do not substitute production targets):
+
+```sh
+python3 contracts/bin/flow_driver.py \
+  --express http://127.0.0.1:4400 \
+  --express-adapter contracts/adapters/express_fixture.py \
+  --express-adapter-config /secure/untracked/express-shared-fixture.json \
+  --fastapi http://127.0.0.1:4500 \
+  --fastapi-adapter contracts/adapters/fastapi_fixture.py \
+  --fastapi-adapter-config /secure/untracked/fastapi-shared-fixture.json \
+  --issuer https://auth.financenow.kr \
+  --flow password-handoff-exchange --topology express-fastapi \
+  --jsonl /secure/untracked/password-handoff-development.jsonl \
+  --provenance runId=password-driver-development \
+  --provenance sourceRevision="$(git rev-parse HEAD)"
+```
+
+Both config files must be regular0600 files with explicit adapter guard variables,
+store URLs and synthetic runtime refresh secrets from `adapters/README.md` (including
+the FastAPI acknowledgement in its config). Shell credentials/guard flags do not fill
+missing config. Mixed topologies require matching isolated store URLs and distinct
+runtime origins. Use `fastapi-express` for reverse handoff or a single runtime topology
+with `password-direct-login-token`. Source provenance is caller-declared development
+metadata, not authenticated source attestation. Run only against the stated source;
+do not label dirty or differing runtime code as clean same-SHA qualification.
+
+The manifest binding in `performance/profile-v1.json` was refreshed when the driver
+was added. All numeric thresholds, flow order and load settings are unchanged.
+Old manifest/profile-bound measurement plans and evidence are invalid for the new
+corpus; generate a fresh plan, never rewrite historical evidence hashes. A future
+reviewed profile-v2/p50 policy is still required before final performance collection.
+
+Local verification (uses the already locked development environment):
+
+```sh
+uv run --locked --project fastapi-auth-server pytest -q contracts/tests/test_flow_driver.py
+uv run --locked --project fastapi-auth-server pytest -q contracts/tests
+```
+
 ## Evaluate Phase 7 performance evidence
 
 `performance/profile-v1.json` is the frozen, SHA-256-bound offline performance

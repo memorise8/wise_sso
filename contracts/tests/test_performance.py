@@ -307,6 +307,19 @@ class PerformanceContractTests(unittest.TestCase):
         hash_binding["profileSha256"] = "0" * 64
         self.assertEqual(performance.evaluate(hash_binding)["status"], "INCOMPLETE")
 
+    def test_pre_driver_corpus_evidence_cannot_be_relabelled(self) -> None:
+        old_bindings = {
+            "manifestSha256": "7b814d65be9a0feed96a5727e4341f8d26b39a709b4a4c764eec6b896f362276",
+            "profileSha256": "96b39cd0bbe953a400fbabbe51c57c861805696b03293279e71466a24c9a244d",
+        }
+        for field, old_hash in old_bindings.items():
+            with self.subTest(field=field):
+                evidence = copy.deepcopy(self.base)
+                evidence[field] = old_hash
+                result = performance.evaluate(evidence)
+                self.assertEqual(result["status"], "INCOMPLETE")
+                self.assertFalse(result["qualifyingEvidence"])
+
     def test_boolean_time_and_contract_drift_are_incomplete(self) -> None:
         boolean_index = copy.deepcopy(self.base)
         boolean_index["samples"][0]["epoch"] = True

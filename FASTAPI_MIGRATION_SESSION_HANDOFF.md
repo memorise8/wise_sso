@@ -4,11 +4,20 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+Latest implementation checkpoint (2026-09-06): the approved READY plan's first M1
+password direct-login/handoff HTTP driver is implemented under `contracts/bin/flow_driver.py`.
+See [`password-flow-driver-development.md`](contracts/evidence/password-flow-driver-development.md)
+for its exact tests, review and limitations, and `contracts/README.md` for CLI inputs.
+It does not complete the remaining eight flows, live DB/Redis runs, full samples or
+authenticated qualification. Replacement remains **NOT_READY**; Express is unchanged.
+Continue from the local approved `.omx/plans/fastapi-replacement-ready.md` and execution
+checkpoint rather than repeating the already completed admission/sealed-material work.
+
 READY-path continuation (2026-09-06): see
 [`READINESS_BLOCKERS.md`](fastapi-auth-server/ops/phase7/READINESS_BLOCKERS.md)
 for the full seven-gate inventory and execution-environment observations.
-The performance profile already fixes p95 at 120% of Express; only recovery
-policy thresholds remain unselected. Current unprivileged `unshare` and `bwrap`
+The performance profile already fixes p95 at 120% of Express; recovery thresholds
+and the approved plan's protocol-required p50 cutoff remain unselected. Current unprivileged `unshare` and `bwrap`
 isolation probes both failed with permission errors. Installed `gh` 2.45.0 lacks
 attestation verification and no `cosign` executable is on PATH. No host setting,
 production Docker endpoint, or signing/registry configuration was changed.

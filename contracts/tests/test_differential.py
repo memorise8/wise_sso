@@ -259,7 +259,7 @@ class MatcherTests(unittest.TestCase):
             signing_input = root / "input.bin"
             signature_file = root / "signature.bin"
             subprocess.run(
-                ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:1024", "-out", str(private_key)],
+                ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(private_key)],
                 check=True,
                 capture_output=True,
             )
@@ -286,6 +286,22 @@ class MatcherTests(unittest.TestCase):
                 "n": base64.urlsafe_b64encode(n_bytes).decode().rstrip("="), "e": "AQAB",
             }]}
             differential.verify_rs256(token, jwks, claims, {})
+
+            signature_bytes = signature_file.read_bytes()
+            signature_number = int.from_bytes(signature_bytes, "big")
+            modulus_number = int.from_bytes(n_bytes, "big")
+            congruent_signature = (signature_number + modulus_number).to_bytes(
+                len(n_bytes) + 1, "big"
+            )
+            for invalid_signature in (b"\x00" + signature_bytes, congruent_signature):
+                encoded = base64.urlsafe_b64encode(invalid_signature).decode().rstrip("=")
+                with self.subTest(signature_encoding=len(invalid_signature)), self.assertRaises(differential.ContractFailure):
+                    differential.verify_rs256(f"{compact_input}.{encoded}", jwks, claims, {})
+            with self.assertRaises(differential.ContractFailure):
+                differential.verify_rs256(token, {"keys": jwks["keys"] * 2}, claims, {})
+            weak_key = {**jwks["keys"][0], "n": base64.urlsafe_b64encode(b"\xff" * 128).decode().rstrip("=")}
+            with self.assertRaisesRegex(differential.ContractFailure, "RSA parameters"):
+                differential.verify_rs256(token, {"keys": [weak_key]}, claims, {})
 
 
 def jwt_segment(value: dict[str, Any]) -> str:

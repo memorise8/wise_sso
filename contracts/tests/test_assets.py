@@ -15,6 +15,18 @@ def load_fragment(reference):
 
 
 class ContractAssetTests(unittest.TestCase):
+    def test_development_driver_does_not_promote_qualification(self):
+        manifest = json.loads((CONTRACTS / "manifest.json").read_text(encoding="utf-8"))
+        driver = manifest["phase7DevelopmentFlowDriver"]
+        self.assertTrue((CONTRACTS / driver["runner"]).is_file())
+        self.assertTrue((CONTRACTS / driver["tests"]).is_file())
+        for claim in ("qualifyingEvidence", "fullPhase7SampleSatisfied", "overallReplacementReady"):
+            self.assertIs(driver[claim], False)
+        self.assertEqual(
+            [flow["status"] for flow in manifest["phase7ApprovedCoreFlows"]],
+            ["partial"] * 9 + ["unsupported"],
+        )
+
     def test_all_json_assets_are_valid(self):
         for path in CONTRACTS.rglob("*.json"):
             with self.subTest(path=path.relative_to(CONTRACTS)):

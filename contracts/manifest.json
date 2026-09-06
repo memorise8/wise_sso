@@ -31,6 +31,15 @@
     "fullPhase7SampleSatisfied": false,
     "overallReplacementReady": false
   },
+  "phase7DevelopmentFlowDriver": {
+    "runner": "bin/flow_driver.py",
+    "tests": "tests/test_flow_driver.py",
+    "scope": "password-direct-login-token and password-handoff-exchange development trials",
+    "qualifyingEvidence": false,
+    "fullPhase7SampleSatisfied": false,
+    "overallReplacementReady": false,
+    "note": "Local HTTP harness tests are not live DB/Redis qualification, full sample coverage, or authenticated collector evidence."
+  },
   "phase7ApprovedCoreFlows": [
     {
       "order": 1,
@@ -39,7 +48,7 @@
       "status": "partial",
       "scenarios": ["session.login-logout-replay"],
       "gaps": [
-        "Unsupported: the approved per-runtime repeated-sample threshold and full access/refresh claim and persistence assertions remain outstanding."
+        "Unsupported: the approved per-runtime repeated-sample threshold and live DB/Redis execution of the development driver's claim and persistence assertions remain outstanding."
       ]
     },
     {
@@ -49,7 +58,7 @@
       "status": "partial",
       "scenarios": ["auth.login-issues-verifiable-token"],
       "gaps": [
-        "Unsupported: mixed-runtime handoff production/consumption orderings, replay races, and the approved repeated-sample threshold remain outstanding."
+        "Unsupported: live mixed-runtime handoff ordering evidence, replay races, and the approved repeated-sample threshold remain outstanding; development driver results are nonqualifying."
       ]
     },
     {
