@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import hmac
 import importlib.util
+import io
 import json
 import math
 import os
@@ -30,6 +32,19 @@ FLOWS = (
     "email-verification-attach-handoff-exchange",
     "password-reset-session-revoke",
 )
+GOOGLE_FLOW = "oauth-google"
+GOOGLE_ASSERTIONS = {
+    "start",
+    "providerCalls",
+    "providerSubjectLinked",
+    "callerStatePreserved",
+    "pkceRequired",
+    "oauthSuccessStateReplayRejected",
+    "handoffReplayRejected",
+    "realAccessJwtVerified",
+    "realRefreshJwtVerified",
+    "mixedRuntimeExchange",
+}
 RUNTIMES = ("express", "fastapi")
 SAFE_PROVENANCE = {"runId", "sourceRevision", "harnessRevision"}
 SENSITIVE_MARKERS = (
@@ -94,6 +109,19 @@ def _load_mail_launcher() -> Any:
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load private mail launcher from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_oauth_launcher() -> Any:
+    module_path = Path(__file__).with_name("private_oauth_flow_launcher.py")
+    spec = importlib.util.spec_from_file_location(
+        "flow_driver_private_oauth", module_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load private OAuth launcher from {module_path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -1712,13 +1740,13 @@ def write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     for runtime in RUNTIMES:
-        result.add_argument(f"--{runtime}", required=True)
-        result.add_argument(f"--{runtime}-adapter", type=Path, required=True)
-        result.add_argument(f"--{runtime}-adapter-config", type=Path, required=True)
-    result.add_argument("--flow", action="append", choices=FLOWS)
+        result.add_argument(f"--{runtime}")
+        result.add_argument(f"--{runtime}-adapter", type=Path)
+        result.add_argument(f"--{runtime}-adapter-config", type=Path)
+    result.add_argument("--flow", action="append", choices=(*FLOWS, GOOGLE_FLOW))
     result.add_argument("--topology", action="append")
     result.add_argument("--timeout", type=float, default=5.0)
-    result.add_argument("--issuer", required=True)
+    result.add_argument("--issuer")
     result.add_argument("--jsonl", type=Path, required=True)
     result.add_argument("--provenance", action="append")
     result.add_argument(
@@ -1726,6 +1754,53 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="mode-0600 owned-runtime JSON used only for verification/reset flows",
     )
+    result.add_argument(
+        "--oauth-google-launch-config",
+        type=Path,
+        help="mode-0600 config for the owned mixed-runtime Google launcher",
+    )
+    return result
+
+
+def run_google_dispatch(config: Path) -> dict[str, Any]:
+    """Run the fixed owned-runtime launcher and preserve its native result shape."""
+    launcher = _load_oauth_launcher()
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = launcher.main(["--config", str(config)])
+    if status != 0 or not output.getvalue():
+        raise ContractFailure("google-owned-launcher-failure")
+    lines = output.getvalue().splitlines()
+    if len(lines) != 1:
+        raise ContractFailure("google-owned-launcher-result-malformed")
+    try:
+        result = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise ContractFailure("google-owned-launcher-result-malformed") from exc
+    if not isinstance(result, dict) or set(result) != {
+        "flow",
+        "ordering",
+        "passed",
+        "qualifying",
+        "unverified",
+        "assertions",
+    }:
+        raise ContractFailure("google-owned-launcher-result-malformed")
+    ordering = result.get("ordering")
+    assertions = result.get("assertions")
+    if (
+        result.get("flow") != GOOGLE_FLOW
+        or not isinstance(ordering, str)
+        or ordering not in {"express-fastapi", "fastapi-express"}
+        or result.get("passed") is not True
+        or result.get("qualifying") is not False
+        or result.get("unverified") != ["provider-error-state-lifecycle"]
+        or not isinstance(assertions, dict)
+        or set(assertions) != GOOGLE_ASSERTIONS
+        or any(value is not True for value in assertions.values())
+    ):
+        raise ContractFailure("google-owned-launcher-result-malformed")
+    assert_sanitized(result)
     return result
 
 
@@ -1889,6 +1964,50 @@ def main(argv: list[str] | None = None) -> int:
     records: list[dict[str, Any]] = []
     cleanup_error_type: type[BaseException] | None = None
     try:
+        selected_flows = args.flow or list(FLOWS[:2])
+        if GOOGLE_FLOW in selected_flows:
+            password_arguments = [
+                args.express,
+                args.express_adapter,
+                args.express_adapter_config,
+                args.fastapi,
+                args.fastapi_adapter,
+                args.fastapi_adapter_config,
+                args.issuer,
+                args.private_mail_launch_config,
+            ]
+            if (
+                selected_flows != [GOOGLE_FLOW]
+                or args.oauth_google_launch_config is None
+                or args.topology is not None
+                or args.provenance is not None
+                or any(value is not None for value in password_arguments)
+            ):
+                raise ContractFailure(
+                    "oauth-google requires an exclusive owned-launcher invocation"
+                )
+            records.append(run_google_dispatch(args.oauth_google_launch_config))
+            write_jsonl(args.jsonl, records)
+            print("Executed 1 owned mixed-runtime Google trial; 0 failed")
+            return 0
+        if args.oauth_google_launch_config is not None:
+            raise ContractFailure(
+                "--oauth-google-launch-config requires --flow oauth-google"
+            )
+        required_arguments = [
+            args.express,
+            args.express_adapter,
+            args.express_adapter_config,
+            args.fastapi,
+            args.fastapi_adapter,
+            args.fastapi_adapter_config,
+            args.issuer,
+        ]
+        if any(value is None for value in required_arguments):
+            raise ContractFailure(
+                "password and mail flows require both runtime origins, adapters, "
+                "adapter configs, and --issuer"
+            )
         urls = {
             runtime: _origin(getattr(args, runtime), runtime) for runtime in RUNTIMES
         }
@@ -1898,7 +2017,6 @@ def main(argv: list[str] | None = None) -> int:
             )
             for runtime in RUNTIMES
         }
-        selected_flows = args.flow or list(FLOWS[:2])
         selected_topologies = args.topology or [
             "express",
             "fastapi",

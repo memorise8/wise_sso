@@ -34,7 +34,7 @@
   "phase7DevelopmentFlowDriver": {
     "runner": "bin/flow_driver.py",
     "tests": "tests/test_flow_driver.py",
-    "scope": "password login/handoff and private-mail verification/attach/reset development trials",
+    "scope": "password login/handoff, private-mail verification/attach/reset, and separately dispatched Google mixed-runtime development trials",
     "flows": [
       "password-direct-login-token",
       "password-handoff-exchange",
@@ -42,10 +42,20 @@
       "password-reset-session-revoke"
     ],
     "mailTests": ["tests/test_private_mail_flow_launcher.py", "tests/test_mail_independent_roles.py"],
+    "googleMixedFlow": {
+      "id": "oauth-google",
+      "launchConfigArgument": "--oauth-google-launch-config",
+      "launchPolicy": "bin/oauth_launch_policy.py",
+      "topologies": ["express-fastapi", "fastapi-express"],
+      "tests": ["tests/test_google_flow_dispatch.py", "tests/test_oauth_google_flow.py", "tests/test_oauth_launch_policy.py", "tests/test_private_oauth_flow_launcher.py"],
+      "unverified": ["provider-error-state-lifecycle"],
+      "independentRuntimeCorpus": false,
+      "qualifyingEvidence": false
+    },
     "qualifyingEvidence": false,
     "fullPhase7SampleSatisfied": false,
     "overallReplacementReady": false,
-    "note": "Local HTTP and hermetic independent-role mail tests are not real-engine/live DB/Redis qualification, full sample coverage, or authenticated collector evidence. Mail source review and integrated validation remain separate requirements."
+    "note": "Local HTTP, hermetic independent-role mail tests, and the Google mixed-only dispatch are not real-engine/live DB/Redis qualification, independent per-runtime Google coverage, full sample coverage, or authenticated collector evidence."
   },
   "phase7ApprovedCoreFlows": [
     {
@@ -102,7 +112,7 @@
       "status": "partial",
       "scenarios": ["oauth.google-start-requires-pkce"],
       "gaps": [
-        "Unsupported: deterministic Google provider redirect/callback, account linking, handoff/exchange, replay, mixed-runtime ordering, and repeated samples remain outstanding."
+        "Unsupported: the nonqualifying owned-launcher development path covers deterministic mixed-runtime Google redirect/callback, account linking, handoff/exchange and success-state replay, but provider-error state lifecycle, real Express/FastAPI execution on disposable PostgreSQL/Redis, independent per-runtime cases, authenticated collection and approved repeated samples remain outstanding."
       ]
     },
     {

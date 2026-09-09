@@ -159,7 +159,8 @@ metadata, not authenticated source attestation. Run only against the stated sour
 do not label dirty or differing runtime code as clean same-SHA qualification.
 
 The manifest binding in `performance/profile-v1.json` was refreshed when the driver
-was added and when its four implemented password/mail flows were explicitly mapped.
+was added, when its four implemented password/mail flows were explicitly mapped,
+and when the separate Google mixed-only dispatch was recorded.
 All numeric thresholds, flow order and load settings are unchanged.
 Old manifest/profile-bound measurement plans and evidence are invalid for the new
 corpus; generate a fresh plan, never rewrite historical evidence hashes. A future
@@ -171,6 +172,33 @@ Local verification (uses the already locked development environment):
 uv run --locked --project fastapi-auth-server pytest -q contracts/tests/test_flow_driver.py
 uv run --locked --project fastapi-auth-server pytest -q contracts/tests
 ```
+
+### Connected Google mixed-runtime development trial
+
+The common `bin/flow_driver.py` entrypoint accepts `--flow oauth-google` only as
+an exclusive invocation with `--oauth-google-launch-config`. It calls the fixed
+owned-runtime launcher in-process, so interrupts and failures traverse the
+launcher's bounded cleanup instead of abandoning its child process groups or
+private provider-record pipe. Password/runtime adapter arguments, `--topology`,
+private-mail configuration and caller-declared `--provenance` are refused in this
+mode; runtime roles, origins and the expected issuer come only from the same-owner
+mode-0600 launcher config validated by `bin/private_oauth_flow_launcher.py`.
+
+```sh
+python3 contracts/bin/flow_driver.py \
+  --flow oauth-google \
+  --oauth-google-launch-config /secure/untracked/google-mixed.json \
+  --jsonl /secure/untracked/google-mixed-development.jsonl
+```
+
+The output preserves the Google launcher's native single-result shape and must
+remain `qualifying=false`. Only `express-fastapi` and `fastapi-express` are
+supported. The explicit `provider-error-state-lifecycle` item remains unverified,
+and the path does not prove the approved independent per-runtime corpus, live
+disposable PostgreSQL/Redis execution, repeated samples, authenticated source
+identity or any Phase 7 gate. The common entrypoint never turns that development
+result into a uniform core-flow trial or adds Google to the existing four-flow
+`FLOWS` corpus.
 
 ### Connected private-mail development trials
 

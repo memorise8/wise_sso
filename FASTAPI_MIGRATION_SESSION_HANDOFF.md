@@ -4,6 +4,41 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+### 2026-09-09 W0/W1 continuation (supersedes the historical Google status below)
+
+Execution follows `.omx/plans/python-first-ready-2026-09-09.md` using native
+subagents. Existing production DB/Redis and Prisma ownership remain unchanged.
+The Google mixed-only flow is connected to the common CLI through
+`--flow oauth-google --oauth-google-launch-config <private-json>`; it is not an
+independent Google corpus or authenticated qualification.
+See `contracts/evidence/python-ready-baseline.md` for fresh baseline/environment
+checks and `contracts/evidence/google-flow-dispatch-development.md` for dispatch.
+
+Review repairs include actual Google identity residual counts, preflight before
+mutation/runtime creation, explicit health ports, drain-before-reset, and pre-spawn
+offline bootstrap/configuration checks. A05 remains open: both application runtimes
+currently handle provider errors before consuming OAuth state. The harness now
+reports `unverified: ["provider-error-state-lifecycle"]` instead of blessing reuse
+of that state. A coordinated oracle/application hardening decision and regression
+are needed; no operating Express source was changed to hide this gap.
+
+Fresh FastAPI baseline: 1416 passed, 79 skipped; Ruff/format/mypy passed. This is not
+new live PostgreSQL/Redis qualification. The guarded Compose configuration passes
+check-only and candidate resources are EMPTY, but user/net namespace probes fail
+with permission errors and the default Docker daemon hosts production containers.
+The `.venv/bin/uvicorn` executable is present. No missing-uvicorn claim should block
+resumption. Obtain a designated disposable runner/CI before actual Google engines;
+do not substitute this shared daemon for formal D1 isolation.
+
+Before resuming, inspect the current diff and latest independent review results.
+Final W1 development review: code APPROVE + architecture CLEAR; frozen contracts
+236 passed / 202 subtests, Ruff/format/strict mypy on 11 code/test files PASS.
+Code/test/manifest/profile hashes stayed unchanged throughout that regression.
+Next acceptance is actual isolated independent runtime comparison, then owned
+Google E→F/F→E execution. W3a trust, W4/W5 collectors/orchestration, W6 canonical
+qualification and W7 operator cutover remain unfinished. Do not mark READY or
+discard original work based on this development checkpoint.
+
 Active continuation after `ac2d1fe`: the user reaffirmed that the stopping target is
 the reviewed READY_FOR_APPROVAL plan, not an intermediate development checkpoint.
 Mail A01b/A02/A03 development integration is committed as `69a948d` with independent
