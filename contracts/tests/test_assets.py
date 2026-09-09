@@ -46,7 +46,31 @@ class ContractAssetTests(unittest.TestCase):
             self.assertIs(driver[claim], False)
         self.assertEqual(
             [flow["status"] for flow in manifest["phase7ApprovedCoreFlows"]],
-            ["partial"] * 9 + ["unsupported"],
+            ["partial"] * 10,
+        )
+
+    def test_limiter_mapping_reuses_existing_shared_state_schedules(self) -> None:
+        manifest = json.loads((CONTRACTS / "manifest.json").read_text(encoding="utf-8"))
+        schedules = json.loads(
+            (CONTRACTS / "scenarios/shared-state-core-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )["scenarios"]
+        limiter = manifest["phase7ApprovedCoreFlows"][-1]
+        self.assertEqual(limiter["id"], "global-rate-limit")
+        self.assertEqual(limiter["status"], "partial")
+        self.assertEqual(
+            limiter["scenarios"],
+            [
+                schedule["id"]
+                for schedule in schedules
+                if schedule["kind"]
+                in {"alternating-rate-limit", "simultaneous-rate-limit"}
+            ],
+        )
+        self.assertEqual(len(limiter["scenarios"]), 2)
+        self.assertIs(
+            manifest["phase7SharedStateCore"]["overallReplacementReady"], False
         )
 
     def test_all_json_assets_are_valid(self):

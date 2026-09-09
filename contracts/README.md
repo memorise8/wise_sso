@@ -107,6 +107,12 @@ read-only after it is flushed. Passing this 100-row gate does not satisfy the
 full Phase 7 sample or make the replacement production ready; both fields
 remain explicitly false.
 
+The existing alternating/simultaneous limiter schedules are mapped to the partial
+`global-rate-limit` core flow. Focused local HTTP regression coverage is in
+`tests/test_limiter_flow.py`; its counter double is not Redis qualification.
+Request-count boundaries and positive TTL checks do not prove time-window expiry
+or trusted client-IP/proxy behavior. See `evidence/limiter-flow-development.md`.
+
 The mixed failed-login schedule accepts a final failure count from 5 through
 20 with the lock set. Both runtimes intentionally skip increments after a
 request observes the lock, and an ingress-lifetime overlap cannot prove that all
@@ -124,8 +130,8 @@ production services. Run `--help` for the explicit runtime/config inputs.
 These are development trials, not a controlled qualification collector or a load
 generator. Its monotonic trial duration includes fixture lifecycle work and must not
 be used as the performance profile's scheduled-to-completed sample latency.
-Reports retain `qualifyingEvidence=false`; the manifest still marks nine
-flows partial and the global limiter unsupported. Never import development results
+Reports retain `qualifyingEvidence=false`; the manifest marks all ten
+flows partial. Never import development results
 as seven-gate PASS evidence.
 Use only explicitly configured disposable runtimes, dev mail, test-named databases
 and isolated nonzero Redis databases. Cross-runtime handoff needs shared fixture
@@ -172,6 +178,40 @@ Local verification (uses the already locked development environment):
 uv run --locked --project fastapi-auth-server pytest -q contracts/tests/test_flow_driver.py
 uv run --locked --project fastapi-auth-server pytest -q contracts/tests
 ```
+
+### Admin development trials
+
+The common driver also accepts an exclusive `--flow admin-status-role-session-audit`
+invocation. It uses the fixed `adapters/admin_flow_fixture.py` for both runtimes,
+with the usual mode-0600 adapter configuration files and `--issuer`. Each config
+must contain only `CONTRACT_*` variables, including `CONTRACT_FASTAPI_RUNTIME=1`
+and the existing disposable database/Redis and dev-mail guards. No production
+runtime or production database is an acceptable target.
+The reused Prisma compatibility preflight checks table presence, not full schema
+equivalence. Cleanup covers fixture principals, active sessions and admin audits;
+canonical role baseline rows may remain and global role cleanup is not claimed.
+
+```sh
+python3 contracts/bin/flow_driver.py \
+  --flow admin-status-role-session-audit \
+  --express http://127.0.0.1:4400 \
+  --express-adapter contracts/adapters/admin_flow_fixture.py \
+  --express-adapter-config /secure/untracked/admin-express.json \
+  --fastapi http://127.0.0.1:4401 \
+  --fastapi-adapter contracts/adapters/admin_flow_fixture.py \
+  --fastapi-adapter-config /secure/untracked/admin-fastapi.json \
+  --issuer https://issuer.example.invalid \
+  --topology express-fastapi \
+  --jsonl /secure/untracked/admin-development.jsonl
+```
+
+Topologies are `express`, `fastapi`, `express-fastapi` and `fastapi-express`;
+omitting the option selects all four. Mixed selections require identical disposable
+store bindings. Runtime origins must be distinct. This entrypoint uses already
+running disposable engines; it does not start servers or prove isolation ownership.
+It refuses mail/OAuth configuration, caller provenance and other flows in the same
+invocation. Admin mutation, state, audit and cleanup results remain nonqualifying;
+the flow does not join the existing four-flow performance corpus.
 
 ### Connected OAuth mixed-runtime development trials
 

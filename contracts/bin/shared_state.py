@@ -742,7 +742,10 @@ def run_schedule(
             statuses.append(
                 (runtime, _login(runtime, urls, fixture, invalid_password, timeout))
             )
-        if [result.status for _runtime, result in statuses[:20]] != [401] * 20:
+        if any(
+            result.status != 401 or error_code(result) != "INVALID_CREDENTIALS"
+            for _runtime, result in statuses[:20]
+        ):
             raise ContractFailure(
                 "alternating rate limit blocked before the approved boundary"
             )
@@ -757,11 +760,18 @@ def run_schedule(
             adapter.invoke("snapshot", "shared-rate-limit"),
             ("keyCount", "counters", "ttls"),
         )
+        counters = state["counters"]
+        ttls = state["ttls"]
         if (
-            state["keyCount"] != 1
-            or state["counters"] != [22]
-            or len(state["ttls"]) != 1
-            or state["ttls"][0] <= 0
+            type(state["keyCount"]) is not int
+            or not isinstance(counters, list)
+            or any(type(counter) is not int for counter in counters)
+            or not isinstance(ttls, list)
+            or any(type(ttl) is not int for ttl in ttls)
+            or state["keyCount"] != 1
+            or counters != [22]
+            or len(ttls) != 1
+            or ttls[0] <= 0
         ):
             raise ContractFailure(
                 "alternating rate limit did not share one live exact counter"
@@ -827,11 +837,18 @@ def run_schedule(
             adapter.invoke("snapshot", "shared-rate-limit"),
             ("keyCount", "counters", "ttls"),
         )
+        counters = state["counters"]
+        ttls = state["ttls"]
         if (
-            state["keyCount"] != 1
-            or state["counters"] != [30]
-            or len(state["ttls"]) != 1
-            or state["ttls"][0] <= 0
+            type(state["keyCount"]) is not int
+            or not isinstance(counters, list)
+            or any(type(counter) is not int for counter in counters)
+            or not isinstance(ttls, list)
+            or any(type(ttl) is not int for ttl in ttls)
+            or state["keyCount"] != 1
+            or counters != [30]
+            or len(ttls) != 1
+            or ttls[0] <= 0
         ):
             raise ContractFailure(
                 "simultaneous limiter did not preserve one exact shared counter"

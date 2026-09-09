@@ -35,6 +35,37 @@ FLOWS = (
 GOOGLE_FLOW = "oauth-google"
 OAUTH_PROVIDERS = ("google", "naver", "kakao")
 OAUTH_FLOWS = tuple(f"oauth-{provider}" for provider in OAUTH_PROVIDERS)
+ADMIN_FLOW = "admin-status-role-session-audit"
+ADMIN_TOPOLOGIES = ("express", "fastapi", "express-fastapi", "fastapi-express")
+ADMIN_ASSERTIONS = frozenset(
+    {
+        "fixturePreflight",
+        "adminAccessJwtVerified",
+        "aliasParity",
+        "filteredDirectory",
+        "auditProjection",
+        "missingBearerDenied",
+        "nonAdminDenied",
+        "roleAssigned",
+        "roleRemoved",
+        "targetSessionsRevoked",
+        "oldRefreshRejected",
+        "targetSuspended",
+        "suspendedLoginRejected",
+        "targetReactivated",
+        "selfProtection",
+        "staleAdminBearerRejected",
+        "databaseStateMatched",
+        "cleanupVerified",
+    }
+)
+ADMIN_UNVERIFIED = (
+    "real-engine-admin-corpus",
+    "sample-size-one-per-topology",
+    "cross-runtime-admin-audit-transaction-atomicity",
+    "authenticated-collection",
+    "global-role-cleanup",
+)
 GOOGLE_ASSERTIONS = {
     "start",
     "providerCalls",
@@ -124,6 +155,19 @@ def _load_oauth_launcher() -> Any:
     )
     if spec is None or spec.loader is None:
         raise RuntimeError(f"could not load private OAuth launcher from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_admin_flow() -> Any:
+    module_path = Path(__file__).with_name("admin_flow.py")
+    spec = importlib.util.spec_from_file_location(
+        "contract_admin_dispatch", module_path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load fixed admin flow")
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -1745,7 +1789,9 @@ def parser() -> argparse.ArgumentParser:
         result.add_argument(f"--{runtime}")
         result.add_argument(f"--{runtime}-adapter", type=Path)
         result.add_argument(f"--{runtime}-adapter-config", type=Path)
-    result.add_argument("--flow", action="append", choices=(*FLOWS, *OAUTH_FLOWS))
+    result.add_argument(
+        "--flow", action="append", choices=(*FLOWS, *OAUTH_FLOWS, ADMIN_FLOW)
+    )
     result.add_argument("--topology", action="append")
     result.add_argument("--timeout", type=float, default=5.0)
     result.add_argument("--issuer")
@@ -1818,6 +1864,99 @@ def run_oauth_dispatch(config: Path, *, provider: str) -> dict[str, Any]:
         raise ContractFailure("google-owned-launcher-result-malformed")
     assert_sanitized(result)
     return result
+
+
+def run_admin_dispatch(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Execute only the fixed, disposable-store admin development path."""
+    if args.flow != [ADMIN_FLOW] or any(
+        value is not None
+        for value in (
+            args.private_mail_launch_config,
+            args.oauth_launch_config,
+            args.oauth_google_launch_config,
+            args.provenance,
+        )
+    ):
+        raise ContractFailure("admin flow requires an exclusive development invocation")
+    topologies = args.topology or list(ADMIN_TOPOLOGIES)
+    if len(set(topologies)) != len(topologies) or any(
+        topology not in ADMIN_TOPOLOGIES for topology in topologies
+    ):
+        raise ContractFailure("admin topology selection is invalid")
+    if not math.isfinite(args.timeout) or not 0 < args.timeout <= 60:
+        raise ContractFailure("admin timeout must be finite and within 60 seconds")
+    required = [
+        args.issuer,
+        *(
+            getattr(args, f"{runtime}{suffix}")
+            for runtime in RUNTIMES
+            for suffix in ("", "_adapter", "_adapter_config")
+        ),
+    ]
+    if any(value is None for value in required):
+        raise ContractFailure(
+            "admin flow requires both origins, fixed adapters, configs and issuer"
+        )
+    urls = {runtime: _origin(getattr(args, runtime), runtime) for runtime in RUNTIMES}
+    if urls["express"] == urls["fastapi"]:
+        raise ContractFailure("admin runtime origins must be distinct")
+    fixed_adapter = (
+        Path(__file__).resolve().parents[1] / "adapters" / "admin_flow_fixture.py"
+    )
+    environments = {}
+    for runtime in RUNTIMES:
+        executable = getattr(args, f"{runtime}_adapter")
+        if executable.is_symlink() or executable.resolve() != fixed_adapter:
+            raise ContractFailure("admin flow requires the fixed admin fixture adapter")
+        environment = load_adapter_environment(
+            getattr(args, f"{runtime}_adapter_config")
+        )
+        if environment.get("CONTRACT_FASTAPI_RUNTIME") != "1" or any(
+            not name.startswith("CONTRACT_") for name in environment
+        ):
+            raise ContractFailure(
+                "admin fixture requires table-presence preflight and contract-only environment"
+            )
+        environments[runtime] = environment
+    adapters = {
+        runtime: FixtureAdapter(fixed_adapter, environments[runtime], urls[runtime])
+        for runtime in RUNTIMES
+    }
+    if any("-" in topology for topology in topologies) and (
+        adapters["express"].isolation_identity != adapters["fastapi"].isolation_identity
+    ):
+        raise ContractFailure("mixed admin topology requires shared isolated stores")
+    module = _load_admin_flow()
+    records = []
+    for topology in topologies:
+        participants = set(topology.split("-"))
+        try:
+            result = module.run_admin_flow(
+                topology,
+                {runtime: urls[runtime] for runtime in participants},
+                {runtime: adapters[runtime] for runtime in participants},
+                expected_issuer=args.issuer,
+                timeout=args.timeout,
+            )
+        except Exception as exc:
+            raise ContractFailure("admin-development-flow-failure") from exc
+        if (
+            not isinstance(result, dict)
+            or set(result)
+            != {"flow", "topology", "passed", "qualifying", "assertions", "unverified"}
+            or result.get("flow") != ADMIN_FLOW
+            or result.get("topology") != topology
+            or result.get("passed") is not True
+            or result.get("qualifying") is not False
+            or result.get("unverified") != list(ADMIN_UNVERIFIED)
+            or not isinstance(result.get("assertions"), dict)
+            or set(result["assertions"]) != ADMIN_ASSERTIONS
+            or any(value is not True for value in result["assertions"].values())
+        ):
+            raise ContractFailure("admin-development-result-contract-mismatch")
+        assert_sanitized(result)
+        records.append(result)
+    return records
 
 
 def _load_private_launch_config(path: Path) -> dict[str, Any]:
@@ -1981,6 +2120,11 @@ def main(argv: list[str] | None = None) -> int:
     cleanup_error_type: type[BaseException] | None = None
     try:
         selected_flows = args.flow or list(FLOWS[:2])
+        if ADMIN_FLOW in selected_flows:
+            records = run_admin_dispatch(args)
+            write_jsonl(args.jsonl, records)
+            print(f"Executed {len(records)} admin development trial(s); 0 failed")
+            return 0
         if any(flow in OAUTH_FLOWS for flow in selected_flows):
             selected_provider = selected_flows[0].removeprefix("oauth-")
             launch_config = args.oauth_launch_config or args.oauth_google_launch_config

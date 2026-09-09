@@ -34,7 +34,7 @@
   "phase7DevelopmentFlowDriver": {
     "runner": "bin/flow_driver.py",
     "tests": "tests/test_flow_driver.py",
-    "scope": "password login/handoff, private-mail verification/attach/reset, and separately dispatched Google/Naver/Kakao mixed-runtime development trials",
+    "scope": "password login/handoff, private-mail verification/attach/reset, and separately dispatched OAuth mixed-runtime and admin development trials",
     "flows": [
       "password-direct-login-token",
       "password-handoff-exchange",
@@ -66,7 +66,17 @@
     "qualifyingEvidence": false,
     "fullPhase7SampleSatisfied": false,
     "overallReplacementReady": false,
-    "note": "Local HTTP, hermetic independent-role mail tests, and provider mixed-only dispatches are not real-engine/live DB/Redis qualification, independent per-runtime OAuth coverage, full sample coverage, or authenticated collector evidence."
+    "adminDevelopmentFlow": {
+      "id": "admin-status-role-session-audit",
+      "runner": "bin/admin_flow.py",
+      "fixtureAdapter": "adapters/admin_flow_fixture.py",
+      "topologies": ["express", "fastapi", "express-fastapi", "fastapi-express"],
+      "tests": ["tests/test_admin_flow.py", "tests/test_admin_flow_fixture.py", "tests/test_admin_flow_dispatch.py"],
+      "unverified": ["real-engine-admin-corpus", "sample-size-one-per-topology", "cross-runtime-admin-audit-transaction-atomicity", "authenticated-collection", "global-role-cleanup"],
+      "qualifyingEvidence": false,
+      "independentRuntimeCorpus": false
+    },
+    "note": "Local HTTP admin evaluator tests, hermetic mail tests, and provider mixed-only dispatches are not real-engine/live DB/Redis qualification, approved independent per-runtime coverage, full sample coverage, or authenticated collector evidence."
   },
   "phase7ApprovedCoreFlows": [
     {
@@ -174,17 +184,20 @@
         "admin.audit-requires-bearer"
       ],
       "gaps": [
-        "Unsupported: role assignment/removal, explicit session revocation, authorized audit assertions, mixed-runtime ordering, and repeated samples remain outstanding."
+        "Unsupported: the nonqualifying admin development driver exercises role/status/session mutations, self-protection, aliases and state/audit checks; real-runtime/store execution, transaction atomicity, approved repeated samples and authenticated collection remain outstanding."
       ]
     },
     {
       "order": 10,
       "id": "global-rate-limit",
       "name": "Global rate-limit",
-      "status": "unsupported",
-      "scenarios": [],
+      "status": "partial",
+      "scenarios": [
+        "alternating-shared-rate-limit-boundary",
+        "mixed-simultaneous-shared-rate-limit"
+      ],
       "gaps": [
-        "Unsupported: no deterministic global rate-limit corpus, shared-counter topology, window-boundary schedule, or approved repeated-sample evidence exists yet."
+        "Unsupported: existing alternating and simultaneous shared-state schedules cover a request-count boundary and observed counter/positive TTL, not time-window expiry, trusted-client-IP/ingress behavior, all auth routes, independent runtime coverage, approved repeated samples or authenticated real-Redis qualification."
       ]
     }
   ],
@@ -287,7 +300,7 @@
       "status": "partial",
       "scenarios": ["admin.status-mutation"],
       "gaps": [
-        "Unsupported: role assignment/removal and session revocation need fixture paths for target users and roles plus dedicated state probes."
+        "Unsupported: dedicated admin fixture and mutation/state checks are development-only; real-runtime/store and authenticated repeated-sample qualification remains outstanding."
       ]
     },
     {

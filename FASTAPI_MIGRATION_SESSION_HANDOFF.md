@@ -4,6 +4,36 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+### 2026-09-09 A09/A10 administrator and limiter development continuation
+
+The administrator integration driver is now connected through the common CLI's
+exclusive `--flow admin-status-role-session-audit` selection. It reuses existing
+HTTP/JWT helpers and seeded users; it does not replace application admin logic.
+See `contracts/evidence/admin-flow-development.md` for the exact verified scope.
+The fixed admin fixture requires the existing Prisma table-presence preflight and
+disposable-store guards. Single-runtime and mixed selections remain explicitly
+nonqualifying, and already-running engines are not owned or attested by this CLI.
+
+Keep A09 and overall replacement **NOT_READY** until actual disposable engines,
+approved samples, audit transaction atomicity and authenticated collection are
+verified. Production Express, DB/Redis, `.omc/` and Prisma ownership are untouched.
+A10 now has focused local HTTP regression coverage and maps the existing two
+shared limiter schedules to the partial core flow. The alternating evaluator also
+rejects unexpected error codes before the limit. See
+`contracts/evidence/limiter-flow-development.md`. All ten core flows are partial;
+none is qualified. Time-window expiry, trusted-client-IP/proxy, actual Redis and
+ingress evidence remain open. Do not rewrite the limiter.
+
+Full contracts: 315 passed / 345 subtests. FastAPI: 1416 passed / 79 skipped.
+Changed Python files pass Ruff/format; strict mypy passes the eight typed files
+(the existing untyped asset test is linted and executed).
+Final independent reviews: code **APPROVE** + architecture **CLEAR** for this
+15-file development checkpoint. A09/A10 parents and replacement remain open.
+The next dependent step is actual independent/shared Express–FastAPI execution
+on the designated disposable D1 runner, followed by full-sample and authenticated
+downstream qualification. No approved runner/trust input has been supplied; do not
+use the operating Docker daemon or production DB/Redis as a substitute.
+
 ### 2026-09-09 A08 regression continuation
 
 Naver/Kakao development work is committed as `74e005c`. The next A08 slice reuses
