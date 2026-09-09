@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Execute the first password-flow qualification corpus without producing READY evidence."""
+"""Execute password, mail and OAuth development flows without producing READY evidence."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ FLOWS = (
     "password-reset-session-revoke",
 )
 GOOGLE_FLOW = "oauth-google"
+OAUTH_PROVIDERS = ("google", "naver", "kakao")
+OAUTH_FLOWS = tuple(f"oauth-{provider}" for provider in OAUTH_PROVIDERS)
 GOOGLE_ASSERTIONS = {
     "start",
     "providerCalls",
@@ -1743,7 +1745,7 @@ def parser() -> argparse.ArgumentParser:
         result.add_argument(f"--{runtime}")
         result.add_argument(f"--{runtime}-adapter", type=Path)
         result.add_argument(f"--{runtime}-adapter-config", type=Path)
-    result.add_argument("--flow", action="append", choices=(*FLOWS, GOOGLE_FLOW))
+    result.add_argument("--flow", action="append", choices=(*FLOWS, *OAUTH_FLOWS))
     result.add_argument("--topology", action="append")
     result.add_argument("--timeout", type=float, default=5.0)
     result.add_argument("--issuer")
@@ -1759,15 +1761,29 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         help="mode-0600 config for the owned mixed-runtime Google launcher",
     )
+    result.add_argument(
+        "--oauth-launch-config",
+        type=Path,
+        help="mode-0600 owned-runtime config for the selected OAuth provider",
+    )
     return result
 
 
 def run_google_dispatch(config: Path) -> dict[str, Any]:
+    return run_oauth_dispatch(config, provider="google")
+
+
+def run_oauth_dispatch(config: Path, *, provider: str) -> dict[str, Any]:
     """Run the fixed owned-runtime launcher and preserve its native result shape."""
+    if provider not in OAUTH_PROVIDERS:
+        raise ContractFailure("unsupported-oauth-provider")
     launcher = _load_oauth_launcher()
     output = io.StringIO()
+    arguments = ["--config", str(config)]
+    if provider != "google":
+        arguments.extend(["--provider", provider])
     with contextlib.redirect_stdout(output):
-        status = launcher.main(["--config", str(config)])
+        status = launcher.main(arguments)
     if status != 0 or not output.getvalue():
         raise ContractFailure("google-owned-launcher-failure")
     lines = output.getvalue().splitlines()
@@ -1789,7 +1805,7 @@ def run_google_dispatch(config: Path) -> dict[str, Any]:
     ordering = result.get("ordering")
     assertions = result.get("assertions")
     if (
-        result.get("flow") != GOOGLE_FLOW
+        result.get("flow") != f"oauth-{provider}"
         or not isinstance(ordering, str)
         or ordering not in {"express-fastapi", "fastapi-express"}
         or result.get("passed") is not True
@@ -1965,7 +1981,9 @@ def main(argv: list[str] | None = None) -> int:
     cleanup_error_type: type[BaseException] | None = None
     try:
         selected_flows = args.flow or list(FLOWS[:2])
-        if GOOGLE_FLOW in selected_flows:
+        if any(flow in OAUTH_FLOWS for flow in selected_flows):
+            selected_provider = selected_flows[0].removeprefix("oauth-")
+            launch_config = args.oauth_launch_config or args.oauth_google_launch_config
             password_arguments = [
                 args.express,
                 args.express_adapter,
@@ -1977,20 +1995,33 @@ def main(argv: list[str] | None = None) -> int:
                 args.private_mail_launch_config,
             ]
             if (
-                selected_flows != [GOOGLE_FLOW]
-                or args.oauth_google_launch_config is None
+                len(selected_flows) != 1
+                or launch_config is None
+                or (
+                    args.oauth_launch_config is not None
+                    and args.oauth_google_launch_config is not None
+                )
+                or (
+                    selected_provider != "google"
+                    and args.oauth_google_launch_config is not None
+                )
                 or args.topology is not None
                 or args.provenance is not None
                 or any(value is not None for value in password_arguments)
             ):
                 raise ContractFailure(
-                    "oauth-google requires an exclusive owned-launcher invocation"
+                    "OAuth requires an exclusive provider-bound owned-launcher invocation"
                 )
-            records.append(run_google_dispatch(args.oauth_google_launch_config))
+            records.append(
+                run_oauth_dispatch(launch_config, provider=selected_provider)
+            )
             write_jsonl(args.jsonl, records)
-            print("Executed 1 owned mixed-runtime Google trial; 0 failed")
+            print(f"Executed 1 owned mixed-runtime {selected_provider} trial; 0 failed")
             return 0
-        if args.oauth_google_launch_config is not None:
+        if (
+            args.oauth_google_launch_config is not None
+            or args.oauth_launch_config is not None
+        ):
             raise ContractFailure(
                 "--oauth-google-launch-config requires --flow oauth-google"
             )

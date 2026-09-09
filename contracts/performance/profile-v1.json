@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "suiteId": "phase7-performance-v1",
   "manifestPath": "contracts/manifest.json",
-  "manifestSha256": "40856502f445dd0a01033c98e40d70dcb948779460fe9e4948ec8566b4e2edde",
+  "manifestSha256": "219a60bc59078457dba6356613fe1ba87ea73ba917310851ef8846cf6bc8098c",
   "flowIds": [
     "password-direct-login-token",
     "password-handoff-exchange",

@@ -38,6 +38,7 @@ class GoogleOAuthFixtureTests(unittest.TestCase):
             clear=False,
         )
         self.environment.start()
+        os.environ.pop("CONTRACT_OAUTH_PROVIDER", None)
 
     def tearDown(self) -> None:
         self.environment.stop()
@@ -72,6 +73,35 @@ class GoogleOAuthFixtureTests(unittest.TestCase):
             },
         )
         self.assertNotIn("issuer", fixture)
+
+    def test_setup_supports_each_closed_provider_without_cross_provider_state(
+        self,
+    ) -> None:
+        email = "contract-active@example.invalid"
+        for provider in adapter.OAUTH_PROVIDERS:
+            subject = f"{provider}-subject-001"
+            with (
+                self.subTest(provider=provider),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "CONTRACT_OAUTH_PROVIDER": provider,
+                        f"CONTRACT_{provider.upper()}_PROVIDER_SUBJECT": subject,
+                    },
+                ),
+                mock.patch.object(adapter.shared, "reset") as reset,
+                mock.patch.object(adapter.shared, "seed") as seed,
+                mock.patch.object(
+                    adapter.shared,
+                    "emails",
+                    return_value={adapter.shared.ACTIVE_USER_ID: email},
+                ),
+            ):
+                fixture = adapter.setup(self.config, f"{provider}-oauth-user")
+            self.assertEqual(fixture["provider"], provider)
+            self.assertEqual(fixture["providerSubject"], subject)
+            reset.assert_called_once_with(self.config)
+            seed.assert_called_once_with(self.config)
 
     def test_preflight_uses_fastapi_guard_and_schema_path_when_selected(self) -> None:
         with (
@@ -141,6 +171,52 @@ class GoogleOAuthFixtureTests(unittest.TestCase):
         ):
             adapter.preflight(self.config)
 
+    def test_preflight_labels_schema_for_each_provider(self) -> None:
+        for provider in adapter.OAUTH_PROVIDERS:
+            expected = f"prisma-{provider}-compatible"
+            with (
+                self.subTest(provider=provider),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "CONTRACT_OAUTH_PROVIDER": provider,
+                        f"CONTRACT_{provider.upper()}_PROVIDER_SUBJECT": (
+                            f"{provider}-subject-001"
+                        ),
+                    },
+                ),
+                mock.patch.object(
+                    adapter.shared, "preflight", return_value={"status": "ok"}
+                ),
+                mock.patch.object(
+                    adapter.shared, "psql", return_value=expected
+                ) as query,
+            ):
+                result = adapter.preflight(self.config)
+            self.assertEqual(result[f"{provider}IdentitySchema"], expected)
+            sql = cast(str, query.call_args.args[1])
+            self.assertIn(expected, sql)
+            for other in adapter.OAUTH_PROVIDERS:
+                if other != provider:
+                    self.assertNotIn(f"prisma-{other}-compatible", sql)
+
+    def test_preflight_rejects_unsafe_subject_before_sql(self) -> None:
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "CONTRACT_OAUTH_PROVIDER": "naver",
+                    "CONTRACT_NAVER_PROVIDER_SUBJECT": "unsafe subject",
+                },
+            ),
+            mock.patch.object(adapter.shared, "preflight") as base_preflight,
+            mock.patch.object(adapter.shared, "psql") as psql,
+            self.assertRaisesRegex(adapter.AdapterError, "safe non-empty"),
+        ):
+            adapter.preflight(self.config)
+        base_preflight.assert_not_called()
+        psql.assert_not_called()
+
     def test_malformed_identity_projection_fails_closed(self) -> None:
         with (
             mock.patch.object(adapter.shared, "psql", return_value="malformed"),
@@ -151,6 +227,56 @@ class GoogleOAuthFixtureTests(unittest.TestCase):
     def test_provider_invocations_are_never_synthesized_by_base_adapter(self) -> None:
         with self.assertRaisesRegex(adapter.AdapterError, "owned launcher"):
             adapter.snapshot(self.config, "oauth-google-provider-invocations")
+
+    def test_state_and_residual_queries_are_provider_scoped(self) -> None:
+        for provider in adapter.OAUTH_PROVIDERS:
+            subject = f"{provider}-subject-001"
+
+            def psql(
+                _config: Any,
+                sql: str,
+                selected_provider: str = provider,
+                selected_subject: str = subject,
+            ) -> str:
+                if 'FROM "SocialAccount"' in sql and "COUNT(*)" not in sql:
+                    return f"{selected_provider}|{selected_subject}|" + cast(
+                        str, adapter.shared.ACTIVE_USER_ID
+                    )
+                if 'FROM "RefreshToken"' in sql:
+                    return ""
+                if 'FROM "User"' in sql:
+                    return "1"
+                if 'FROM "SocialAccount"' in sql:
+                    return "1"
+                raise AssertionError(sql)
+
+            with (
+                self.subTest(provider=provider),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "CONTRACT_OAUTH_PROVIDER": provider,
+                        f"CONTRACT_{provider.upper()}_PROVIDER_SUBJECT": subject,
+                    },
+                ),
+                mock.patch.object(adapter.shared, "psql", side_effect=psql) as query,
+                mock.patch.object(adapter.shared, "redis_key_count", return_value=0),
+            ):
+                state = adapter.snapshot(self.config, f"oauth-{provider}-state")
+                residual = adapter.snapshot(self.config, f"oauth-{provider}-residual")
+            self.assertEqual(state["provider"], provider)
+            self.assertEqual(state["providerSubject"], subject)
+            self.assertEqual(residual["providerRecords"], 1)
+            social_sql = "\n".join(
+                cast(str, call.args[1])
+                for call in query.call_args_list
+                if 'FROM "SocialAccount"' in cast(str, call.args[1])
+            )
+            self.assertIn(f"\"provider\" = '{provider}'", social_sql)
+            self.assertIn(f"\"providerUserId\" = '{subject}'", social_sql)
+            for other in adapter.OAUTH_PROVIDERS:
+                if other != provider:
+                    self.assertNotIn(f"\"provider\" = '{other}'", social_sql)
 
     def test_teardown_residual_failure_is_not_reported_clean(self) -> None:
         residual = {
@@ -214,6 +340,88 @@ class GoogleOAuthFixtureTests(unittest.TestCase):
             adapter.setup(self.config, "google-oauth-user")
         reset.assert_not_called()
         seed.assert_not_called()
+
+    def test_missing_or_unsafe_provider_subject_rejected_before_mutation(self) -> None:
+        for provider, subject in (
+            ("google", ""),
+            ("naver", "contains space"),
+            ("kakao", "x" * 129),
+        ):
+            with (
+                self.subTest(provider=provider, subject=subject),
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "CONTRACT_OAUTH_PROVIDER": provider,
+                        f"CONTRACT_{provider.upper()}_PROVIDER_SUBJECT": subject,
+                    },
+                ),
+                mock.patch.object(adapter.shared, "reset") as reset,
+                mock.patch.object(adapter.shared, "seed") as seed,
+                self.assertRaisesRegex(adapter.AdapterError, "safe non-empty"),
+            ):
+                adapter.setup(self.config, f"{provider}-oauth-user")
+            reset.assert_not_called()
+            seed.assert_not_called()
+
+    def test_unknown_provider_rejected_before_database_access(self) -> None:
+        with (
+            mock.patch.dict(os.environ, {"CONTRACT_OAUTH_PROVIDER": "github"}),
+            mock.patch.object(adapter.shared, "psql") as psql,
+            mock.patch.object(adapter.shared, "reset") as reset,
+            mock.patch.object(adapter.shared, "seed") as seed,
+            self.assertRaisesRegex(adapter.AdapterError, "unsupported OAuth provider"),
+        ):
+            adapter.setup(self.config, "github-oauth-user")
+        psql.assert_not_called()
+        reset.assert_not_called()
+        seed.assert_not_called()
+
+    def test_teardown_rejects_unsafe_subject_before_reset(self) -> None:
+        with (
+            mock.patch.dict(
+                os.environ,
+                {
+                    "CONTRACT_OAUTH_PROVIDER": "kakao",
+                    "CONTRACT_KAKAO_PROVIDER_SUBJECT": "unsafe subject",
+                },
+            ),
+            mock.patch.object(adapter.shared, "reset") as reset,
+            self.assertRaisesRegex(adapter.AdapterError, "safe non-empty"),
+        ):
+            adapter.teardown(self.config, "kakao-oauth-user")
+        reset.assert_not_called()
+
+    def test_wrong_provider_identifiers_rejected_before_mutation(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "CONTRACT_OAUTH_PROVIDER": "naver",
+                "CONTRACT_NAVER_PROVIDER_SUBJECT": "naver-subject-001",
+            },
+        ):
+            with (
+                mock.patch.object(adapter.shared, "reset") as reset,
+                mock.patch.object(adapter.shared, "seed") as seed,
+                self.assertRaisesRegex(adapter.AdapterError, "unsupported fixture"),
+            ):
+                adapter.setup(self.config, "google-oauth-user")
+            reset.assert_not_called()
+            seed.assert_not_called()
+
+            with (
+                mock.patch.object(adapter.shared, "psql") as psql,
+                self.assertRaisesRegex(adapter.AdapterError, "unsupported snapshot"),
+            ):
+                adapter.snapshot(self.config, "oauth-google-state")
+            psql.assert_not_called()
+
+            with (
+                mock.patch.object(adapter.shared, "reset") as reset,
+                self.assertRaisesRegex(adapter.AdapterError, "unsupported fixture"),
+            ):
+                adapter.teardown(self.config, "google-oauth-user")
+            reset.assert_not_called()
 
     def test_cli_checks_preflight_before_every_command(self) -> None:
         for command in ("setup", "snapshot", "teardown"):

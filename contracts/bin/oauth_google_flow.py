@@ -17,7 +17,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final, Protocol, TypedDict, cast
+from typing import Any, Final, Literal, Protocol, TypedDict, cast
 from urllib import parse
 
 from cryptography.exceptions import InvalidSignature
@@ -36,6 +36,62 @@ CODE_CHALLENGE: Final = (
     .rstrip("=")
 )
 MAX_CONFIG_BYTES: Final = 64 * 1024
+
+OAuthProvider = Literal["google", "naver", "kakao"]
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderFlowSpec:
+    flow_id: str
+    authorize_origin: str
+    authorize_path: str
+    authorize_client_id: str
+    scope: str
+    callback_code: str
+    fixture_name: str
+    invocation_snapshot: str
+    state_snapshot: str
+    residual_snapshot: str
+
+
+PROVIDER_FLOW_SPECS: Final[dict[OAuthProvider, ProviderFlowSpec]] = {
+    "google": ProviderFlowSpec(
+        FLOW_ID,
+        GOOGLE_AUTHORIZE_ORIGIN,
+        "/o/oauth2/v2/auth",
+        "google-client",
+        "openid email profile",
+        "google-code",
+        "google-oauth-user",
+        "oauth-google-provider-invocations",
+        "oauth-google-state",
+        "oauth-google-residual",
+    ),
+    "naver": ProviderFlowSpec(
+        "oauth-naver",
+        "https://nid.naver.com",
+        "/oauth2.0/authorize",
+        "naver-client",
+        "email profile",
+        "naver-code",
+        "naver-oauth-user",
+        "oauth-naver-provider-invocations",
+        "oauth-naver-state",
+        "oauth-naver-residual",
+    ),
+    "kakao": ProviderFlowSpec(
+        "oauth-kakao",
+        "https://kauth.kakao.com",
+        "/oauth/authorize",
+        "kakao-client",
+        "profile_nickname profile_image account_email",
+        "kakao-code",
+        "kakao-oauth-user",
+        "oauth-kakao-provider-invocations",
+        "oauth-kakao-state",
+        "oauth-kakao-residual",
+    ),
+}
 
 
 class ContractFailure(RuntimeError):
@@ -460,16 +516,21 @@ def _expected_issuer(value: str) -> str:
     return value
 
 
-def _cleanup(adapter: Adapter, primary_error: BaseException | None) -> None:
+def _cleanup(
+    adapter: Adapter,
+    primary_error: BaseException | None,
+    *,
+    spec: ProviderFlowSpec,
+) -> None:
     cleanup_error: BaseException | None = None
     try:
-        teardown = adapter.invoke("teardown", "google-oauth-user")
+        teardown = adapter.invoke("teardown", spec.fixture_name)
         if teardown != {"status": "clean"}:
             raise ContractFailure("google-oauth-teardown-mismatch")
     except BaseException as exc:  # noqa: BLE001 - preserve interrupts and probe residuals
         cleanup_error = exc
     try:
-        residual = _snapshot(adapter, "oauth-google-residual")
+        residual = _snapshot(adapter, spec.residual_snapshot)
         if residual != {
             "oauthStates": 0,
             "handoffs": 0,
@@ -488,7 +549,7 @@ def _cleanup(adapter: Adapter, primary_error: BaseException | None) -> None:
         raise primary_error from cleanup_error
 
 
-def run_google_flow(
+def run_provider_flow(
     producer_origin: str,
     consumer_origin: str,
     adapter: Adapter,
@@ -496,9 +557,15 @@ def run_google_flow(
     producer: str,
     consumer: str,
     expected_issuer: str,
+    provider: OAuthProvider = "google",
     timeout: float = 3.0,
 ) -> dict[str, Any]:
-    """Run one Google OAuth producer→consumer ordering and return sanitized evidence."""
+    """Run one provider OAuth producer→consumer ordering and return sanitized evidence."""
+
+    try:
+        spec = PROVIDER_FLOW_SPECS[provider]
+    except KeyError as exc:
+        raise ContractFailure("oauth-provider-unsupported") from exc
 
     if producer == consumer or {producer, consumer} != {"express", "fastapi"}:
         raise ContractFailure("google-oauth-mixed-ordering-required")
@@ -516,7 +583,7 @@ def run_google_flow(
     )
     primary_error: BaseException | None = None
     try:
-        fixture = _object(adapter.invoke("setup", "google-oauth-user"), "fixture")
+        fixture = _object(adapter.invoke("setup", spec.fixture_name), "fixture")
         required_fixture = {
             "userId",
             "email",
@@ -529,7 +596,7 @@ def run_google_flow(
             "providerSubject",
             "runId",
         }
-        if set(fixture) != required_fixture or fixture.get("provider") != "google":
+        if set(fixture) != required_fixture or fixture.get("provider") != provider:
             raise ContractFailure("google-oauth-malformed-fixture")
         if any(
             not isinstance(fixture[name], str) or not fixture[name]
@@ -545,7 +612,7 @@ def run_google_flow(
             )
         ) or not isinstance(fixture["roles"], list):
             raise ContractFailure("google-oauth-malformed-fixture")
-        start_path = "/auth/google?" + parse.urlencode(
+        start_path = f"/auth/{provider}?" + parse.urlencode(
             {
                 "client_id": fixture["clientId"],
                 "redirect_uri": fixture["redirectUri"],
@@ -559,8 +626,8 @@ def run_google_flow(
             raise ContractFailure("google-oauth-start-response-mismatch")
         authorization = _one_query(
             start.headers.get("location", ""),
-            GOOGLE_AUTHORIZE_ORIGIN,
-            "/o/oauth2/v2/auth",
+            spec.authorize_origin,
+            spec.authorize_path,
         )
         if set(authorization) != {
             "response_type",
@@ -570,9 +637,9 @@ def run_google_flow(
             "state",
         } or authorization != {
             "response_type": "code",
-            "client_id": "google-client",
-            "redirect_uri": f"{producer_origin}/auth/google/callback",
-            "scope": "openid email profile",
+            "client_id": spec.authorize_client_id,
+            "redirect_uri": f"{producer_origin}/auth/{provider}/callback",
+            "scope": spec.scope,
             "state": authorization["state"],
         }:
             raise ContractFailure("google-oauth-authorization-contract-mismatch")
@@ -581,8 +648,8 @@ def run_google_flow(
         wrong_state = _call(
             producer_origin,
             "GET",
-            "/auth/google/callback?"
-            + parse.urlencode({"code": "google-code", "state": "wrong-state"}),
+            f"/auth/{provider}/callback?"
+            + parse.urlencode({"code": spec.callback_code, "state": "wrong-state"}),
             timeout=timeout,
         )
         _error(wrong_state, 400, "INVALID_OAUTH_STATE")
@@ -590,7 +657,7 @@ def run_google_flow(
         provider_error = _call(
             producer_origin,
             "GET",
-            "/auth/google/callback?"
+            f"/auth/{provider}/callback?"
             + parse.urlencode(
                 {"error": "access_denied", "state": "error-response-probe-state"}
             ),
@@ -601,8 +668,8 @@ def run_google_flow(
         callback = _call(
             producer_origin,
             "GET",
-            "/auth/google/callback?"
-            + parse.urlencode({"code": "google-code", "state": provider_state}),
+            f"/auth/{provider}/callback?"
+            + parse.urlencode({"code": spec.callback_code, "state": provider_state}),
             timeout=timeout,
         )
         if callback.status != 302:
@@ -619,8 +686,8 @@ def run_google_flow(
         state_replay = _call(
             producer_origin,
             "GET",
-            "/auth/google/callback?"
-            + parse.urlencode({"code": "google-code", "state": provider_state}),
+            f"/auth/{provider}/callback?"
+            + parse.urlencode({"code": spec.callback_code, "state": provider_state}),
             timeout=timeout,
         )
         _error(state_replay, 400, "INVALID_OAUTH_STATE")
@@ -710,14 +777,14 @@ def run_google_flow(
         )
         _error(replay, 400, "INVALID_AUTH_HANDOFF_CODE")
 
-        provider_records = _snapshot(adapter, "oauth-google-provider-invocations")
+        provider_records = _snapshot(adapter, spec.invocation_snapshot)
         expected_records = [
             {
                 "schemaVersion": 1,
                 "runId": fixture["runId"],
                 "runtime": producer,
                 "source": "provider-transport",
-                "provider": "google",
+                "provider": provider,
                 "operation": "token",
                 "sequence": 1,
             },
@@ -726,7 +793,7 @@ def run_google_flow(
                 "runId": fixture["runId"],
                 "runtime": producer,
                 "source": "provider-transport",
-                "provider": "google",
+                "provider": provider,
                 "operation": "user-info",
                 "sequence": 2,
             },
@@ -737,11 +804,11 @@ def run_google_flow(
             "records": expected_records,
         }:
             raise ContractFailure("google-oauth-provider-invocation-mismatch")
-        state = _snapshot(adapter, "oauth-google-state")
+        state = _snapshot(adapter, spec.state_snapshot)
         expected_state = {
             "canonicalUsers": 1,
             "providerIdentities": 1,
-            "provider": "google",
+            "provider": provider,
             "providerSubject": fixture["providerSubject"],
             "linkedUserId": fixture["userId"],
             "oauthStatesRemaining": 0,
@@ -752,7 +819,7 @@ def run_google_flow(
         if state != expected_state:
             raise ContractFailure("google-oauth-state-mismatch")
         return {
-            "flow": FLOW_ID,
+            "flow": spec.flow_id,
             "ordering": f"{producer}-{consumer}",
             "passed": True,
             "qualifying": False,
@@ -774,7 +841,31 @@ def run_google_flow(
         primary_error = exc
         raise
     finally:
-        _cleanup(adapter, primary_error)
+        _cleanup(adapter, primary_error, spec=spec)
+
+
+def run_google_flow(
+    producer_origin: str,
+    consumer_origin: str,
+    adapter: Adapter,
+    *,
+    producer: str,
+    consumer: str,
+    expected_issuer: str,
+    timeout: float = 3.0,
+) -> dict[str, Any]:
+    """Backward-compatible Google-only wrapper around :func:`run_provider_flow`."""
+
+    return run_provider_flow(
+        producer_origin,
+        consumer_origin,
+        adapter,
+        producer=producer,
+        consumer=consumer,
+        expected_issuer=expected_issuer,
+        provider="google",
+        timeout=timeout,
+    )
 
 
 class FixtureAdapter:

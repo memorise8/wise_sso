@@ -20,6 +20,38 @@ policy = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = policy
 SPEC.loader.exec_module(policy)
 
+FLOW_MODULE_PATH = ROOT / "contracts" / "bin" / "oauth_google_flow.py"
+FLOW_SPEC = importlib.util.spec_from_file_location(
+    "contract_oauth_launch_policy_flow", FLOW_MODULE_PATH
+)
+assert FLOW_SPEC and FLOW_SPEC.loader
+flow = importlib.util.module_from_spec(FLOW_SPEC)
+sys.modules[FLOW_SPEC.name] = flow
+FLOW_SPEC.loader.exec_module(flow)
+
+PROVIDER_ISSUERS = {
+    "google": "https://accounts.google.com",
+    "naver": "https://nid.naver.com",
+    "kakao": "https://kauth.kakao.com",
+}
+PROVIDER_PROFILES: dict[str, object] = {
+    "google": {
+        "sub": "synthetic-google-subject",
+        "email": "google@example.invalid",
+        "email_verified": True,
+    },
+    "naver": {
+        "response": {
+            "id": "synthetic-naver-subject",
+            "email": "naver@example.invalid",
+        }
+    },
+    "kakao": {
+        "id": 42,
+        "kakao_account": {"email": "kakao@example.invalid"},
+    },
+}
+
 
 class OAuthLaunchPolicyTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -72,24 +104,31 @@ class OAuthLaunchPolicyTests(unittest.TestCase):
         self.constant_patch.stop()
         self.directory.cleanup()
 
-    def _write_provider_config(self, producer_port: int) -> None:
+    def _write_provider_config(
+        self,
+        producer_port: int,
+        provider: str = "google",
+        *,
+        callback_provider: str | None = None,
+        client_id: str | None = None,
+        code: str | None = None,
+    ) -> None:
+        callback_provider = callback_provider or provider
+        client_id = client_id or f"{provider}-client"
+        code = code or f"{provider}-code"
         self.provider_config.write_text(
             json.dumps(
                 {
                     "scenarios": [
                         {
-                            "provider": "google",
-                            "issuer": "https://accounts.google.com",
-                            "code": "synthetic-google-code",
-                            "accessToken": "synthetic-google-access",
-                            "profile": {
-                                "sub": "synthetic-google-subject",
-                                "email": "google@example.invalid",
-                                "email_verified": True,
-                            },
-                            "clientId": "synthetic-google-client",
-                            "clientSecret": "synthetic-google-secret",
-                            "redirectUri": f"http://127.0.0.1:{producer_port}/auth/google/callback",
+                            "provider": provider,
+                            "issuer": PROVIDER_ISSUERS[provider],
+                            "code": code,
+                            "accessToken": f"synthetic-{provider}-access",
+                            "profile": PROVIDER_PROFILES[provider],
+                            "clientId": client_id,
+                            "clientSecret": f"synthetic-{provider}-secret",
+                            "redirectUri": f"http://127.0.0.1:{producer_port}/auth/{callback_provider}/callback",
                             "tokenOutcome": "success",
                             "userOutcome": "success",
                         }
@@ -111,7 +150,7 @@ class OAuthLaunchPolicyTests(unittest.TestCase):
             "JWT_AUDIENCE": "contract-fixture",
             "JWT_REFRESH_SECRET": "private-contract-refresh-secret",
             "OAUTH_ENABLED_PROVIDERS": "google",
-            "GOOGLE_CLIENT_ID": "synthetic-google-client",
+            "GOOGLE_CLIENT_ID": "google-client",
             "GOOGLE_CLIENT_SECRET": "synthetic-google-secret",
             "GOOGLE_REDIRECT_URI": "http://127.0.0.1:4400/auth/google/callback",
             "WISEACCT_TEST_PROVIDER_CONFIG": str(self.provider_config),
@@ -178,9 +217,25 @@ class OAuthLaunchPolicyTests(unittest.TestCase):
             },
         }
 
-    def assert_refused(self, config: dict[str, Any], message: str) -> None:
+    def _select_provider(
+        self, config: dict[str, Any], provider: str, producer_port: int
+    ) -> None:
+        prefix = provider.upper()
+        redirect_uri = f"http://127.0.0.1:{producer_port}/auth/{provider}/callback"
+        config["fixtureEnvironment"]["CONTRACT_OAUTH_PROVIDER"] = provider
+        for runtime in (config["producer"], config["consumer"]):
+            environment = runtime["environment"]
+            environment["OAUTH_ENABLED_PROVIDERS"] = provider
+            environment[f"{prefix}_CLIENT_ID"] = f"{provider}-client"
+            environment[f"{prefix}_CLIENT_SECRET"] = f"synthetic-{provider}-secret"
+            environment[f"{prefix}_REDIRECT_URI"] = redirect_uri
+        self._write_provider_config(producer_port, provider)
+
+    def assert_refused(
+        self, config: dict[str, Any], message: str, *, provider: str = "google"
+    ) -> None:
         with self.assertRaisesRegex(ValueError, message):
-            policy.validate_launch_config(config)
+            policy.validate_launch_config(config, provider=provider)
 
     def test_accepts_exact_repository_owned_offline_bootstraps(self) -> None:
         policy.validate_launch_config(self.config)
@@ -197,6 +252,115 @@ class OAuthLaunchPolicyTests(unittest.TestCase):
                 "http://127.0.0.1:4401/auth/google/callback"
             )
         policy.validate_launch_config(config)
+
+    def test_accepts_all_providers_in_both_runtime_directions(self) -> None:
+        for provider in ("google", "naver", "kakao"):
+            for producer_role, producer_port in (("express", 4400), ("fastapi", 4401)):
+                with self.subTest(provider=provider, producer_role=producer_role):
+                    config = deepcopy(self.config)
+                    if producer_role == "fastapi":
+                        config["producerRole"] = "fastapi"
+                        config["consumerRole"] = "express"
+                        config["producer"], config["consumer"] = (
+                            config["consumer"],
+                            config["producer"],
+                        )
+                        config["fixtureEnvironment"]["CONTRACT_BASE_URL"] = (
+                            "http://127.0.0.1:4401"
+                        )
+                    self._select_provider(config, provider, producer_port)
+                    policy.validate_launch_config(config, provider=provider)
+
+    def test_policy_approved_public_values_match_flow_oracle(self) -> None:
+        for provider in ("google", "naver", "kakao"):
+            with self.subTest(provider=provider):
+                config = deepcopy(self.config)
+                self._select_provider(config, provider, 4400)
+                policy.validate_launch_config(config, provider=provider)
+                scenario = policy._load_provider_transport().load_scenarios(
+                    self.provider_config
+                )[0]
+                flow_spec = flow.PROVIDER_FLOW_SPECS[provider]
+                self.assertEqual(scenario.client_id, flow_spec.authorize_client_id)
+                self.assertEqual(scenario.code, flow_spec.callback_code)
+
+    def test_rejects_requested_provider_different_from_fixture_environment(
+        self,
+    ) -> None:
+        self.assert_refused(
+            self.config,
+            "fixture provider binding does not match",
+            provider="naver",
+        )
+
+    def test_rejects_requested_provider_different_from_scenario(self) -> None:
+        config = deepcopy(self.config)
+        self._select_provider(config, "naver", 4400)
+        self._write_provider_config(4400, "google")
+        self.assert_refused(config, "must contain only Naver", provider="naver")
+
+    def test_rejects_requested_provider_different_from_runtime_allowlist(self) -> None:
+        config = deepcopy(self.config)
+        self._select_provider(config, "naver", 4400)
+        config["consumer"]["environment"]["OAUTH_ENABLED_PROVIDERS"] = "google"
+        self.assert_refused(config, "allowlist is not exact", provider="naver")
+
+    def test_rejects_requested_provider_different_from_callback_path(self) -> None:
+        config = deepcopy(self.config)
+        self._select_provider(config, "kakao", 4400)
+        wrong_callback = "http://127.0.0.1:4400/auth/naver/callback"
+        for runtime in (config["producer"], config["consumer"]):
+            runtime["environment"]["KAKAO_REDIRECT_URI"] = wrong_callback
+        self._write_provider_config(4400, "kakao", callback_provider="naver")
+        self.assert_refused(
+            config, "Kakao callback binding does not match", provider="kakao"
+        )
+
+    def test_rejects_unknown_provider_before_file_or_transport_access(self) -> None:
+        with (
+            mock.patch.object(policy, "_exact_path") as exact_path,
+            mock.patch.object(policy, "_load_provider_transport") as load_transport,
+            self.assertRaisesRegex(ValueError, "launch provider is invalid"),
+        ):
+            policy.validate_launch_config(self.config, provider="unknown")
+        exact_path.assert_not_called()
+        load_transport.assert_not_called()
+
+    def test_rejects_unrecognized_public_client_id_before_runtime_validation(
+        self,
+    ) -> None:
+        for provider in ("google", "naver", "kakao"):
+            with self.subTest(provider=provider):
+                config = deepcopy(self.config)
+                self._select_provider(config, provider, 4400)
+                self._write_provider_config(
+                    4400, provider, client_id=f"wrong-{provider}-client"
+                )
+                with (
+                    mock.patch.object(
+                        policy, "_validate_common_environment"
+                    ) as validate_runtime,
+                    self.assertRaisesRegex(ValueError, "client ID is not recognized"),
+                ):
+                    policy.validate_launch_config(config, provider=provider)
+                validate_runtime.assert_not_called()
+
+    def test_rejects_unrecognized_public_code_before_runtime_validation(self) -> None:
+        for provider in ("google", "naver", "kakao"):
+            with self.subTest(provider=provider):
+                config = deepcopy(self.config)
+                self._select_provider(config, provider, 4400)
+                self._write_provider_config(
+                    4400, provider, code=f"wrong-{provider}-code"
+                )
+                with (
+                    mock.patch.object(
+                        policy, "_validate_common_environment"
+                    ) as validate_runtime,
+                    self.assertRaisesRegex(ValueError, "code is not recognized"),
+                ):
+                    policy.validate_launch_config(config, provider=provider)
+                validate_runtime.assert_not_called()
 
     def test_rejects_direct_express_server_without_preload(self) -> None:
         config = deepcopy(self.config)

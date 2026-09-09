@@ -34,7 +34,7 @@
   "phase7DevelopmentFlowDriver": {
     "runner": "bin/flow_driver.py",
     "tests": "tests/test_flow_driver.py",
-    "scope": "password login/handoff, private-mail verification/attach/reset, and separately dispatched Google mixed-runtime development trials",
+    "scope": "password login/handoff, private-mail verification/attach/reset, and separately dispatched Google/Naver/Kakao mixed-runtime development trials",
     "flows": [
       "password-direct-login-token",
       "password-handoff-exchange",
@@ -52,10 +52,21 @@
       "independentRuntimeCorpus": false,
       "qualifyingEvidence": false
     },
+    "additionalProviderMixedFlows": {
+      "ids": ["oauth-naver", "oauth-kakao"],
+      "launchConfigArgument": "--oauth-launch-config",
+      "launchPolicy": "bin/oauth_launch_policy.py",
+      "fixtureAdapter": "adapters/google_oauth_fixture.py",
+      "providerEnvironment": "CONTRACT_OAUTH_PROVIDER",
+      "topologies": ["express-fastapi", "fastapi-express"],
+      "unverified": ["provider-error-state-lifecycle"],
+      "independentRuntimeCorpus": false,
+      "qualifyingEvidence": false
+    },
     "qualifyingEvidence": false,
     "fullPhase7SampleSatisfied": false,
     "overallReplacementReady": false,
-    "note": "Local HTTP, hermetic independent-role mail tests, and the Google mixed-only dispatch are not real-engine/live DB/Redis qualification, independent per-runtime Google coverage, full sample coverage, or authenticated collector evidence."
+    "note": "Local HTTP, hermetic independent-role mail tests, and provider mixed-only dispatches are not real-engine/live DB/Redis qualification, independent per-runtime OAuth coverage, full sample coverage, or authenticated collector evidence."
   },
   "phase7ApprovedCoreFlows": [
     {
@@ -122,7 +133,7 @@
       "status": "partial",
       "scenarios": ["oauth.naver-start-requires-pkce"],
       "gaps": [
-        "Unsupported: deterministic Naver provider redirect/callback, account linking, handoff/exchange, replay, mixed-runtime ordering, and repeated samples remain outstanding."
+        "Unsupported: the nonqualifying owned-launcher development path covers deterministic mixed-runtime Naver redirect/callback, account linking, handoff/exchange and success-state replay; provider-specific failure corpus, provider-error state lifecycle, real engine/store execution, independent per-runtime cases, authenticated collection and approved repeated samples remain outstanding."
       ]
     },
     {
@@ -132,7 +143,7 @@
       "status": "partial",
       "scenarios": ["oauth.kakao-start-requires-pkce"],
       "gaps": [
-        "Unsupported: deterministic Kakao provider redirect/callback, account linking, handoff/exchange, replay, mixed-runtime ordering, and repeated samples remain outstanding."
+        "Unsupported: the nonqualifying owned-launcher development path covers deterministic mixed-runtime Kakao redirect/callback, account linking, handoff/exchange and success-state replay; provider-specific profile/email corpus, provider-error state lifecycle, real engine/store execution, independent per-runtime cases, authenticated collection and approved repeated samples remain outstanding."
       ]
     },
     {
@@ -268,7 +279,7 @@
         "oauth.kakao-start-requires-pkce"
       ],
       "gaps": [
-        "Unsupported: provider redirects, callbacks, account linking, handoff exchange, and replay require deterministic fake Google, Naver, and Kakao endpoints."
+        "Unsupported: deterministic synthetic transport and mixed-only development flows exist for Google, Naver and Kakao, but provider-specific failure/profile cases, provider-error state lifecycle, independent per-runtime real-engine/store qualification and authenticated repeated samples remain outstanding."
       ]
     },
     {

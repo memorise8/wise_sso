@@ -118,7 +118,10 @@ class PrivateOAuthFlowLauncher:
         consumer_role: str,
         consumer: Any,
         readiness_timeout: float = 15.0,
+        provider: str = "google",
     ) -> None:
+        if provider not in ("google", "naver", "kakao"):
+            raise OAuthLaunchError("OAuth launcher provider is unsupported")
         if {producer_role, consumer_role} != {"express", "fastapi"}:
             raise OAuthLaunchError(
                 "OAuth launcher requires one process for each runtime role"
@@ -140,6 +143,7 @@ class PrivateOAuthFlowLauncher:
                     "runtime environment overrides the private record binding"
                 )
         self.run_id = run_id
+        self.provider = provider
         self.producer_role = producer_role
         self.consumer_role = consumer_role
         self._producer = producer
@@ -424,9 +428,21 @@ class OwnedOAuthFixtureAdapter:
         self.runtime_bindings = launcher.runtime_bindings
 
     def invoke(self, command: str, name: str) -> Any:
-        if command == "snapshot" and name == "oauth-google-provider-invocations":
+        provider = self._launcher.provider
+        fixture_name = f"{provider}-oauth-user"
+        if command in {"setup", "teardown"} and name != fixture_name:
+            raise OAuthLaunchError("fixture provider scope does not match the launcher")
+        if command == "snapshot" and name not in {
+            f"oauth-{provider}-provider-invocations",
+            f"oauth-{provider}-state",
+            f"oauth-{provider}-residual",
+        }:
+            raise OAuthLaunchError(
+                "snapshot provider scope does not match the launcher"
+            )
+        if command == "snapshot" and name == f"oauth-{provider}-provider-invocations":
             return self._launcher.consume_provider_snapshot()
-        if command == "setup" and name == "google-oauth-user":
+        if command == "setup" and name == fixture_name:
             result = self._adapter.invoke(command, name)
             if (
                 not isinstance(result, dict)
@@ -436,7 +452,7 @@ class OwnedOAuthFixtureAdapter:
                     "fixture runId does not match the owned launcher"
                 )
             return result
-        if command == "teardown" and name == "google-oauth-user":
+        if command == "teardown" and name == fixture_name:
             # Do not reset shared state while an owned writer can still mutate it.
             # On drain failure, leave the fixture intact and report cleanup failure.
             self._launcher._bounded_close()
@@ -527,7 +543,9 @@ def _runtime_from_config(value: object, role: str) -> Any:
         raise OAuthLaunchError("launcher runtime config was refused") from exc
 
 
-def _preflight_fixture(adapter: Any, environment: Mapping[str, str]) -> None:
+def _preflight_fixture(
+    adapter: Any, environment: Mapping[str, str], *, provider: str = "google"
+) -> None:
     from urllib import parse
 
     try:
@@ -540,7 +558,7 @@ def _preflight_fixture(adapter: Any, environment: Mapping[str, str]) -> None:
                 parse.urlsplit(environment["CONTRACT_REDIS_URL"]).path.lstrip("/")
             ),
             "mailMode": environment["CONTRACT_SERVER_MAIL_MODE"],
-            "googleIdentitySchema": "prisma-google-compatible",
+            f"{provider}IdentitySchema": f"prisma-{provider}-compatible",
         }
     except (KeyError, ValueError) as exc:
         raise OAuthLaunchError(
@@ -548,17 +566,19 @@ def _preflight_fixture(adapter: Any, environment: Mapping[str, str]) -> None:
         ) from exc
     if environment.get("CONTRACT_FASTAPI_RUNTIME") == "1":
         expected.update(runtime="fastapi", schema="prisma-compatible")
-    if adapter.invoke("preflight", "google-oauth-user") != expected:
+    if adapter.invoke("preflight", f"{provider}-oauth-user") != expected:
         raise OAuthLaunchError("OAuth fixture preflight result did not match")
 
 
-def _validate_launch_policy(config: dict[str, Any]) -> None:
+def _validate_launch_policy(
+    config: dict[str, Any], *, provider: str = "google"
+) -> None:
     policy = _load(
         "private_oauth_launch_policy",
         Path(__file__).with_name("oauth_launch_policy.py"),
     )
     try:
-        policy.validate_launch_config(config)
+        policy.validate_launch_config(config, provider=provider)
     except (ValueError, OSError) as exc:
         raise OAuthLaunchError(
             "OAuth launch configuration was refused by pre-spawn policy"
@@ -568,6 +588,9 @@ def _validate_launch_policy(config: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument(
+        "--provider", choices=("google", "naver", "kakao"), default="google"
+    )
     args = parser.parse_args(argv)
     try:
         config = _load_config(args.config)
@@ -601,7 +624,7 @@ def main(argv: list[str] | None = None) -> int:
             for name, value in fixture_environment.items()
         ):
             raise OAuthLaunchError("launcher fixture environment is invalid")
-        _validate_launch_policy(config)
+        _validate_launch_policy(config, provider=args.provider)
         producer_role = cast(str, config["producerRole"])
         consumer_role = cast(str, config["consumerRole"])
         producer = _runtime_from_config(config["producer"], producer_role)
@@ -614,23 +637,29 @@ def main(argv: list[str] | None = None) -> int:
             Path(cast(str, config["fixtureAdapter"])),
             cast(dict[str, str], fixture_environment),
         )
-        _preflight_fixture(base_adapter, cast(dict[str, str], fixture_environment))
+        _preflight_fixture(
+            base_adapter,
+            cast(dict[str, str], fixture_environment),
+            provider=args.provider,
+        )
         with PrivateOAuthFlowLauncher(
             run_id=cast(str, config["runId"]),
             producer_role=producer_role,
             producer=producer,
             consumer_role=consumer_role,
             consumer=consumer,
+            provider=args.provider,
         ) as launcher:
             adapter = OwnedOAuthFixtureAdapter(base_adapter, launcher)
             origins = launcher.origins
-            result = oauth_module.run_google_flow(
+            result = oauth_module.run_provider_flow(
                 origins[producer_role],
                 origins[consumer_role],
                 adapter,
                 producer=producer_role,
                 consumer=consumer_role,
                 expected_issuer=cast(str, config["expectedIssuer"]),
+                provider=args.provider,
             )
     except (OAuthLaunchError, OSError, RuntimeError) as exc:
         error = (

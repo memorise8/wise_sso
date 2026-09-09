@@ -40,17 +40,18 @@ def _json_segment(value: dict[str, Any]) -> str:
 
 class SharedState:
     user_id = "00000000-0000-4000-8000-000000000051"
-    email = "google-linked@example.invalid"
-    name = "Google Linked User"
+    email = "oauth-linked@example.invalid"
+    name = "OAuth Linked User"
     audience = "oauth-mixed-contract"
     issuer = EXPECTED_ISSUER
     client_id = "oauth-mixed-contract"
     redirect_uri = "http://127.0.0.1:4101/auth/callback"
-    provider_subject = "google-subject-051"
-    run_id = "google-flow-run-051"
     roles: ClassVar[list[dict[str, str]]] = [{"serviceKey": "temis", "name": "user"}]
 
-    def __init__(self) -> None:
+    def __init__(self, provider: str = "google") -> None:
+        self.provider = provider
+        self.provider_subject = f"{provider}-subject-051"
+        self.run_id = f"{provider}-flow-run-051"
         self.lock = threading.Lock()
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         self.reset()
@@ -69,7 +70,7 @@ class SharedState:
     def create_state(self, role: str, query: dict[str, str]) -> str:
         with self.lock:
             self.sequence += 1
-            state = f"private-google-state-{self.sequence}"
+            state = f"private-{self.provider}-state-{self.sequence}"
             self.oauth_states[state] = {**query, "role": role}
             return state
 
@@ -85,7 +86,7 @@ class SharedState:
                         "runId": self.run_id,
                         "runtime": role,
                         "source": "provider-transport",
-                        "provider": "google",
+                        "provider": self.provider,
                         "operation": "token",
                         "sequence": 1,
                     },
@@ -94,7 +95,7 @@ class SharedState:
                         "runId": self.run_id,
                         "runtime": role,
                         "source": "provider-transport",
-                        "provider": "google",
+                        "provider": self.provider,
                         "operation": "user-info",
                         "sequence": 2,
                     },
@@ -149,7 +150,7 @@ class SharedState:
                 "sub": self.user_id,
                 "audience": self.audience,
                 "type": "refresh",
-                "tokenId": "google-refresh-session-1",
+                "tokenId": f"{self.provider}-refresh-session-1",
                 "iat": now - 1,
                 "exp": now + 300,
             }
@@ -187,10 +188,12 @@ class Runtime:
         *,
         redirect_status: int = 302,
         jwks_status: int = 200,
+        bad_authorization_scope: bool = False,
     ) -> None:
         self.role, self.state = role, state
         self.redirect_status = redirect_status
         self.jwks_status = jwks_status
+        self.bad_authorization_scope = bad_authorization_scope
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -244,7 +247,9 @@ class Runtime:
                     self.send_header("content-length", str(64 * 1024 + 1))
                     self.end_headers()
                     return
-                if parsed.path == "/auth/google":
+                provider = owner.state.provider
+                spec = oauth.PROVIDER_FLOW_SPECS[provider]
+                if parsed.path == f"/auth/{provider}":
                     required = {
                         "client_id",
                         "redirect_uri",
@@ -267,24 +272,32 @@ class Runtime:
                         )
                     state_value = owner.state.create_state(owner.role, query)
                     authorization = (
-                        "https://accounts.google.com/o/oauth2/v2/auth?"
+                        spec.authorize_origin
+                        + spec.authorize_path
+                        + "?"
                         + urllib.parse.urlencode(
                             {
                                 "response_type": "code",
-                                "client_id": "google-client",
-                                "redirect_uri": f"{owner.origin}/auth/google/callback",
-                                "scope": "openid email profile",
+                                "client_id": spec.authorize_client_id,
+                                "redirect_uri": f"{owner.origin}/auth/{provider}/callback",
+                                "scope": (
+                                    "wrong-scope"
+                                    if owner.bad_authorization_scope
+                                    else spec.scope
+                                ),
                                 "state": state_value,
                             }
                         )
                     )
                     return self.redirect(authorization)
-                if parsed.path == "/auth/google/callback":
+                if parsed.path == f"/auth/{provider}/callback":
                     if query.get("error"):
                         if query.get("state") in owner.state.oauth_states:
                             return self.fail("INVALID_OAUTH_STATE")
                         return self.fail("OAUTH_PROVIDER_ERROR")
-                    if query.get("code") != "google-code" or not query.get("state"):
+                    if query.get("code") != spec.callback_code or not query.get(
+                        "state"
+                    ):
                         return self.fail("INVALID_OAUTH_STATE")
                     code = owner.state.callback(query["state"], owner.role)
                     if code is None:
@@ -384,6 +397,8 @@ class Adapter:
         malformed_setup: bool = False,
         noop_teardown: bool = False,
         unrelated_session: bool = False,
+        fixture_provider: str | None = None,
+        record_provider: str | None = None,
         runtime_origins: dict[str, str] | None = None,
     ) -> None:
         self.state, self.producer = state, producer
@@ -392,6 +407,8 @@ class Adapter:
         self.malformed_setup = malformed_setup
         self.noop_teardown = noop_teardown
         self.unrelated_session = unrelated_session
+        self.fixture_provider = fixture_provider
+        self.record_provider = record_provider
         origins = runtime_origins or {
             "express": "http://127.0.0.1:4400",
             "fastapi": "http://127.0.0.1:4401",
@@ -417,7 +434,7 @@ class Adapter:
                 "audience": self.state.audience,
                 "clientId": self.state.client_id,
                 "redirectUri": self.state.redirect_uri,
-                "provider": "google",
+                "provider": self.fixture_provider or self.state.provider,
                 "providerSubject": self.state.provider_subject,
                 "runId": self.state.run_id,
             }
@@ -425,17 +442,23 @@ class Adapter:
             if not self.noop_teardown:
                 self.state.reset()
             return {"status": "clean"}
-        if name == "oauth-google-provider-invocations":
+        spec = oauth.PROVIDER_FLOW_SPECS[self.state.provider]
+        if name == spec.invocation_snapshot:
+            records = list(self.state.provider_records)
+            if self.record_provider is not None:
+                records = [
+                    {**record, "provider": self.record_provider} for record in records
+                ]
             return {
                 "source": "launcher-owned-private-provider-record-pipe-v1",
                 "consumed": not self.tamper_channel,
-                "records": list(self.state.provider_records),
+                "records": records,
             }
-        if name == "oauth-google-state":
+        if name == spec.state_snapshot:
             return {
                 "canonicalUsers": int(self.state.linked),
                 "providerIdentities": int(self.state.linked),
-                "provider": "google",
+                "provider": self.state.provider,
                 "providerSubject": self.state.provider_subject,
                 "linkedUserId": self.state.user_id,
                 "oauthStatesRemaining": len(self.state.oauth_states),
@@ -446,7 +469,7 @@ class Adapter:
                     *(["f" * 64] if self.unrelated_session else []),
                 ],
             }
-        if name == "oauth-google-residual":
+        if name == spec.residual_snapshot:
             return {
                 "oauthStates": len(self.state.oauth_states),
                 "handoffs": len(self.state.handoffs),
@@ -470,8 +493,8 @@ class GoogleOAuthFlowTests(unittest.TestCase):
             "fixtureEnvironment": {"CONTRACT_REFRESH_SECRET": "test-refresh-secret"},
         }
 
-    def run_order(self, producer_role: str) -> dict[str, Any]:
-        state = SharedState()
+    def run_order(self, producer_role: str, provider: str = "google") -> dict[str, Any]:
+        state = SharedState(provider)
         consumer_role = "fastapi" if producer_role == "express" else "express"
         with Runtime("express", state) as express, Runtime("fastapi", state) as fastapi:
             runtimes = {"express": express, "fastapi": fastapi}
@@ -483,20 +506,22 @@ class GoogleOAuthFlowTests(unittest.TestCase):
                     "fastapi": fastapi.origin,
                 },
             )
-            result = oauth.run_google_flow(
+            result = oauth.run_provider_flow(
                 runtimes[producer_role].origin,
                 runtimes[consumer_role].origin,
                 adapter,
                 producer=producer_role,
                 consumer=consumer_role,
                 expected_issuer=EXPECTED_ISSUER,
+                provider=provider,
             )
-            self.assertEqual(adapter.calls[0], ("setup", "google-oauth-user"))
+            spec = oauth.PROVIDER_FLOW_SPECS[provider]
+            self.assertEqual(adapter.calls[0], ("setup", spec.fixture_name))
             self.assertEqual(
                 adapter.calls[-2:],
                 [
-                    ("teardown", "google-oauth-user"),
-                    ("snapshot", "oauth-google-residual"),
+                    ("teardown", spec.fixture_name),
+                    ("snapshot", spec.residual_snapshot),
                 ],
             )
             return cast(dict[str, Any], result)
@@ -514,6 +539,108 @@ class GoogleOAuthFlowTests(unittest.TestCase):
         result = self.run_order("fastapi")
         self.assertEqual(result["ordering"], "fastapi-express")
         self.assertTrue(result["assertions"]["realAccessJwtVerified"])
+
+    def test_naver_connected_flow_in_both_mixed_directions(self) -> None:
+        for producer in ("express", "fastapi"):
+            with self.subTest(producer=producer):
+                result = self.run_order(producer, "naver")
+                self.assertEqual(result["flow"], "oauth-naver")
+                self.assertTrue(all(result["assertions"].values()))
+
+    def test_kakao_connected_flow_in_both_mixed_directions(self) -> None:
+        for producer in ("express", "fastapi"):
+            with self.subTest(producer=producer):
+                result = self.run_order(producer, "kakao")
+                self.assertEqual(result["flow"], "oauth-kakao")
+                self.assertTrue(all(result["assertions"].values()))
+
+    def test_provider_specs_match_local_express_contract(self) -> None:
+        expected = {
+            "google": (
+                "https://accounts.google.com",
+                "/o/oauth2/v2/auth",
+                "openid email profile",
+            ),
+            "naver": (
+                "https://nid.naver.com",
+                "/oauth2.0/authorize",
+                "email profile",
+            ),
+            "kakao": (
+                "https://kauth.kakao.com",
+                "/oauth/authorize",
+                "profile_nickname profile_image account_email",
+            ),
+        }
+        self.assertEqual(
+            {
+                provider: (
+                    spec.authorize_origin,
+                    spec.authorize_path,
+                    spec.scope,
+                )
+                for provider, spec in oauth.PROVIDER_FLOW_SPECS.items()
+            },
+            expected,
+        )
+
+    def test_rejects_provider_specific_fixture_and_private_records(self) -> None:
+        for fixture_provider, record_provider, expected_error in (
+            ("google", None, "malformed-fixture"),
+            (None, "google", "invocation-mismatch"),
+        ):
+            state = SharedState("naver")
+            with (
+                Runtime("express", state) as express,
+                Runtime("fastapi", state) as fastapi,
+            ):
+                adapter = Adapter(
+                    state,
+                    "express",
+                    fixture_provider=fixture_provider,
+                    record_provider=record_provider,
+                    runtime_origins={
+                        "express": express.origin,
+                        "fastapi": fastapi.origin,
+                    },
+                )
+                with (
+                    self.subTest(expected_error=expected_error),
+                    self.assertRaisesRegex(oauth.ContractFailure, expected_error),
+                ):
+                    oauth.run_provider_flow(
+                        express.origin,
+                        fastapi.origin,
+                        adapter,
+                        producer="express",
+                        consumer="fastapi",
+                        expected_issuer=EXPECTED_ISSUER,
+                        provider="naver",
+                    )
+
+    def test_rejects_provider_specific_authorization_query(self) -> None:
+        state = SharedState("kakao")
+        with (
+            Runtime("express", state, bad_authorization_scope=True) as express,
+            Runtime("fastapi", state) as fastapi,
+        ):
+            adapter = Adapter(
+                state,
+                "express",
+                runtime_origins={"express": express.origin, "fastapi": fastapi.origin},
+            )
+            with self.assertRaisesRegex(
+                oauth.ContractFailure, "authorization-contract"
+            ):
+                oauth.run_provider_flow(
+                    express.origin,
+                    fastapi.origin,
+                    adapter,
+                    producer="express",
+                    consumer="fastapi",
+                    expected_issuer=EXPECTED_ISSUER,
+                    provider="kakao",
+                )
 
     def test_rejects_provider_records_without_consumed_private_channel(self) -> None:
         state = SharedState()

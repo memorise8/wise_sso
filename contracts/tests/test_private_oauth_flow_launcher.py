@@ -219,6 +219,60 @@ class PrivateOAuthLauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(launcher_module.OAuthLaunchError, "runId"):
                 adapter.invoke("setup", "google-oauth-user")
 
+    def test_naver_and_kakao_use_owned_provider_pipe_in_both_directions(self) -> None:
+        issuers = {"naver": "https://nid.naver.com", "kakao": "https://kauth.kakao.com"}
+        for provider, issuer in issuers.items():
+            document = json.loads(self.config.read_text())
+            document["scenarios"][0].update(provider=provider, issuer=issuer)
+            self.config.write_text(json.dumps(document))
+            for producer_role in ("express", "fastapi"):
+                with self.subTest(provider=provider, producer_role=producer_role):
+                    consumer_role = (
+                        "fastapi" if producer_role == "express" else "express"
+                    )
+                    producer, consumer = self.specs()
+                    run_id = f"owned-{provider}-{producer_role}"
+                    with launcher_module.PrivateOAuthFlowLauncher(
+                        run_id=run_id,
+                        producer_role=producer_role,
+                        producer=replace(producer, name=producer_role),
+                        consumer_role=consumer_role,
+                        consumer=replace(consumer, name=consumer_role),
+                        provider=provider,
+                    ) as launcher:
+                        base = BaseAdapter(run_id)
+                        adapter = launcher_module.OwnedOAuthFixtureAdapter(
+                            base, launcher
+                        )
+                        with self.assertRaisesRegex(
+                            launcher_module.OAuthLaunchError, "provider scope"
+                        ):
+                            adapter.invoke("setup", "google-oauth-user")
+                        self.assertEqual(base.calls, [])
+                        adapter.invoke("setup", f"{provider}-oauth-user")
+                        with urllib.request.urlopen(
+                            f"{launcher.origins[producer_role]}/trigger", timeout=3
+                        ) as response:
+                            self.assertEqual(response.status, 200)
+                        snapshot = adapter.invoke(
+                            "snapshot", f"oauth-{provider}-provider-invocations"
+                        )
+                        self.assertTrue(snapshot["consumed"])
+                        self.assertEqual(
+                            [record["provider"] for record in snapshot["records"]],
+                            [provider, provider],
+                        )
+                        self.assertEqual(
+                            [record["runtime"] for record in snapshot["records"]],
+                            [producer_role, producer_role],
+                        )
+                        self.assertEqual(
+                            [record["operation"] for record in snapshot["records"]],
+                            ["token", "user-info"],
+                        )
+                        adapter.invoke("teardown", f"{provider}-oauth-user")
+                    self.assertEqual(launcher._processes, {})
+
     def test_alias_existing_listener_and_same_process_are_rejected(self) -> None:
         producer, _consumer = self.specs()
         with self.assertRaisesRegex(Exception, "literal loopback"):
@@ -461,7 +515,7 @@ class PrivateOAuthLauncherTests(unittest.TestCase):
         ):
             self.assertEqual(launcher_module.main(["--config", "/unused/config"]), 2)
         launcher.assert_not_called()
-        policy.assert_called_once_with(config)
+        policy.assert_called_once_with(config, provider="google")
         base.invoke.assert_called_once_with("preflight", "google-oauth-user")
         self.assertFalse(json.loads(output.getvalue())["passed"])
 

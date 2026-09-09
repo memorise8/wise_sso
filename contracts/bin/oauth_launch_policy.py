@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pre-spawn policy for the connected Google OAuth contract runtimes.
+"""Pre-spawn policy for the connected OAuth provider contract runtimes.
 
 This module deliberately recognizes only two repository-owned command forms:
 
@@ -40,6 +40,23 @@ FASTAPI_CWD = ROOT / "fastapi-auth-server"
 FASTAPI_SRC = FASTAPI_CWD / "src"
 UVICORN = FASTAPI_CWD / ".venv" / "bin" / "uvicorn"
 GOOGLE_FIXTURE = ADAPTERS / "google_oauth_fixture.py"
+
+_SUPPORTED_PROVIDERS = frozenset({"google", "naver", "kakao"})
+_PROVIDER_ENV_PREFIX = {
+    "google": "GOOGLE",
+    "naver": "NAVER",
+    "kakao": "KAKAO",
+}
+_EXPECTED_SCENARIO_CLIENT_ID = {
+    "google": "google-client",
+    "naver": "naver-client",
+    "kakao": "kakao-client",
+}
+_EXPECTED_SCENARIO_CODE = {
+    "google": "google-code",
+    "naver": "naver-code",
+    "kakao": "kakao-code",
+}
 
 _SAFE_DATABASE_SEGMENT = re.compile(
     r"(?:^|[_-])(test|contract|fixture)(?:$|[_-])", re.IGNORECASE
@@ -187,6 +204,7 @@ def _validate_common_environment(
     fixture: Mapping[str, Any],
     expected_issuer: str,
     provider_config: Path,
+    provider: str,
 ) -> tuple[Mapping[str, Any], SplitResult]:
     environment = _mapping(
         runtime["environment"], "oauth runtime environment is invalid"
@@ -199,7 +217,7 @@ def _validate_common_environment(
         raise ValueError("oauth runtime provider config binding does not match")
     if environment.get("NODE_ENV") != "test":
         raise ValueError("oauth runtime must use test mode")
-    if environment.get("OAUTH_ENABLED_PROVIDERS") != "google":
+    if environment.get("OAUTH_ENABLED_PROVIDERS") != provider:
         raise ValueError("oauth runtime provider allowlist is not exact")
     if environment.get("JWT_ISSUER") != expected_issuer:
         raise ValueError("oauth runtime issuer binding does not match")
@@ -286,8 +304,11 @@ def _validate_fastapi(runtime: Mapping[str, Any], health: SplitResult) -> None:
         raise ValueError("oauth FastAPI health path is not recognized")
 
 
-def validate_launch_config(config: dict[str, Any]) -> None:
+def validate_launch_config(config: dict[str, Any], *, provider: str = "google") -> None:
     """Reject unsafe connected-flow configuration before either child is spawned."""
+
+    if not isinstance(provider, str) or provider not in _SUPPORTED_PROVIDERS:
+        raise ValueError("oauth launch provider is invalid")
 
     producer_role = config.get("producerRole")
     consumer_role = config.get("consumerRole")
@@ -311,6 +332,8 @@ def validate_launch_config(config: dict[str, Any]) -> None:
     )
     if any(not isinstance(value, str) for value in fixture.values()):
         raise ValueError("oauth fixture environment is invalid")
+    if fixture.get("CONTRACT_OAUTH_PROVIDER", "google") != provider:
+        raise ValueError("oauth fixture provider binding does not match")
     if (
         _BLOCKED_ENVIRONMENT.intersection(fixture)
         or "PATH" in fixture
@@ -356,11 +379,18 @@ def validate_launch_config(config: dict[str, Any]) -> None:
         scenarios = transport.load_scenarios(provider_config)
     except (transport.ProviderTransportConfigurationError, OSError) as exc:
         raise ValueError("oauth provider config was refused") from exc
-    if len(scenarios) != 1 or scenarios[0].provider != "google":
-        raise ValueError("oauth provider config must contain only Google")
+    if len(scenarios) != 1 or scenarios[0].provider != provider:
+        if provider == "google":
+            raise ValueError("oauth provider config must contain only Google")
+        raise ValueError(f"oauth provider config must contain only {provider.title()}")
+    scenario = scenarios[0]
+    if scenario.client_id != _EXPECTED_SCENARIO_CLIENT_ID[provider]:
+        raise ValueError("oauth provider scenario client ID is not recognized")
+    if scenario.code != _EXPECTED_SCENARIO_CODE[provider]:
+        raise ValueError("oauth provider scenario code is not recognized")
     for role in ("express", "fastapi"):
         environments[role], health[role] = _validate_common_environment(
-            runtimes[role], fixture, expected_issuer, provider_config
+            runtimes[role], fixture, expected_issuer, provider_config, provider
         )
     if _origin(health["express"]) == _origin(health["fastapi"]):
         raise ValueError("oauth runtime origins are not distinct")
@@ -377,25 +407,35 @@ def validate_launch_config(config: dict[str, Any]) -> None:
     _validate_fastapi(runtimes["fastapi"], health["fastapi"])
     producer = producer_role
     producer_environment = environments[producer]
-    scenario = scenarios[0]
+    prefix = _PROVIDER_ENV_PREFIX[provider]
+    client_id_name = f"{prefix}_CLIENT_ID"
+    client_secret_name = f"{prefix}_CLIENT_SECRET"
+    redirect_uri_name = f"{prefix}_REDIRECT_URI"
     if (
-        producer_environment.get("GOOGLE_CLIENT_ID") != scenario.client_id
-        or producer_environment.get("GOOGLE_CLIENT_SECRET") != scenario.client_secret
-        or producer_environment.get("GOOGLE_REDIRECT_URI") != scenario.redirect_uri
+        producer_environment.get(client_id_name) != scenario.client_id
+        or producer_environment.get(client_secret_name) != scenario.client_secret
+        or producer_environment.get(redirect_uri_name) != scenario.redirect_uri
     ):
-        raise ValueError("oauth producer Google scenario binding does not match")
+        raise ValueError(
+            f"oauth producer {provider.title()} scenario binding does not match"
+        )
     callback = _endpoint(
-        scenario.redirect_uri, "oauth producer Google callback is invalid"
+        scenario.redirect_uri,
+        f"oauth producer {provider.title()} callback is invalid",
     )
     if (
         _origin(callback) != _origin(health[producer])
-        or callback.path != "/auth/google/callback"
+        or callback.path != f"/auth/{provider}/callback"
     ):
-        raise ValueError("oauth producer Google callback binding does not match")
+        raise ValueError(
+            f"oauth producer {provider.title()} callback binding does not match"
+        )
     for environment in environments.values():
         if (
-            environment.get("GOOGLE_CLIENT_ID") != scenario.client_id
-            or environment.get("GOOGLE_CLIENT_SECRET") != scenario.client_secret
-            or environment.get("GOOGLE_REDIRECT_URI") != scenario.redirect_uri
+            environment.get(client_id_name) != scenario.client_id
+            or environment.get(client_secret_name) != scenario.client_secret
+            or environment.get(redirect_uri_name) != scenario.redirect_uri
         ):
-            raise ValueError("oauth runtime Google scenario binding does not match")
+            raise ValueError(
+                f"oauth runtime {provider.title()} scenario binding does not match"
+            )

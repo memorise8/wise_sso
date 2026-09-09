@@ -173,7 +173,7 @@ uv run --locked --project fastapi-auth-server pytest -q contracts/tests/test_flo
 uv run --locked --project fastapi-auth-server pytest -q contracts/tests
 ```
 
-### Connected Google mixed-runtime development trial
+### Connected OAuth mixed-runtime development trials
 
 The common `bin/flow_driver.py` entrypoint accepts `--flow oauth-google` only as
 an exclusive invocation with `--oauth-google-launch-config`. It calls the fixed
@@ -199,6 +199,28 @@ disposable PostgreSQL/Redis execution, repeated samples, authenticated source
 identity or any Phase 7 gate. The common entrypoint never turns that development
 result into a uniform core-flow trial or adds Google to the existing four-flow
 `FLOWS` corpus.
+
+Naver and Kakao use the same guarded implementation with an explicit provider:
+
+```sh
+python3 contracts/bin/flow_driver.py \
+  --flow oauth-naver \
+  --oauth-launch-config /secure/untracked/naver-mixed.json \
+  --jsonl /secure/untracked/naver-mixed-development.jsonl
+```
+
+Use `oauth-kakao` for Kakao. Select exactly one OAuth flow per invocation; do not
+combine the generic and legacy Google configuration arguments. The launch config
+keeps its existing schema. Its fixture environment must set
+`CONTRACT_OAUTH_PROVIDER=naver` or `kakao` and the matching
+`CONTRACT_NAVER_PROVIDER_SUBJECT` or `CONTRACT_KAKAO_PROVIDER_SUBJECT`. Runtime
+allowlists, synthetic provider scenario, client credentials and callback paths
+must match that same provider. The synthetic client ID and callback code must be
+`<provider>-client` and
+`<provider>-code`, respectively. The shared adapter retains its historical
+`adapters/google_oauth_fixture.py` filename; setup IDs and snapshots are scoped
+to the selected provider. All development-only limitations above apply equally
+to Naver and Kakao, including the unverified provider-error state lifecycle.
 
 ### Connected private-mail development trials
 

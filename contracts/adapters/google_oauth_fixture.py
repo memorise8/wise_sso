@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable Prisma-schema fixture adapter for the private Google OAuth flow."""
+"""Disposable Prisma-schema fixture adapter for private OAuth provider flows."""
 
 from __future__ import annotations
 
@@ -40,15 +40,17 @@ def _load(name: str) -> _FixtureModule:
 shared = _load("express_fixture.py")
 fastapi = _load("fastapi_fixture.py")
 AdapterError = shared.AdapterError
-GOOGLE_PROVIDER = "google"
+DEFAULT_PROVIDER = "google"
+GOOGLE_PROVIDER = DEFAULT_PROVIDER
+OAUTH_PROVIDERS = ("google", "naver", "kakao")
 SAFE_VALUE = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
-_GOOGLE_IDENTITY_SCHEMA = r"""
+_IDENTITY_SCHEMA_TEMPLATE = r"""
 SELECT CASE WHEN
   to_regclass('"SocialAccount"') IS NOT NULL AND
   (SELECT COUNT(*) FROM information_schema.columns
    WHERE table_schema = current_schema() AND table_name = 'SocialAccount'
      AND column_name IN ('provider', 'providerUserId', 'userId')) = 3
-THEN 'prisma-google-compatible' ELSE 'missing' END;
+THEN 'prisma-{provider}-compatible' ELSE 'missing' END;
 """
 
 
@@ -61,31 +63,55 @@ def load_config() -> Any:
 
 
 def preflight(config: Any) -> dict[str, Any]:
+    provider = _provider()
+    _provider_subject(provider)
+    provider_name = provider.capitalize()
     result = (
         fastapi.preflight(config)
         if os.environ.get("CONTRACT_FASTAPI_RUNTIME") == "1"
         else shared.preflight(config)
     )
-    schema = shared.psql(config, _GOOGLE_IDENTITY_SCHEMA)
-    if schema != "prisma-google-compatible":
-        raise AdapterError("fixture database is missing the Google identity schema")
-    return {**result, "googleIdentitySchema": schema}
-
-
-def _fixture_binding() -> tuple[str, str]:
-    run_id = os.environ.get("CONTRACT_OAUTH_RUN_ID", "")
-    provider_subject = os.environ.get("CONTRACT_GOOGLE_PROVIDER_SUBJECT", "")
-    if not SAFE_VALUE.fullmatch(run_id) or not SAFE_VALUE.fullmatch(provider_subject):
+    expected = f"prisma-{provider}-compatible"
+    schema = shared.psql(config, _IDENTITY_SCHEMA_TEMPLATE.format(provider=provider))
+    if schema != expected:
         raise AdapterError(
-            "CONTRACT_OAUTH_RUN_ID and CONTRACT_GOOGLE_PROVIDER_SUBJECT must be safe non-empty values"
+            f"fixture database is missing the {provider_name} identity schema"
         )
-    return run_id, provider_subject
+    return {**result, f"{provider}IdentitySchema": schema}
+
+
+def _provider() -> str:
+    provider = os.environ.get("CONTRACT_OAUTH_PROVIDER", DEFAULT_PROVIDER)
+    if provider not in OAUTH_PROVIDERS:
+        raise AdapterError(f"unsupported OAuth provider {provider!r}")
+    return provider
+
+
+def _fixture_binding() -> tuple[str, str, str]:
+    provider = _provider()
+    run_id = os.environ.get("CONTRACT_OAUTH_RUN_ID", "")
+    provider_subject = _provider_subject(provider)
+    if not SAFE_VALUE.fullmatch(run_id):
+        raise AdapterError("CONTRACT_OAUTH_RUN_ID must be a safe non-empty value")
+    return provider, run_id, provider_subject
+
+
+def _provider_subject(provider: str) -> str:
+    subject_name = f"CONTRACT_{provider.upper()}_PROVIDER_SUBJECT"
+    provider_subject = os.environ.get(subject_name, "")
+    if not SAFE_VALUE.fullmatch(provider_subject):
+        raise AdapterError(f"{subject_name} must be a safe non-empty value")
+    return provider_subject
+
+
+def _require_identifier(value: str, expected: str, kind: str) -> None:
+    if value != expected:
+        raise AdapterError(f"unsupported {kind} {value!r}")
 
 
 def setup(config: Any, fixture: str) -> dict[str, Any]:
-    if fixture != "google-oauth-user":
-        raise AdapterError(f"unsupported fixture {fixture!r}")
-    run_id, provider_subject = _fixture_binding()
+    provider, run_id, provider_subject = _fixture_binding()
+    _require_identifier(fixture, f"{provider}-oauth-user", "fixture")
     shared.reset(config)
     shared.seed(config)
     return {
@@ -96,7 +122,7 @@ def setup(config: Any, fixture: str) -> dict[str, Any]:
         "audience": config.audience,
         "clientId": config.client_id,
         "redirectUri": config.redirect_uri,
-        "provider": GOOGLE_PROVIDER,
+        "provider": provider,
         "providerSubject": provider_subject,
         "runId": run_id,
     }
@@ -108,20 +134,25 @@ def _rows(config: Any, sql: str) -> list[str]:
 
 
 def snapshot(config: Any, probe: str) -> dict[str, Any]:
-    _run_id, provider_subject = _fixture_binding()
+    provider, _run_id, provider_subject = _fixture_binding()
     user_id = shared.ACTIVE_USER_ID
-    if probe == "oauth-google-state":
+    if probe == f"oauth-{provider}-state":
+        provider_name = provider.capitalize()
         identity_rows = _rows(
             config,
             f"""SELECT "provider" || '|' || "providerUserId" || '|' || "userId"::text
 FROM "SocialAccount"
-WHERE "provider" = '{GOOGLE_PROVIDER}' AND "providerUserId" = '{provider_subject}';""",
+WHERE "provider" = '{provider}' AND "providerUserId" = '{provider_subject}';""",
         )
         if len(identity_rows) != 1:
-            raise AdapterError("Google provider identity projection was malformed")
+            raise AdapterError(
+                f"{provider_name} provider identity projection was malformed"
+            )
         identity = identity_rows[0].split("|")
         if len(identity) != 3:
-            raise AdapterError("Google provider identity projection was malformed")
+            raise AdapterError(
+                f"{provider_name} provider identity projection was malformed"
+            )
         hashes = _rows(
             config,
             f"""SELECT "tokenHash" FROM "RefreshToken"
@@ -147,7 +178,7 @@ WHERE "userId" = '{user_id}' AND "revokedAt" IS NULL ORDER BY "tokenHash";""",
             "activeRefreshTokens": len(hashes),
             "activeTokenHashes": hashes,
         }
-    if probe == "oauth-google-residual":
+    if probe == f"oauth-{provider}-residual":
         hashes = _rows(
             config,
             f"""SELECT "tokenHash" FROM "RefreshToken"
@@ -162,18 +193,18 @@ WHERE "userId" = '{user_id}' AND "revokedAt" IS NULL ORDER BY "tokenHash";""",
                 shared.psql(
                     config,
                     f"""SELECT COUNT(*) FROM "SocialAccount"
-WHERE "provider" = '{GOOGLE_PROVIDER}' AND "providerUserId" = '{provider_subject}';""",
+WHERE "provider" = '{provider}' AND "providerUserId" = '{provider_subject}';""",
                 )
             ),
         }
-    if probe == "oauth-google-provider-invocations":
+    if probe == f"oauth-{provider}-provider-invocations":
         raise AdapterError("provider invocation evidence requires the owned launcher")
     raise AdapterError(f"unsupported snapshot probe {probe!r}")
 
 
 def teardown(config: Any, fixture: str) -> dict[str, str]:
-    if fixture != "google-oauth-user":
-        raise AdapterError(f"unsupported fixture {fixture!r}")
+    provider, _run_id, _provider_subject = _fixture_binding()
+    _require_identifier(fixture, f"{provider}-oauth-user", "fixture")
     shared.reset(config)
     expected = {
         "oauthStates": 0,
@@ -182,8 +213,10 @@ def teardown(config: Any, fixture: str) -> dict[str, str]:
         "activeTokenHashes": [],
         "providerRecords": 0,
     }
-    if snapshot(config, "oauth-google-residual") != expected:
-        raise AdapterError("Google OAuth fixture teardown left residual state")
+    if snapshot(config, f"oauth-{provider}-residual") != expected:
+        raise AdapterError(
+            f"{provider.capitalize()} OAuth fixture teardown left residual state"
+        )
     return {"status": "clean"}
 
 

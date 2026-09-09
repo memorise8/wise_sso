@@ -4,6 +4,28 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+### 2026-09-09 Naver/Kakao development continuation
+
+The common OAuth harness now supports `oauth-naver` and `oauth-kakao` through
+`--oauth-launch-config <private-json>`, with explicit provider binding across
+launch policy, disposable fixture, owned provider-record pipe and flow assertions.
+The existing Google CLI remains compatible. Naver/Kakao local HTTP doubles and
+owned Python child probes cover both runtime role orderings; these are not actual
+Express/FastAPI engine runs or live PostgreSQL/Redis qualification.
+See `contracts/evidence/oauth-provider-flows-development.md` for final validation
+and independent review evidence. A06/A07 are development-prepared, not closed;
+all provider results retain `qualifying=false` and the explicit
+`provider-error-state-lifecycle` gap. Overall status remains **NOT_READY**.
+Final independent reviews: code APPROVE + architecture CLEAR. Checkpoint contracts
+263 passed / 244 subtests (separate in-progress A08 test excluded); FastAPI
+1416 passed / 79 skipped; changed-file Ruff/format/strict mypy passed.
+
+Next coding work remains the independent per-runtime OAuth corpus, remaining
+approved core-flow coverage and authenticated collector/orchestrator integration.
+Actual engine/store qualification requires the designated disposable D1 runner;
+do not use the production Docker daemon. Existing DB reuse and Prisma ownership
+remain unchanged. No operating Express source or `.omc/` was modified.
+
 ### 2026-09-09 W0/W1 continuation (supersedes the historical Google status below)
 
 Execution follows `.omx/plans/python-first-ready-2026-09-09.md` using native
