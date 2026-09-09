@@ -4,6 +4,25 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+### 2026-09-09 A08 regression continuation
+
+Naver/Kakao development work is committed as `74e005c`. The next A08 slice reuses
+the existing shared-state scheduler and adds focused 20-way local HTTP and hostile
+refresh/logout regression coverage; it does not recreate refresh handling.
+See `contracts/evidence/refresh-race-regression-development.md` for validation.
+The synthetic ledger and Python HTTP doubles do not prove real DB transaction
+ordering, JWT cryptography or full A08 qualification. READY remains unchanged.
+Final independent reviews: code APPROVE + architecture CLEAR. Full contracts:
+269 passed / 253 subtests; targeted A08: 6 passed / 9 subtests; Ruff/format/strict
+mypy passed. Shared-state implementation is unchanged.
+
+The next implementation gap is A09's admin integration corpus: role changes,
+session revocation, self-protection, both route aliases and audit/state projections
+beyond the existing status-mutation scenario. A10 already has alternating and
+simultaneous shared limiter schedules; focused coverage and client-IP/ingress
+evidence remain missing. Core app routes exist; do not rewrite them merely to add
+these contract drivers. D1 and authenticated downstream qualification remain open.
+
 ### 2026-09-09 Naver/Kakao development continuation
 
 The common OAuth harness now supports `oauth-naver` and `oauth-kakao` through
