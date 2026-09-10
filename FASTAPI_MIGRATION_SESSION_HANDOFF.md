@@ -4,6 +4,31 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+### 2026-09-10 development-first downstream connection
+
+The user clarified that deployment is on this server and requested remaining
+implementation before real integration tests. Do not keep asking for a different
+server or treat a separate physical machine as a migration requirement. Development
+tests can use separate candidate containers/stores/ports on this host; production
+services remain out of scope until a separate cutover decision.
+
+The top qualification runner now connects explicit security/backup bundles to
+their existing validators through `ops/phase7/run_downstream_gates.py`. This removes
+the blanket five-placeholder loop, not the underlying trust/policy refusals.
+Invalid supplied evidence fails; missing inputs and unimplemented execution paths
+are explicitly incomplete. Even an unexpected child PASS cannot promote readiness.
+See `contracts/evidence/downstream-connection-development.md` for verification.
+Final regression: 1435 passed / 79 skipped; targeted connection tests 19 passed.
+Ruff/format/configured mypy and changed-file strict mypy passed.
+Independent final reviews: code APPROVE + architecture CLEAR for the eight-file
+connection checkpoint. No parent G02/G03 or READY completion is claimed.
+
+Remaining implementation: actual security/backup collector binding, full-flow
+performance action/reset driver, chaos and local rollback execution, authenticated
+seven-gate collection/orchestrator/finalizer integration. Policy/trust decisions
+remain separate dependencies. This checkpoint is not READY-development completion;
+no actual DB/Redis/runtime or production operation was performed.
+
 ### 2026-09-09 A09/A10 administrator and limiter development continuation
 
 The administrator integration driver is now connected through the common CLI's

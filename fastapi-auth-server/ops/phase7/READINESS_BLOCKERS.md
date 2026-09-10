@@ -16,8 +16,12 @@ inventory, not gate evidence. A green unit suite does not satisfy live collectio
 | backup-restore | Synthetic encrypted evidence validator and sentinel contract | Selected RTO/RPO/retention policy, actual encrypted backup/restore in new test DBs and controlled evidence |
 | local-rollback | Qualification runner placeholder | Disposable Express rollback rehearsal with session/state/writer/drain assertions and controlled evidence |
 
-`run-phase7-qualification.sh` still invokes placeholders for its five downstream
-gates. Implementing a helper alone does not replace these entry points.
+2026-09-10 connection update: `run-phase7-qualification.sh` invokes the fixed
+Python downstream dispatcher. Explicit security/backup input bundles now reach
+their existing validators and publish nested evidence. This is evidence validation,
+not actual scanning/backup collection or authenticated qualification. Performance,
+chaos and local rollback execution paths remain unimplemented in the dispatcher;
+missing security/backup inputs remain distinct from invalid supplied bundles.
 `finalize_qualification_group.py` unconditionally adds
 `controlled-collector-required` and keeps `overallReplacementReady=false`.
 Those restrictions must be replaced only alongside authenticated collection and
@@ -68,6 +72,13 @@ required local collector. Do not fall back to the ambient production Docker
 socket or change host security settings to bypass these failures. A designated
 disposable VM/CI runner with the needed isolation capability is an alternative;
 its identity and configuration have not been supplied in this session.
+
+2026-09-10 user clarification: deployment is on this same server. Separate
+test containers/stores/ports on this host are the intended development-test path,
+not a requirement to obtain another physical server. Configuration-only checks
+passed and candidate ports/resources were free. These facts do not authenticate
+a controlled collector or authorize operating-service changes. The user requested
+remaining implementation before real integration runs; no runtime was started.
 
 ## Trust bootstrap and project inputs
 

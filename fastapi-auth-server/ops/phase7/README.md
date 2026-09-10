@@ -46,8 +46,10 @@ private configs, and explicit `express`/`fastapi` preflight names are passed to
 every suite. Each suite produces deterministic JSONL plus a status containing
 the scenario/result hashes and counts. A successful contract gate records
 `passedGate=independent-contract`, but the overall result remains `INCOMPLETE`
-while performance, security, chaos, backup/restore, and local rollback are
-fail-closed placeholders. The current scenario corpus is not yet the complete
+while downstream qualification remains incomplete. Security and backup/restore
+now invoke the existing evidence validators when explicit sanitized input bundles
+are supplied; performance, chaos and local rollback still lack connected execution
+paths. The current scenario corpus is not yet the complete
 Phase 7 replacement sample, so this gate alone cannot establish replacement
 readiness.
 
@@ -79,6 +81,30 @@ Required environment variables:
 `WISEACCT_PHASE7_RUN_ID` is optional and accepts only lowercase ASCII letters,
 digits, dots, underscores, or hyphens.
 
+Optional downstream inputs:
+
+- `WISEACCT_PHASE7_SECURITY_INPUT_DIR`: absolute external sanitized security bundle.
+- `WISEACCT_PHASE7_BACKUP_RESTORE_INPUT_DIR`: absolute external sanitized backup bundle.
+
+The top runner calls `run_downstream_gates.py` under a cleared environment. It
+executes the two fixed checked-in validators, not caller-selected programs. For
+security, fixed Git commands construct a private external, detached source mirror
+bound to the top runner's initial commit/tree. This prevents newly created in-repo
+evidence from tripping the security validator's strict clean-source check without
+weakening that check. The mirror is cleaned on exit and is not controlled-collector
+isolation, authenticated provenance or the full G02 clone contract.
+Detailed child evidence is nested under `downstream/<gate>/<run-id>/`; all five
+summary files remain `<gate>.status` in the top run directory after path preflight
+succeeds. Unsafe/reused paths or invalid CLI inputs fail before summary publication;
+publication failures also fail the top run. Missing inputs are
+`SKIP/INPUT_REQUIRED`; the three unconnected execution paths are
+`SKIP/NOT_IMPLEMENTED`. A supplied invalid bundle is a failure, not a skip;
+a bundle missing required files retains the validator's `INCOMPLETE/MISSING_EVIDENCE`.
+Existing unfrozen policy/toolchain and unauthenticated-collection refusals remain
+in force. This connection does not run scanners, create backups, authenticate
+collectors or supply the missing G02/G03 finalizer integration. Unsupported PASS
+claims, inconsistent exit/result pairs and child failures cannot yield success.
+
 Both adapter config paths must be absolute, point directly to non-symlink regular files,
 have exact mode `0600`, and live outside the repository/evidence tree. They use
 the environment object documented in `contracts/adapters/README.md`; their
@@ -95,7 +121,9 @@ failure leaves all three suites at `NOT_RUN`.
 
 The runner requires a clean committed worktree before creating the immutable
 `evidence/phase7/<run-id>/` directory. An independent contract success followed
-by placeholder gates exits 3 to report honest `INCOMPLETE` status.
+by valid nonqualifying downstream results exits 3 to report honest `INCOMPLETE`
+status. A downstream failure or unsupported success exits 2. No READY or overall
+PASS path is enabled by this connection.
 
 ## Disposable independent runtime launcher
 

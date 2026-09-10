@@ -65,6 +65,7 @@ else
 fi
 
 readonly GIT_HEAD="$(git -C "${REPO_DIR}" rev-parse --verify HEAD)"
+readonly GIT_TREE="$(git -C "${REPO_DIR}" rev-parse --verify "${GIT_HEAD}^{tree}")"
 if [[ -n "$(git -C "${REPO_DIR}" status --porcelain=v1 --untracked-files=all)" ]]; then
   echo "Phase 7 requires a clean committed worktree before evidence creation" >&2
   exit 2
@@ -146,6 +147,7 @@ printf '%s\n' "${topology}" >"${EVIDENCE_DIR}/topology.json"
 runner_sha256="$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)"
 contract_sha256="$(sha256sum "${CONTRACTS_DIR}/bin/differential.py" | cut -d' ' -f1)"
 gate_sha256="$(sha256sum "${PHASE7_DIR}/run-independent-contract-gate.sh" | cut -d' ' -f1)"
+downstream_sha256="$(sha256sum "${PHASE7_DIR}/run_downstream_gates.py" | cut -d' ' -f1)"
 runtime_public_helper_sha256="$(sha256sum "${PHASE7_DIR}/runtime_public_scenarios.py" | cut -d' ' -f1)"
 synthetic_policy_sha256="$(sha256sum "${ENV_EXAMPLE}" | cut -d' ' -f1)"
 corpus_sha256="$(sha256sum "${CONTRACTS_DIR}/scenarios/public.json" "${CONTRACTS_DIR}/scenarios/guards.json" "${CONTRACTS_DIR}/scenarios/fixtures.json" | sha256sum | cut -d' ' -f1)"
@@ -153,6 +155,7 @@ printf 'gitHead=%s\ngitTree=clean\nrunId=%s\nrunnerSha256=%s\ncontractRunnerSha2
   "${GIT_HEAD}" "${RUN_ID}" "${runner_sha256}" "${contract_sha256}" "${gate_sha256}" \
   "${runtime_public_helper_sha256}" "${synthetic_policy_sha256}" "${corpus_sha256}" \
   >"${EVIDENCE_DIR}/provenance.txt"
+printf 'downstreamRunnerSha256=%s\n' "${downstream_sha256}" >>"${EVIDENCE_DIR}/provenance.txt"
 printf '%s\neffectivePublicScenarioSha256=%s\n' \
   "${runtime_public_provenance}" "${PUBLIC_SCENARIOS_SHA256}" >>"${EVIDENCE_DIR}/provenance.txt"
 
@@ -163,6 +166,7 @@ provenance_is_stable() {
     && [[ "$(sha256sum "${BASH_SOURCE[0]}" | cut -d' ' -f1)" == "${runner_sha256}" ]] \
     && [[ "$(sha256sum "${CONTRACTS_DIR}/bin/differential.py" | cut -d' ' -f1)" == "${contract_sha256}" ]] \
     && [[ "$(sha256sum "${PHASE7_DIR}/run-independent-contract-gate.sh" | cut -d' ' -f1)" == "${gate_sha256}" ]] \
+    && [[ "$(sha256sum "${PHASE7_DIR}/run_downstream_gates.py" | cut -d' ' -f1)" == "${downstream_sha256}" ]] \
     && [[ "$(sha256sum "${PHASE7_DIR}/runtime_public_scenarios.py" | cut -d' ' -f1)" == "${runtime_public_helper_sha256}" ]] \
     && [[ "$(sha256sum "${ENV_EXAMPLE}" | cut -d' ' -f1)" == "${synthetic_policy_sha256}" ]] \
     && [[ "$(sha256sum "${CONTRACTS_DIR}/scenarios/public.json" "${CONTRACTS_DIR}/scenarios/guards.json" "${CONTRACTS_DIR}/scenarios/fixtures.json" | sha256sum | cut -d' ' -f1)" == "${corpus_sha256}" ]] \
@@ -195,27 +199,20 @@ else
   exit "${contract_status}"
 fi
 
-placeholder_seen=0
-for gate in performance security chaos backup-restore local-rollback; do
-  if "${PHASE7_DIR}/run-placeholder-gate.sh" "${gate}" "${EVIDENCE_DIR}"; then
-    gate_status=0
-  else
-    gate_status=$?
-  fi
-  if "${PHASE7_DIR}/check-placeholder-result.sh" \
-      "${gate}" "${EVIDENCE_DIR}" "${gate_status}"; then
-    placeholder_seen=1
-  else
-    gate_status=$?
-    printf 'status=FAIL\nfailedGate=%s\noverallReplacementReady=false\n' "${gate}" \
-      >"${EVIDENCE_DIR}/result.status"
-    finalized=1
-    chmod -R a-w -- "${EVIDENCE_DIR}"
-    cleanup_private
-    trap - EXIT INT TERM
-    exit "${gate_status}"
-  fi
-done
+downstream_arguments=(--evidence-dir "${EVIDENCE_DIR}" --run-id "${RUN_ID}"
+  --source-revision "${GIT_HEAD}" --source-tree "${GIT_TREE}")
+if [[ -n "${WISEACCT_PHASE7_SECURITY_INPUT_DIR:-}" ]]; then
+  downstream_arguments+=(--security-input "${WISEACCT_PHASE7_SECURITY_INPUT_DIR}")
+fi
+if [[ -n "${WISEACCT_PHASE7_BACKUP_RESTORE_INPUT_DIR:-}" ]]; then
+  downstream_arguments+=(--backup-restore-input "${WISEACCT_PHASE7_BACKUP_RESTORE_INPUT_DIR}")
+fi
+if /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I \
+    "${PHASE7_DIR}/run_downstream_gates.py" "${downstream_arguments[@]}"; then
+  downstream_status=0
+else
+  downstream_status=$?
+fi
 
 if ! provenance_is_stable; then
   printf 'status=FAIL\nfailedGate=provenance-stability\noverallReplacementReady=false\n' \
@@ -228,8 +225,8 @@ if ! provenance_is_stable; then
   exit 5
 fi
 
-if (( placeholder_seen == 1 )); then
-  printf 'status=INCOMPLETE\npassedGate=independent-contract\ncontractScope=independent-stateful\nremainingGaps=downstream-gates,incomplete-approved-core-flow-sample\nskippedGates=performance,security,chaos,backup-restore,local-rollback\noverallReplacementReady=false\n' \
+if (( downstream_status == 3 )); then
+  printf 'status=INCOMPLETE\npassedGate=independent-contract\ncontractScope=independent-stateful\nremainingGaps=downstream-qualification,incomplete-approved-core-flow-sample\ndownstreamResults=per-gate-status-files\noverallReplacementReady=false\n' \
     >"${EVIDENCE_DIR}/result.status"
   finalized=1
   chmod -R a-w -- "${EVIDENCE_DIR}"
@@ -239,10 +236,11 @@ if (( placeholder_seen == 1 )); then
   exit 3
 fi
 
-printf 'status=PASS\noverallReplacementReady=false\nreason=production-cutover-requires-separate-approval\n' \
+printf 'status=FAIL\nfailedGate=downstream-gates\noverallReplacementReady=false\n' \
   >"${EVIDENCE_DIR}/result.status"
 finalized=1
 chmod -R a-w -- "${EVIDENCE_DIR}"
 cleanup_private
 trap - EXIT INT TERM
-echo "Phase 7 provisional local qualification passed; production cutover is not approved"
+echo "Phase 7 downstream validation failed or returned an unsupported success claim" >&2
+exit 2
