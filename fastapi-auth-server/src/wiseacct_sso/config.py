@@ -468,6 +468,9 @@ class Settings(BaseSettings):
     cors_allowed_origins: Annotated[tuple[str, ...], NoDecode] = Field(
         default=(), validation_alias="CORS_ALLOWED_ORIGINS"
     )
+    trusted_proxy_ips: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=(), validation_alias="TRUSTED_PROXY_IPS"
+    )
     auth_rate_limit_window_seconds: int = Field(
         default=60, gt=0, validation_alias="AUTH_RATE_LIMIT_WINDOW_SECONDS"
     )
@@ -537,6 +540,41 @@ class Settings(BaseSettings):
         else:
             return value
         return tuple(_origin(str(origin), "CORS origins") for origin in origins)
+
+    @field_validator("trusted_proxy_ips", mode="before")
+    @classmethod
+    def parse_trusted_proxy_ips(cls, value: object) -> object:
+        if isinstance(value, str):
+            if not value.strip():
+                return ()
+            entries = tuple(entry.strip() for entry in value.split(","))
+        elif isinstance(value, (tuple, list)):
+            entries = tuple(str(entry).strip() for entry in value)
+        else:
+            return value
+
+        normalized: list[str] = []
+        for entry in entries:
+            if not entry or entry == "*":
+                raise ValueError("TRUSTED_PROXY_IPS entries must be explicit IP addresses or CIDRs")
+            if "/" in entry:
+                try:
+                    network = ipaddress.ip_network(entry, strict=True)
+                except ValueError as error:
+                    raise ValueError(
+                        "TRUSTED_PROXY_IPS entries must be explicit IP addresses or CIDRs"
+                    ) from error
+                if network.prefixlen == 0:
+                    raise ValueError("TRUSTED_PROXY_IPS must not contain a universal CIDR")
+                normalized.append(str(network))
+            else:
+                try:
+                    normalized.append(str(ipaddress.ip_address(entry)))
+                except ValueError as error:
+                    raise ValueError(
+                        "TRUSTED_PROXY_IPS entries must be explicit IP addresses or CIDRs"
+                    ) from error
+        return tuple(dict.fromkeys(normalized))
 
     @field_validator("oauth_enabled_providers", mode="before")
     @classmethod

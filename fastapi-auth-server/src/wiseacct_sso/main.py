@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 import structlog
 from fastapi import FastAPI
 from sqlalchemy.engine import make_url
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from wiseacct_sso import __version__
 from wiseacct_sso.api.dependencies import Phase4Services, Phase6Services
@@ -151,7 +152,7 @@ def create_app(
     )
 
     # Starlette inserts each middleware at the front. Add from innermost to outermost
-    # to preserve instrumentation → security → CORS → errors → path compatibility.
+    # so validated proxy metadata is available before instrumentation and rate limiting.
     application.add_middleware(KnownPathCompatibilityMiddleware)
     if phase4_services is not None:
         application.add_middleware(AuthRateLimitMiddleware, services=phase4_services)
@@ -163,6 +164,11 @@ def create_app(
         logger=logger,
         on_delivery_failure=record_telemetry_drop,
     )
+    if settings.trusted_proxy_ips:
+        application.add_middleware(
+            ProxyHeadersMiddleware,
+            trusted_hosts=list(settings.trusted_proxy_ips),
+        )
     return application
 
 
@@ -268,15 +274,16 @@ def create_runtime_app() -> FastAPI:
     async def shutdown() -> None:
         await close_resources(report_failure=True)
 
-    async def database_ready() -> bool:
-        if resources.database is None:
+    async def runtime_ready() -> bool:
+        if resources.database is None or resources.redis is None:
             return False
         await resources.database.ping()
+        await resources.redis.ping()
         return True
 
     application = create_app(
         settings=settings,
-        readiness_check=database_ready,
+        readiness_check=runtime_ready,
         lifecycle_hooks=LifecycleHooks(startup=startup, shutdown=shutdown),
         phase4_services=phase5_services,
         phase6_services=phase6_services,

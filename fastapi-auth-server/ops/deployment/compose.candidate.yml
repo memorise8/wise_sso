@@ -1,0 +1,49 @@
+name: wiseacct-sso-fastapi-candidate
+
+# DORMANT / NOT_APPROVED: this profile is an app-only deployment candidate.
+# Its presence is not qualification evidence and does not authorize startup or cutover.
+services:
+  app-fastapi-candidate:
+    profiles:
+      - candidate-not-approved
+    image: ${WISEACCT_FASTAPI_CANDIDATE_IMAGE:?Set an exact prebuilt image reference ending in @sha256:<64 lowercase hex characters>}
+    env_file:
+      - ${WISEACCT_FASTAPI_CANDIDATE_ENV_FILE:?Set an absolute path to the separately managed private production env file}
+    environment:
+      NODE_ENV: production
+      PORT: "4001"
+    command: ["python", "-m", "wiseacct_sso.runtime", "serve", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:${WISEACCT_FASTAPI_CANDIDATE_HOST_PORT:-4002}:4001"
+    networks:
+      - existing-auth-runtime
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          opener = urllib.request.build_opener(urllib.request.ProxyHandler({}));
+          response = opener.open('http://127.0.0.1:4001/readyz', timeout=2);
+          raise SystemExit(0 if response.status == 200 else 1)
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    labels:
+      com.wiseacct.sso.deployment-status: NOT_APPROVED
+      com.wiseacct.sso.cutover-authorized: "false"
+
+networks:
+  existing-auth-runtime:
+    external: true
+    name: ${WISEACCT_FASTAPI_CANDIDATE_NETWORK:?Set the exact existing network that reaches the approved PostgreSQL and Redis endpoints}

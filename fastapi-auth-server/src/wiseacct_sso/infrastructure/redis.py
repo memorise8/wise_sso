@@ -176,6 +176,18 @@ class RedisStateStore:
             raise _failure("start", "start", error) from error
         self._ready = True
 
+    async def ping(self) -> None:
+        """Probe the existing client without reading or mutating authentication state."""
+
+        try:
+            response = await cast(Awaitable[bool], self._client.ping())
+            if response is not True:
+                raise TypeError("Redis PING returned an invalid response")
+        except Exception as error:
+            self._ready = False
+            raise _failure("ping", "command:ping", error) from error
+        self._ready = True
+
     async def close(self) -> None:
         self._ready = False
         if not self._owns_client:

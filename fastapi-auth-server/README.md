@@ -1,11 +1,19 @@
-# WiseAcct SSO FastAPI — PROVISIONAL Phase 1
+# WiseAcct SSO FastAPI — PROVISIONAL migration candidate
 
 > **PROVISIONAL / NOT FOR PRODUCTION.** This worktree is based on a pre-refreeze
 > baseline. It must not receive production traffic, credentials, databases,
 > Redis instances, volumes, or container names.
 
-This directory contains only the isolated Phase 1 FastAPI foundation. The
-current Express service remains the production system of record.
+The application now includes the provisional Phase 1–6 implementation: existing
+Prisma schema access, password authentication, refresh/logout, email flows,
+Google/Naver/Kakao OAuth, admin APIs and compatible portal assets. Phase 7
+qualification remains incomplete. Express is still the production system of record;
+implemented routes and passing development tests do not establish cutover readiness.
+
+Read the [session handoff](../FASTAPI_MIGRATION_SESSION_HANDOFF.md) for the current
+checkpoint and the [same-server completion checklist](ops/deployment/COMPLETION.md)
+for the deployment boundary. The app-only deployment candidate is dormant and
+does not authorize production credentials, network attachment or traffic switching.
 
 ## Local verification
 

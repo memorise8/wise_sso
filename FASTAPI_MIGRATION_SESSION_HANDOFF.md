@@ -4,6 +4,73 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+### 2026-10-14 runtime checkpoint finalization
+
+Resumed at the user's request to finish the Express replacement. The production
+Express/PostgreSQL/Redis containers remain healthy according to Docker metadata;
+no candidate was started or production setting read/changed. Local active Nginx
+configuration still does not identify the public ingress to `192.168.0.4:4000`.
+
+Finalized the pending September runtime/deployment edits. Static inspection found
+the existing lifecycle fake lacked Redis `ping()` and one existing assertion still
+expected Redis failure to leave readiness healthy. Updated that fake and the
+existing scenario to match DB+Redis readiness and recovery; no new test suite or
+additional test count was introduced. Ruff, format and mypy passed for the four
+runtime files and lifecycle file. Tests were not executed, respecting the earlier
+user decision to determine runtime/integration test scope separately.
+
+The source checkpoint is not a runnable-image or cutover qualification. Production
+credentials, actual ingress configuration, qualified image and approved runtime
+verification remain necessary before switching traffic. Do not bypass the existing
+Phase 7 policy or claim READY based on this commit. Preserve Express for rollback.
+
+### 2026-09-18 remaining runtime implementation
+
+The user requested remaining development instead of more tests. Added an opt-in
+`TRUSTED_PROXY_IPS` IP/CIDR allowlist and outer application proxy middleware using
+the pinned Uvicorn implementation. Empty means no forwarded-header trust; wildcard,
+hostname and universal `/0` entries are rejected. Real ingress values remain
+unknown, so no production trust configuration was selected.
+
+Runtime `/readyz` now checks both PostgreSQL and Redis, with a non-mutating Redis
+PING that can recover after a transient outage without closing the pool. Added
+`python -m wiseacct_sso.runtime check|serve`: production settings validation with
+redacted error output, a connection-free check mode, and explicit serving action.
+The dormant candidate Compose uses this entrypoint; the development Dockerfile
+command is unchanged. A fresh image containing the new module is required.
+
+Validation is limited to changed-file lint/format/type checks and synthetic Compose
+parsing, not application regression or live integration tests. No production data,
+services, credentials or routing were changed. NOT_READY and the existing Phase 7
+policy remain unchanged. Actual ingress configuration, private runtime inputs,
+approved execution and cutover are still pending; do not describe these edits as
+a completed migration.
+
+### 2026-09-18 same-server deployment preparation
+
+The user requested an intern Lab review document and resumption of Express→FastAPI
+completion. The review is in the primary worktree at
+`docs/TEMIS_SSO_LAB_INTERN_REVIEW.md`; it is not a recommendation to replace this
+migration with the Lab's different schema/API.
+
+Read `fastapi-auth-server/ops/deployment/COMPLETION.md` for the concrete same-host
+checkpoint. The top FastAPI README no longer incorrectly describes the application
+as Phase-1-only. Deployment preparation is separate from Phase 7 qualification;
+the acceptance policy and NOT_READY verdict are unchanged.
+
+Read-only container/port metadata confirms the operating Express endpoint is
+`192.168.0.4:4000` and its app/PostgreSQL/Redis share `auth-server_default`. Ports
+4001/4002 were free at inspection time. The inspected host Nginx enabled-site and
+conf.d files do not identify the public SSO ingress; its actual owner/location is
+still needed to finish client-IP trust and route-switch wiring. Do not assume a
+remote ingress can reach a host-loopback candidate.
+
+No production secrets were read, no runtime was started, no DB/Redis/ingress was
+changed and no application test suite was run in this checkpoint. Do not mark
+deployment preparation as successful authentication, image qualification or READY.
+Continue from actual ingress information and the dormant deployment package,
+not another rewrite of already implemented login/admin flows.
+
 ### 2026-09-10 development-first downstream connection
 
 The user clarified that deployment is on this server and requested remaining

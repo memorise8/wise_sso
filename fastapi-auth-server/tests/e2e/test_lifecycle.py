@@ -79,6 +79,11 @@ class FakeRedisStore:
         if self.start_error is not None:
             raise self.start_error
 
+    async def ping(self) -> None:
+        self.events.append("redis.ping")
+        if not self.available:
+            raise RedisUnavailableError("ping")
+
     async def close(self) -> None:
         self.events.append("redis.close")
         if self.close_error is not None:
@@ -284,7 +289,7 @@ async def test_database_startup_failure_reports_only_stage_and_type(
 
 
 @pytest.mark.anyio
-async def test_runtime_readiness_tracks_database_outage_and_recovery_only(
+async def test_runtime_readiness_tracks_database_outage_and_recovery(
     synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events: list[str] = []
@@ -306,7 +311,7 @@ async def test_runtime_readiness_tracks_database_outage_and_recovery_only(
 
 
 @pytest.mark.anyio
-async def test_redis_post_start_outage_fails_operations_closed_but_not_readiness(
+async def test_redis_post_start_outage_fails_operations_and_readiness_then_recovers(
     synthetic_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     events: list[str] = []
@@ -320,8 +325,13 @@ async def test_redis_post_start_outage_fails_operations_closed_but_not_readiness
             await app.state.redis_store.get_raw(b"auth-state")
         ready = await client.get("/readyz")
 
-    assert ready.status_code == 200
-    assert ready.json() == {"status": "ok"}
+        redis.available = True
+        recovered = await client.get("/readyz")
+
+    assert ready.status_code == 503
+    assert ready.json() == {"status": "unavailable"}
+    assert recovered.status_code == 200
+    assert recovered.json() == {"status": "ok"}
 
 
 @pytest.mark.anyio
