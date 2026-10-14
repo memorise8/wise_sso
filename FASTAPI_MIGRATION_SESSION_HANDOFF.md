@@ -4,6 +4,42 @@ Status captured: 2026-09-06 (Asia/Seoul)
 
 ## Read this first
 
+### 2026-10-14 isolated alternate-port preview is running
+
+The user explicitly requested starting FastAPI on another port before replacing
+Express. Started the existing guarded development Compose stack on this host with
+the committed synthetic `.env.example`, after check-only validation and confirming
+candidate containers/networks/volumes were absent and ports unused. This is a local
+development preview, not the formerly required isolated-daemon Phase 7 qualification.
+No acceptance gate, supply-chain trust or production cutover approval is claimed.
+
+- FastAPI: `127.0.0.1:4001` (`wiseacct-sso-fastapi-dev-app`).
+- Separate PostgreSQL: `127.0.0.1:5433`; DB `fastapi_sso_dev`.
+- Separate Redis: `127.0.0.1:6380`; no operating Redis data shared.
+- Applied the eight existing Prisma migrations only to that new development DB.
+- Built app source at `cfa970b`; local image ID
+  `sha256:10620550ed92175351f7647c0601d754bffd5642c43ee76e94fdc05d05720210`.
+- HTTP checks: `/healthz`, `/readyz`, `/login`, JWKS all 200.
+- Synthetic registration 202; direct login, `/users/me`, refresh all 200; logout
+  204; reuse of the logged-out refresh token rejected with 401.
+
+The synthetic `preview-smoke@fastapi-dev.invalid` user was explicitly activated in
+the development DB using SQL to exercise password login. This is NOT evidence of
+email verification; no real mail was sent and external OAuth providers are disabled.
+The stack uses the development Dockerfile CMD, not the production-only `runtime
+serve` entrypoint. Production configuration/keys and existing user data were not
+used. Development signer/credentials are publicly known synthetic values: never
+expose this preview publicly or reuse them in production.
+
+All three candidate containers are healthy and intentionally left running for the
+user. Access is host-loopback only; remote browsers need an SSH tunnel. Stop safely
+with `./ops/dev-compose.sh stop .env.example` from `fastapi-auth-server`; do not use
+`down` unless deletion of the candidate DB volume/data is intended.
+
+Before/after operating Express/PostgreSQL/Redis IDs, start times and restart counts
+were identical; all remained healthy. No production restart, migration or ingress
+change occurred. Full test suites were not run. READY remains unchanged.
+
 ### 2026-10-14 runtime checkpoint finalization
 
 Resumed at the user's request to finish the Express replacement. The production
