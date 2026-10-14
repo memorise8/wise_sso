@@ -363,7 +363,9 @@ def refresh_fixture_token(config: Config, algorithm: str) -> str:
     claims = _segment({
         "sub": ACTIVE_USER_ID,
         "type": "refresh",
-        "tokenId": f"contract-{algorithm.lower()}-token-id",
+        # Real Express refresh tokens use randomBytes(32).toString("hex").
+        # Keep the synthetic fixture deterministic but valid for that contract.
+        "tokenId": hashlib.sha256(f"contract-{algorithm.lower()}-token-id".encode()).hexdigest(),
         "audience": config.audience,
         "iat": issued_at,
         "exp": issued_at + 3600,

@@ -12,12 +12,17 @@ adapter snapshot <probe-name>
 adapter teardown <fixture-name>
 ```
 
-The concrete Express adapter is `express_fixture.py`. It uses only black-box
-HTTP, the `psql` executable, and a dependency-free Python RESP client for Redis;
-it does not import or execute Express source. Run its safety check before a suite:
+The concrete Express adapter is `express_fixture.py`. The FastAPI adapter is
+`fastapi_fixture.py`; it reuses the same fixture and probe implementation so
+both runtimes receive identical state, while adding a Prisma-schema check and
+an explicit FastAPI-runtime opt-in. Both use only black-box HTTP, the `psql`
+executable, and a dependency-free Python RESP client for Redis; neither imports
+or executes application source. Run the corresponding safety check before a
+suite:
 
 ```sh
 contracts/adapters/express_fixture.py preflight express
+contracts/adapters/fastapi_fixture.py preflight fastapi
 ```
 
 `CONTRACT_BASE_URL` contains the server URL. Every invocation writes exactly one
@@ -86,6 +91,21 @@ isolated-server secret. The adapter deletes only
 those UUIDs/emails/audit reason and clears known WiseAcct prefixes only inside
 the preflight-approved isolated Redis database.
 
+## FastAPI adapter environment
+
+The FastAPI adapter requires every Express adapter variable and enforces the
+same loopback host, distinct test/contract/fixture database, forbidden
+`auth_db`, development mail, and non-zero isolated Redis database rules. It
+also requires:
+
+- `CONTRACT_FASTAPI_RUNTIME=1` — explicit acknowledgement that the target is
+  the isolated FastAPI runtime.
+
+Before every protocol command, including either mutating command, the adapter
+runs the shared isolation preflight and verifies that all eight Prisma-owned
+tables used by the seven fixtures and five probes are present. `setup` and
+`teardown` refuse to mutate when either check fails.
+
 For two isolated implementations, pass separate untracked JSON environment
 files with `--baseline-adapter-config` and `--candidate-adapter-config`. Each
 file is a flat object of the variables above. Keep files containing database or
@@ -94,7 +114,8 @@ overrides `CONTRACT_BASE_URL` with the corresponding `--baseline` or
 `--candidate` URL.
 
 Adapters must point at isolated fixture databases and Redis namespaces. They
-must not use production credentials or mutate a shared/production store. The
-runner deliberately does not provide a default database adapter because the
-FastAPI fixture environment does not exist yet; pretending to probe state would
-weaken the migration gate.
+must not use production credentials or mutate a shared/production store.
+
+The [2026-10-14 FastAPI comparison report](../evidence/fastapi-fixture-comparison-20261014.md)
+records an eight-scenario pass against isolated Express/FastAPI replicas with
+`aud=temis`, including fixture corrections, cleanup and verification limits.
