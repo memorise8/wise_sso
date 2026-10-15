@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 import structlog
 from fastapi import FastAPI
 from sqlalchemy.engine import make_url
+from starlette.types import ASGIApp
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from wiseacct_sso import __version__
@@ -26,6 +27,8 @@ from wiseacct_sso.api.middleware import (
 from wiseacct_sso.api.middleware import (
     RequestLogger as RequestLogger,
 )
+from wiseacct_sso.api.oidc import build_oidc_app
+from wiseacct_sso.api.oidc_dispatch import OidcDispatchMiddleware, OidcRateCheck
 from wiseacct_sso.api.routes.admin import build_admin_router
 from wiseacct_sso.api.routes.auth import build_auth_router
 from wiseacct_sso.api.routes.oauth import build_oauth_router
@@ -34,14 +37,28 @@ from wiseacct_sso.api.routes.users import build_users_router
 from wiseacct_sso.api.staticfiles import ImmutableStaticFiles
 from wiseacct_sso.application.admin import Phase6AdminService
 from wiseacct_sso.application.auth import Phase5AuthService
+from wiseacct_sso.application.oidc import OidcService
 from wiseacct_sso.config import Settings, get_settings
 from wiseacct_sso.domain.auth import PasswordPolicy
+from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS
 from wiseacct_sso.infrastructure.mail import create_mail_service
 from wiseacct_sso.infrastructure.oauth_providers import OAuthProviderClient, provider_config_for
+from wiseacct_sso.infrastructure.oidc_state import (
+    OidcAuthorizationCodeStore,
+    OidcAuthorizationTransactionStore,
+    OidcProviderStateStore,
+)
+from wiseacct_sso.infrastructure.oidc_tokens import OidcAccessTokenStore, OidcIdTokenSigner
 from wiseacct_sso.infrastructure.redis import RedisOptions, RedisStateStore
 from wiseacct_sso.infrastructure.security import AsyncPasswordHasher, JwtTokenCodec
 from wiseacct_sso.lifecycle import LifecycleHooks, create_lifespan
 from wiseacct_sso.logging import configure_logging
+from wiseacct_sso.oidc_config import OidcClientRegistry
+from wiseacct_sso.oidc_runtime import (
+    RuntimeOidcRedis,
+    oidc_form_action_sources,
+    oidc_provider_config_for,
+)
 from wiseacct_sso.persistence.database import Database
 
 ReadinessCheck = Callable[[], bool | Awaitable[bool]]
@@ -98,7 +115,11 @@ def create_app(
     request_logger: RequestLogger | None = None,
     phase4_services: Phase4Services | None = None,
     phase6_services: Phase6Services | None = None,
+    oidc_app: ASGIApp | None = None,
+    oidc_rate_check: OidcRateCheck | None = None,
 ) -> FastAPI:
+    if settings.oidc_enabled and oidc_app is None:
+        raise ValueError("Enabled OIDC requires an initialized OIDC application")
     configure_logging()
     application = FastAPI(
         title="WiseAcct SSO FastAPI PROVISIONAL",
@@ -158,11 +179,21 @@ def create_app(
         application.add_middleware(AuthRateLimitMiddleware, services=phase4_services)
     application.add_middleware(GenericErrorMiddleware)
     application.add_middleware(ExpressCorsMiddleware, allowed_origins=settings.cors_allowed_origins)
-    application.add_middleware(SecurityHeadersMiddleware)
+    if settings.oidc_enabled and oidc_app is not None:
+        application.add_middleware(
+            OidcDispatchMiddleware, oidc_app=oidc_app, rate_check=oidc_rate_check
+        )
+    application.add_middleware(
+        SecurityHeadersMiddleware,
+        oidc_form_action_sources=oidc_form_action_sources(settings)
+        if settings.oidc_enabled
+        else (),
+    )
     application.add_middleware(
         RequestInstrumentationMiddleware,
         logger=logger,
         on_delivery_failure=record_telemetry_drop,
+        oidc_enabled=settings.oidc_enabled,
     )
     if settings.trusted_proxy_ips:
         application.add_middleware(
@@ -190,6 +221,11 @@ def create_runtime_app() -> FastAPI:
             raise RuntimeError("Runtime Redis is unavailable")
         return resources.redis
 
+    def runtime_oauth_client() -> OAuthProviderClient:
+        if resources.oauth_client is None:
+            raise RuntimeError("Runtime OAuth client is unavailable")
+        return resources.oauth_client
+
     frontend_origin = _frontend_origin(settings.frontend_redirect_url)
     mail_service = create_mail_service(settings)
     token_codec = JwtTokenCodec.from_settings(settings)
@@ -213,6 +249,33 @@ def create_runtime_app() -> FastAPI:
         oauth_client=None,
     )
     phase6_services = Phase6AdminService(database=runtime_database, tokens=token_codec)
+    oidc_app: ASGIApp | None = None
+    oidc_redis = RuntimeOidcRedis(runtime_redis)
+    if settings.oidc_enabled:
+        if settings.oidc_public_origin is None:
+            raise ValueError("OIDC_PUBLIC_ORIGIN is required")
+        oidc_service = OidcService(
+            database=runtime_database,
+            passwords=AsyncPasswordHasher(),
+            clients=OidcClientRegistry(settings.oidc_clients),
+            transactions=OidcAuthorizationTransactionStore(oidc_redis),
+            provider_states=OidcProviderStateStore(oidc_redis),
+            codes=OidcAuthorizationCodeStore(oidc_redis),
+            access_tokens=OidcAccessTokenStore(oidc_redis),
+            id_tokens=OidcIdTokenSigner.from_settings(settings),
+            provider_config=lambda provider: oidc_provider_config_for(settings, provider),
+            oauth_client=runtime_oauth_client,
+            redis=runtime_redis,
+        )
+        oidc_app = build_oidc_app(
+            service=oidc_service,
+            public_origin=settings.oidc_public_origin,
+            providers=tuple(
+                provider
+                for provider in OAUTH_PROVIDERS
+                if getattr(settings, f"oidc_{provider}_redirect_uri") is not None
+            ),
+        )
 
     async def close_resources(*, report_failure: bool) -> None:
         first_error: Exception | None = None
@@ -287,6 +350,8 @@ def create_runtime_app() -> FastAPI:
         lifecycle_hooks=LifecycleHooks(startup=startup, shutdown=shutdown),
         phase4_services=phase5_services,
         phase6_services=phase6_services,
+        oidc_app=oidc_app,
+        oidc_rate_check=oidc_redis.rate_check if settings.oidc_enabled else None,
     )
     application.state.database = None
     application.state.redis_store = None

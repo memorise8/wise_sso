@@ -218,7 +218,18 @@ def request_id(value: str | None) -> str:
     return value if value is not None and _REQUEST_ID.fullmatch(value) else str(uuid4())
 
 
-def normalized_route(path: str) -> str:
+def normalized_route(path: str, *, oidc_enabled: bool = False) -> str:
+    if oidc_enabled:
+        if path in {
+            "/oauth2/authorize",
+            "/oauth2/token",
+            "/oauth2/userinfo",
+            "/oauth2/login",
+            "/oauth2/assets/login.css",
+        }:
+            return path
+        if re.fullmatch(r"/oauth2/providers/(google|naver|kakao)/(start|callback)", path):
+            return f"/oauth2/providers/:provider/{path.rsplit('/', 1)[-1]}"
     if path in _PUBLIC_ROUTES:
         return path
     if path.startswith("/assets/"):
@@ -618,10 +629,12 @@ class RequestInstrumentationMiddleware:
         *,
         logger: RequestLogger | None = None,
         on_delivery_failure: Callable[[], None],
+        oidc_enabled: bool = False,
     ) -> None:
         self.app = app
         self.logger = logger or structlog.get_logger()
         self.on_delivery_failure = on_delivery_failure
+        self.oidc_enabled = oidc_enabled
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -670,7 +683,8 @@ class RequestInstrumentationMiddleware:
                 version=__version__,
                 method=method if method in _KNOWN_METHODS else "OTHER",
                 route=normalized_route(
-                    scope.get("state", {}).get("express_original_path", scope.get("path", ""))
+                    scope.get("state", {}).get("express_original_path", scope.get("path", "")),
+                    oidc_enabled=self.oidc_enabled,
                 ),
                 outcome=observed_outcome,
                 latencyMs=max(0.0, (time.perf_counter() - started_at) * 1000),
@@ -728,8 +742,9 @@ class AuthRateLimitMiddleware:
 
 
 class SecurityHeadersMiddleware:
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, *, oidc_form_action_sources: tuple[str, ...] = ()) -> None:
         self.app = app
+        self.oidc_form_action_sources = oidc_form_action_sources
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         no_store = scope["type"] == "http" and _requires_no_store(scope.get("path", ""))
@@ -741,6 +756,15 @@ class SecurityHeadersMiddleware:
                 if asset_redirect:
                     del headers[_ASSET_REDIRECT_MARKER]
                 for name, value in _SECURITY_HEADERS.items():
+                    if (
+                        name == "content-security-policy"
+                        and scope.get("path") == "/oauth2/login"
+                        and self.oidc_form_action_sources
+                    ):
+                        value = value.replace(
+                            "form-action 'self';",
+                            f"form-action 'self' {' '.join(self.oidc_form_action_sources)};",
+                        )
                     headers[name] = (
                         "default-src 'none'"
                         if asset_redirect and name == "content-security-policy"

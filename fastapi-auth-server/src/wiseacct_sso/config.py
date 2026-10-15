@@ -19,6 +19,8 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from wiseacct_sso.oidc_config import OidcClientPolicy, OidcClientRegistry
+
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 OAuthProvider = Literal["google", "naver", "kakao"]
 _LOCAL_ORIGINS = ("http://localhost:3000", "http://127.0.0.1:3000")
@@ -443,6 +445,7 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
         populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     node_env: Literal["development", "test", "production"] = Field(
@@ -480,6 +483,20 @@ class Settings(BaseSettings):
     auth_clients: tuple[RelyingClientPolicy, ...] = Field(
         min_length=1, validation_alias="AUTH_CLIENTS_JSON"
     )
+    oidc_enabled: bool = Field(default=False, validation_alias="OIDC_ENABLED")
+    oidc_clients: tuple[OidcClientPolicy, ...] = Field(
+        default=(), validation_alias="OIDC_CLIENTS_JSON", repr=False
+    )
+    oidc_public_origin: str | None = Field(default=None, validation_alias="OIDC_PUBLIC_ORIGIN")
+    oidc_google_redirect_uri: str | None = Field(
+        default=None, validation_alias="OIDC_GOOGLE_REDIRECT_URI"
+    )
+    oidc_naver_redirect_uri: str | None = Field(
+        default=None, validation_alias="OIDC_NAVER_REDIRECT_URI"
+    )
+    oidc_kakao_redirect_uri: str | None = Field(
+        default=None, validation_alias="OIDC_KAKAO_REDIRECT_URI"
+    )
     redis_url: NonEmptyString = Field(validation_alias="REDIS_URL")
     frontend_redirect_url: NonEmptyString = Field(validation_alias="FRONTEND_REDIRECT_URL")
     oauth_enabled_providers: Annotated[tuple[OAuthProvider, ...], NoDecode] = Field(
@@ -515,7 +532,7 @@ class Settings(BaseSettings):
         _rsa_numbers_from_pkcs8(normalized)
         return normalized
 
-    @field_validator("jwt_access_public_jwk", "auth_clients", mode="before")
+    @field_validator("jwt_access_public_jwk", "auth_clients", "oidc_clients", mode="before")
     @classmethod
     def parse_json_fields(cls, value: object) -> object:
         if not isinstance(value, str):
@@ -648,6 +665,43 @@ class Settings(BaseSettings):
                     f"AUTH_CLIENTS_JSON contains duplicate clientId: {client.client_id}"
                 )
             client_ids.add(client.client_id)
+
+        OidcClientRegistry(self.oidc_clients)
+        legacy_audiences = {client.audience for client in clients} | {self.jwt_audience}
+        if any(client.client_id in client_ids | legacy_audiences for client in self.oidc_clients):
+            raise ValueError("OIDC client IDs must not overlap legacy client IDs or audiences")
+        if self.node_env != "test" and any(
+            urlsplit(uri).scheme != "https"
+            for client in self.oidc_clients
+            for uri in client.redirect_uris
+        ):
+            raise ValueError("OIDC HTTP loopback redirects are allowed only in test mode")
+        if self.oidc_enabled and (not self.oidc_clients or not self.oidc_public_origin):
+            raise ValueError("OIDC requires clients and an explicit OIDC_PUBLIC_ORIGIN")
+        if self.oidc_public_origin is not None:
+            origin = self.oidc_public_origin
+            parsed = urlsplit(origin)
+            if (
+                any(ord(char) <= 32 or ord(char) >= 127 for char in origin)
+                or "\\" in origin
+                or parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path
+                or "?" in origin
+                or "#" in origin
+                or _origin_from_url(origin) != origin
+            ):
+                raise ValueError("OIDC_PUBLIC_ORIGIN must be an exact HTTPS origin")
+        for provider in ("google", "naver", "kakao"):
+            callback = getattr(self, f"oidc_{provider}_redirect_uri")
+            if callback is not None and (
+                self.oidc_public_origin is None
+                or callback != f"{self.oidc_public_origin}/oauth2/providers/{provider}/callback"
+                or provider not in self.oauth_enabled_providers
+            ):
+                raise ValueError("OIDC provider callback must match its enabled public endpoint")
 
         credentials = {
             "google": (self.google_client_id, self.google_client_secret),
