@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import sys
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -18,7 +19,7 @@ import httpx
 import jwt
 import pytest
 from dotenv import dotenv_values
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, update
 
 from wiseacct_sso.persistence.database import Database
 from wiseacct_sso.persistence.models import (
@@ -40,13 +41,11 @@ RUN_ID = os.getenv("WISEACCT_OIDC_RUNTIME_RUN_ID", "")
 
 ENV_FILE = Path(__file__).parents[2] / ".env.example"
 PUBLIC_ORIGIN = "https://auth.oidc-runtime.invalid"
-CLIENT_ID = "cloudflare-access-oidc-runtime"
 CLIENT_SECRET = "oidc-runtime-client-secret"
 CLIENT_SECRET_HASH = (
     "$argon2id$v=19$m=19456,t=2,p=1$CjHmYITMY8aZFKbiLQO3wA$"
     "iaIIV9u53MAEtTDwvhtNMxVnbW1DSrwukKKjimiv06c"
 )
-REDIRECT_URI = "https://oidc-runtime.cloudflareaccess.invalid/cdn-cgi/access/callback"
 PASSWORD = "express-fixture-password"
 PASSWORD_HASH = (
     "$argon2id$v=19$m=19456,t=2,p=1$ABEiM0RVZneImaq7zN3u/w$"
@@ -57,6 +56,33 @@ CHALLENGE = (
     base64.urlsafe_b64encode(sha256(VERIFIER.encode()).digest()).rstrip(b"=").decode("ascii")
 )
 _DISALLOWED_PORTS = {4000, 4001, 5432, 5433, 6379, 6380}
+
+
+@dataclass(frozen=True)
+class OidcRuntimeProfile:
+    name: str
+    client_id: str
+    redirect_uri: str
+    required_service: str
+    required_role: str
+
+
+PROFILES = (
+    OidcRuntimeProfile(
+        name="cloudflare",
+        client_id="cloudflare-access-oidc-runtime",
+        redirect_uri="https://oidc-runtime.cloudflareaccess.invalid/cdn-cgi/access/callback",
+        required_service="agent-hub",
+        required_role="user",
+    ),
+    OidcRuntimeProfile(
+        name="gitlab",
+        client_id="gitlab-temis",
+        redirect_uri="https://gitlab.temis.me/users/auth/openid_connect/callback",
+        required_service="gitlab",
+        required_role="user",
+    ),
+)
 
 
 def _guarded_targets() -> int:
@@ -97,7 +123,7 @@ pytestmark = [
 ]
 
 
-def _runtime_environment() -> dict[str, str]:
+def _runtime_environment(profile: OidcRuntimeProfile) -> dict[str, str]:
     environment = {
         key: value for key, value in dotenv_values(ENV_FILE).items() if value is not None
     }
@@ -113,11 +139,16 @@ def _runtime_environment() -> dict[str, str]:
             "OIDC_CLIENTS_JSON": json.dumps(
                 [
                     {
-                        "clientId": CLIENT_ID,
-                        "redirectUris": [REDIRECT_URI],
+                        "clientId": profile.client_id,
+                        "redirectUris": [profile.redirect_uri],
                         "clientSecretHash": CLIENT_SECRET_HASH,
-                        "requiredRoles": [{"serviceKey": "agent-hub", "name": "user"}],
-                        "groupsServiceKeys": ["agent-hub"],
+                        "requiredRoles": [
+                            {
+                                "serviceKey": profile.required_service,
+                                "name": profile.required_role,
+                            }
+                        ],
+                        "groupsServiceKeys": [profile.required_service],
                         "requirePkce": True,
                         "allowedScopes": ["openid", "email", "profile"],
                     }
@@ -158,6 +189,7 @@ def _transaction_cookies(response: httpx.Response) -> tuple[str, str]:
 async def _authorization_code(
     client: httpx.AsyncClient,
     *,
+    profile: OidcRuntimeProfile,
     email: str,
     state: str,
     nonce: str,
@@ -166,8 +198,8 @@ async def _authorization_code(
         "/oauth2/authorize",
         params={
             "response_type": "code",
-            "client_id": CLIENT_ID,
-            "redirect_uri": REDIRECT_URI,
+            "client_id": profile.client_id,
+            "redirect_uri": profile.redirect_uri,
             "scope": "openid email profile",
             "state": state,
             "nonce": nonce,
@@ -202,19 +234,61 @@ async def _exchange(
     client: httpx.AsyncClient,
     code: str,
     *,
+    profile: OidcRuntimeProfile,
     method: str = "basic",
+    client_secret: str = CLIENT_SECRET,
+    redirect_uri: str | None = None,
+    code_verifier: str = VERIFIER,
 ) -> httpx.Response:
     form = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": REDIRECT_URI,
-        "code_verifier": VERIFIER,
+        "redirect_uri": redirect_uri or profile.redirect_uri,
+        "code_verifier": code_verifier,
     }
     if method == "post":
-        form.update({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET})
+        form.update({"client_id": profile.client_id, "client_secret": client_secret})
         return await client.post("/oauth2/token", data=form)
     return await client.post(
-        "/oauth2/token", data=form, auth=httpx.BasicAuth(CLIENT_ID, CLIENT_SECRET)
+        "/oauth2/token",
+        data=form,
+        auth=httpx.BasicAuth(profile.client_id, client_secret),
+    )
+
+
+async def _authorization_login_response(
+    client: httpx.AsyncClient,
+    *,
+    profile: OidcRuntimeProfile,
+    email: str,
+    state: str,
+) -> httpx.Response:
+    start = await client.get(
+        "/oauth2/authorize",
+        params={
+            "response_type": "code",
+            "client_id": profile.client_id,
+            "redirect_uri": profile.redirect_uri,
+            "scope": "openid email profile",
+            "state": state,
+            "code_challenge": CHALLENGE,
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    assert start.status_code == 303
+    transaction = parse_qs(urlparse(start.headers["location"]).query)["transaction"][0]
+    cookie_header, csrf = _transaction_cookies(start)
+    return await client.post(
+        "/oauth2/login",
+        data={
+            "transaction": transaction,
+            "csrf_token": csrf,
+            "email": email,
+            "password": PASSWORD,
+        },
+        headers={"origin": PUBLIC_ORIGIN, "cookie": cookie_header},
+        follow_redirects=False,
     )
 
 
@@ -229,11 +303,57 @@ async def _set_role(database: Database, *, user_id: str, role_id: str, present: 
             )
 
 
-async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> None:
+async def _seed_password_user(
+    database: Database,
+    *,
+    suffix: str,
+    email: str,
+    status: UserStatus,
+    verified: bool,
+    role_id: str,
+) -> str:
+    user_id = f"oidc-runtime-{suffix}-{RUN_ID}"
+    now = utc_now_ms()
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            insert(User).values(
+                id=user_id,
+                email=email,
+                name=f"OIDC {suffix} User",
+                status=status,
+                emailVerified=verified,
+                createdAt=now,
+                updatedAt=now,
+            )
+        )
+        await connection.execute(
+            insert(PasswordCredential).values(
+                id=f"oidc-runtime-{suffix}-credential-{RUN_ID}",
+                userId=user_id,
+                email=email,
+                passwordHash=PASSWORD_HASH,
+                createdAt=now,
+                updatedAt=now,
+            )
+        )
+        await connection.execute(
+            insert(UserRole).values(
+                id=f"oidc-runtime-{suffix}-user-role-{RUN_ID}",
+                userId=user_id,
+                roleId=role_id,
+            )
+        )
+    return user_id
+
+
+@pytest.mark.parametrize("profile", PROFILES, ids=lambda profile: profile.name)
+async def test_oidc_password_code_token_userinfo_and_revocation_runtime(
+    profile: OidcRuntimeProfile,
+) -> None:
     database = Database(DATABASE_URL)
-    user_id = f"oidc-runtime-user-{RUN_ID}"
-    role_id = f"oidc-runtime-role-{RUN_ID}"
-    email = f"oidc-runtime-{RUN_ID}@integration.invalid"
+    user_id = f"oidc-runtime-{profile.name}-user-{RUN_ID}"
+    role_id = f"oidc-runtime-{profile.name}-role-{RUN_ID}"
+    email = f"oidc-runtime-{profile.name}-{RUN_ID}@integration.invalid"
     now = utc_now_ms()
     async with database.engine.begin() as connection:
         await connection.execute(
@@ -249,7 +369,7 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
         )
         await connection.execute(
             insert(PasswordCredential).values(
-                id=f"oidc-runtime-credential-{RUN_ID}",
+                id=f"oidc-runtime-{profile.name}-credential-{RUN_ID}",
                 userId=user_id,
                 email=email,
                 passwordHash=PASSWORD_HASH,
@@ -257,14 +377,57 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
                 updatedAt=now,
             )
         )
-        await connection.execute(
-            insert(Role).values(id=role_id, serviceKey="agent-hub", name="user")
-        )
-        await connection.execute(
-            insert(UserRole).values(
-                id=f"oidc-runtime-user-role-{RUN_ID}", userId=user_id, roleId=role_id
+        existing_role_id = await connection.scalar(
+            select(Role.c.id).where(
+                Role.c.serviceKey == profile.required_service,
+                Role.c.name == profile.required_role,
             )
         )
+        if existing_role_id is None:
+            await connection.execute(
+                insert(Role).values(
+                    id=role_id,
+                    serviceKey=profile.required_service,
+                    name=profile.required_role,
+                )
+            )
+        else:
+            role_id = existing_role_id
+        await connection.execute(
+            insert(UserRole).values(
+                id=f"oidc-runtime-{profile.name}-user-role-{RUN_ID}",
+                userId=user_id,
+                roleId=role_id,
+            )
+        )
+
+    gitlab_denied_logins: list[tuple[str, int]] = []
+    if profile.name == "gitlab":
+        async with database.engine.begin() as connection:
+            agent_hub_role_id = await connection.scalar(
+                select(Role.c.id).where(Role.c.serviceKey == "agent-hub", Role.c.name == "user")
+            )
+            if agent_hub_role_id is None:
+                agent_hub_role_id = f"oidc-runtime-agent-hub-role-{RUN_ID}"
+                await connection.execute(
+                    insert(Role).values(id=agent_hub_role_id, serviceKey="agent-hub", name="user")
+                )
+        denial_profiles = (
+            ("gitlab-agent-only", UserStatus.ACTIVE, True, agent_hub_role_id, 403),
+            ("gitlab-unverified", UserStatus.ACTIVE, False, role_id, 403),
+            ("gitlab-suspended", UserStatus.SUSPENDED, True, role_id, 401),
+        )
+        for suffix, status, verified, denied_role_id, expected_status in denial_profiles:
+            denied_email = f"{suffix}-{RUN_ID}@integration.invalid"
+            await _seed_password_user(
+                database,
+                suffix=suffix,
+                email=denied_email,
+                status=status,
+                verified=verified,
+                role_id=denied_role_id,
+            )
+            gitlab_denied_logins.append((denied_email, expected_status))
 
     process = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -281,7 +444,7 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
         "--no-proxy-headers",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=_runtime_environment(),
+        env=_runtime_environment(profile),
     )
     observed_tokens: list[str] = []
     try:
@@ -290,10 +453,55 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
         ) as client:
             await _wait_until_ready(client, process)
 
+            if profile.name == "gitlab":
+                unknown_client = await client.get(
+                    "/oauth2/authorize",
+                    params={
+                        "response_type": "code",
+                        "client_id": "gitlab-unknown",
+                        "redirect_uri": profile.redirect_uri,
+                        "scope": "openid email profile",
+                        "code_challenge": CHALLENGE,
+                        "code_challenge_method": "S256",
+                    },
+                    follow_redirects=False,
+                )
+                assert unknown_client.status_code == 400
+                assert "location" not in unknown_client.headers
+
+                wrong_callback = await client.get(
+                    "/oauth2/authorize",
+                    params={
+                        "response_type": "code",
+                        "client_id": profile.client_id,
+                        "redirect_uri": f"{profile.redirect_uri}/wrong",
+                        "scope": "openid email profile",
+                        "code_challenge": CHALLENGE,
+                        "code_challenge_method": "S256",
+                    },
+                    follow_redirects=False,
+                )
+                assert wrong_callback.status_code == 400
+                assert "location" not in wrong_callback.headers
+
+                for denied_email, expected_status in gitlab_denied_logins:
+                    denied_login = await _authorization_login_response(
+                        client,
+                        profile=profile,
+                        email=denied_email,
+                        state=f"denied-{denied_email.split('@', 1)[0]}",
+                    )
+                    assert denied_login.status_code == expected_status
+                    assert "code=" not in denied_login.headers.get("location", "")
+
             basic_code = await _authorization_code(
-                client, email=email, state="basic-state", nonce="basic-nonce"
+                client,
+                profile=profile,
+                email=email,
+                state="basic-state",
+                nonce="basic-nonce",
             )
-            basic = await _exchange(client, basic_code)
+            basic = await _exchange(client, basic_code, profile=profile)
             assert basic.status_code == 200, basic.text
             basic_payload = basic.json()
             observed_tokens.extend([basic_payload["access_token"], basic_payload["id_token"]])
@@ -304,12 +512,12 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
                 basic_payload["id_token"],
                 key,
                 algorithms=["RS256"],
-                audience=CLIENT_ID,
+                audience=profile.client_id,
                 issuer="https://fastapi-dev.invalid",
             )
             assert claims["sub"] == user_id
             assert claims["nonce"] == "basic-nonce"
-            assert claims["groups"] == ["agent-hub:user"]
+            assert claims["groups"] == [f"{profile.required_service}:{profile.required_role}"]
             assert claims["email_verified"] is True
 
             userinfo = await client.get(
@@ -322,21 +530,108 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
                 "email": email,
                 "email_verified": True,
                 "name": "OIDC Runtime User",
-                "groups": ["agent-hub:user"],
+                "groups": [f"{profile.required_service}:{profile.required_role}"],
             }
 
+            if profile.name == "gitlab":
+                wrong_secret_code = await _authorization_code(
+                    client,
+                    profile=profile,
+                    email=email,
+                    state="wrong-secret-state",
+                    nonce="wrong-secret-nonce",
+                )
+                wrong_secret = await _exchange(
+                    client,
+                    wrong_secret_code,
+                    profile=profile,
+                    client_secret="wrong-gitlab-secret",
+                )
+                assert wrong_secret.status_code == 401
+                assert wrong_secret.json()["error"] == "invalid_client"
+                recovered = await _exchange(client, wrong_secret_code, profile=profile)
+                assert recovered.status_code == 200
+                observed_tokens.extend(
+                    [recovered.json()["access_token"], recovered.json()["id_token"]]
+                )
+
+                wrong_pkce_code = await _authorization_code(
+                    client,
+                    profile=profile,
+                    email=email,
+                    state="wrong-pkce-state",
+                    nonce="wrong-pkce-nonce",
+                )
+                wrong_pkce = await _exchange(
+                    client,
+                    wrong_pkce_code,
+                    profile=profile,
+                    code_verifier="wrong-verifier-that-is-long-enough-000000001",
+                )
+                assert wrong_pkce.status_code == 400
+                assert wrong_pkce.json()["error"] == "invalid_grant"
+                consumed_after_wrong_pkce = await _exchange(
+                    client, wrong_pkce_code, profile=profile
+                )
+                assert consumed_after_wrong_pkce.status_code == 400
+                assert consumed_after_wrong_pkce.json()["error"] == "invalid_grant"
+
+                stable_code = await _authorization_code(
+                    client,
+                    profile=profile,
+                    email=email,
+                    state="stable-sub-state",
+                    nonce="stable-sub-nonce",
+                )
+                updated_email = f"gitlab-renamed-{RUN_ID}@integration.invalid"
+                updated_name = "Renamed GitLab User"
+                async with database.engine.begin() as connection:
+                    await connection.execute(
+                        update(User)
+                        .where(User.c.id == user_id)
+                        .values(email=updated_email, name=updated_name, updatedAt=utc_now_ms())
+                    )
+                    await connection.execute(
+                        update(PasswordCredential)
+                        .where(PasswordCredential.c.userId == user_id)
+                        .values(email=updated_email, updatedAt=utc_now_ms())
+                    )
+                stable = await _exchange(client, stable_code, profile=profile)
+                assert stable.status_code == 200
+                stable_payload = stable.json()
+                observed_tokens.extend([stable_payload["access_token"], stable_payload["id_token"]])
+                stable_claims = jwt.decode(
+                    stable_payload["id_token"],
+                    key,
+                    algorithms=["RS256"],
+                    audience=profile.client_id,
+                    issuer="https://fastapi-dev.invalid",
+                )
+                assert stable_claims["sub"] == claims["sub"] == user_id
+                assert stable_claims["email"] == updated_email
+                assert stable_claims["name"] == updated_name
+                email = updated_email
+
             post_code = await _authorization_code(
-                client, email=email, state="post-state", nonce="post-nonce"
+                client,
+                profile=profile,
+                email=email,
+                state="post-state",
+                nonce="post-nonce",
             )
-            post = await _exchange(client, post_code, method="post")
+            post = await _exchange(client, post_code, profile=profile, method="post")
             assert post.status_code == 200, post.text
             observed_tokens.extend([post.json()["access_token"], post.json()["id_token"]])
 
             race_code = await _authorization_code(
-                client, email=email, state="replay-state", nonce="replay-nonce"
+                client,
+                profile=profile,
+                email=email,
+                state="replay-state",
+                nonce="replay-nonce",
             )
             replay_responses = await asyncio.gather(
-                *(_exchange(client, race_code) for _ in range(6))
+                *(_exchange(client, race_code, profile=profile) for _ in range(6))
             )
             assert [response.status_code for response in replay_responses].count(200) == 1
             assert [response.status_code for response in replay_responses].count(400) == 5
@@ -351,7 +646,11 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
             observed_tokens.extend([replay_success["access_token"], replay_success["id_token"]])
 
             revoke_code = await _authorization_code(
-                client, email=email, state="lock-state", nonce="lock-nonce"
+                client,
+                profile=profile,
+                email=email,
+                state="lock-state",
+                nonce="lock-nonce",
             )
             async with database.engine.connect() as connection:
                 transaction = await connection.begin()
@@ -363,22 +662,28 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
                         UserRole.c.userId == user_id, UserRole.c.roleId == role_id
                     )
                 )
-                blocked_exchange = asyncio.create_task(_exchange(client, revoke_code))
+                blocked_exchange = asyncio.create_task(
+                    _exchange(client, revoke_code, profile=profile)
+                )
                 await asyncio.sleep(0.15)
                 assert not blocked_exchange.done(), "token exchange bypassed the user-row lock"
                 await transaction.commit()
             denied = await asyncio.wait_for(blocked_exchange, timeout=3)
             assert denied.status_code == 400
             assert denied.json()["error"] == "invalid_grant"
-            replay = await _exchange(client, revoke_code)
+            replay = await _exchange(client, revoke_code, profile=profile)
             assert replay.status_code == 400
             assert replay.json()["error"] == "invalid_grant"
 
             await _set_role(database, user_id=user_id, role_id=role_id, present=True)
             revocable_code = await _authorization_code(
-                client, email=email, state="userinfo-state", nonce="userinfo-nonce"
+                client,
+                profile=profile,
+                email=email,
+                state="userinfo-state",
+                nonce="userinfo-nonce",
             )
-            revocable = await _exchange(client, revocable_code)
+            revocable = await _exchange(client, revocable_code, profile=profile)
             assert revocable.status_code == 200
             revocable_access = revocable.json()["access_token"]
             observed_tokens.extend([revocable_access, revocable.json()["id_token"]])
@@ -428,12 +733,15 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
     await database.close()
 
     assert refresh_count == 0
+    expected_authorize_successes = 8 if profile.name == "gitlab" else 5
+    expected_token_successes = 6 if profile.name == "gitlab" else 4
     assert (
         sum(row.eventType == "oidc_authorize" and row.outcome == "success" for row in audit_rows)
-        == 5
+        == expected_authorize_successes
     )
     assert (
-        sum(row.eventType == "oidc_token" and row.outcome == "success" for row in audit_rows) == 4
+        sum(row.eventType == "oidc_token" and row.outcome == "success" for row in audit_rows)
+        == expected_token_successes
     )
     assert any(
         row.eventType == "oidc_token"
@@ -441,9 +749,16 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime() -> Non
         and row.reasonCode == "OIDC_REQUIRED_ROLE_MISSING"
         for row in audit_rows
     )
+    if profile.name == "gitlab":
+        assert any(
+            row.eventType == "oidc_token"
+            and row.outcome == "failure"
+            and row.reasonCode == "OIDC_INVALID_GRANT"
+            for row in audit_rows
+        )
     assert all(row.serviceKey is None for row in audit_rows)
     assert all(
-        row.detailsJson is not None and row.detailsJson.get("clientId") == CLIENT_ID
+        row.detailsJson is not None and row.detailsJson.get("clientId") == profile.client_id
         for row in audit_rows
     )
     serialized_audits = json.dumps(
