@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "blockingMediumDomains": ["auth", "crypto", "redirect", "network-reachable"],
+  "forbiddenLicenses": ["AGPL", "BUSL", "Commons-Clause", "Noncommercial", "SSPL", "UNLICENSED", "UNKNOWN"],
+  "manualReviewLicenses": ["GPL", "LGPL"],
+  "maximumScannerDatabaseAgeHours": 24,
+  "maximumBuildOnlyWaiverDays": 30,
+  "criticalWaiversAllowed": false,
+  "runtimeWaiversAllowed": false,
+  "allowedFindingDomains": [
+    "auth",
+    "crypto",
+    "dependency",
+    "image",
+    "license",
+    "misconfiguration",
+    "network-reachable",
+    "redirect",
+    "sast",
+    "secrets"
+  ]
+}

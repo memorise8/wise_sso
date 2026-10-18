@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.local/schemas/phase7-qualification-collector-attestation-v1.json",
+  "title": "WiseAcct Phase 7 unverified collector attestation record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "collectorId", "collectorRevision", "collectorTreeObject",
+    "expressImageId", "fastapiImageId", "status"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "collectorId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "collectorRevision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "collectorTreeObject": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "expressImageId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "fastapiImageId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "status": {"const": "UNVERIFIED"}
+  }
+}

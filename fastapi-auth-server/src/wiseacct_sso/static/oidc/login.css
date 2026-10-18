@@ -1,0 +1,44 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, Pretendard, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f5f6f8;
+  color: #16181d;
+}
+
+.oidc-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+}
+
+.oidc-panel {
+  box-sizing: border-box;
+  width: min(100%, 420px);
+  padding: 36px;
+  border: 1px solid #dfe2e8;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.oidc-kicker {
+  margin: 0 0 12px;
+  color: #48536a;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+.oidc-panel h1 { margin: 0; font-size: 26px; }
+.oidc-summary { margin: 10px 0 28px; color: #596174; }
+.oidc-error { margin: 0 0 18px; color: #a12222; font-weight: 600; }
+.oidc-panel form { display: grid; gap: 10px; }
+.oidc-panel input { box-sizing: border-box; width: 100%; }
+.oidc-panel button { margin-top: 8px; }
+.oidc-divider { margin: 24px 0 16px; text-align: center; color: #72798a; }
+.oidc-providers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.oidc-providers a { padding: 10px 6px; border: 1px solid #dfe2e8; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; }

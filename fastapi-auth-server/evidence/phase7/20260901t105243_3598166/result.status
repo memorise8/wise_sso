@@ -1,0 +1,6 @@
+status=INCOMPLETE
+passedGate=independent-contract
+contractScope=independent-stateful
+remainingGaps=downstream-gates,incomplete-approved-core-flow-sample
+skippedGates=performance,security,chaos,backup-restore,local-rollback
+overallReplacementReady=false

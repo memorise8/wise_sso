@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.invalid/phase7/backup-restore-evidence.schema.json",
+  "title": "Phase 7 synthetic backup/restore evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "gateId", "runId", "collector", "policySha256", "source",
+    "restore", "tools", "encryptedArtifact", "plaintext", "timing", "verification",
+    "fastapiSmoke", "expressInvariance", "accessAndRetention", "cleanup"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "gateId": {"const": "backup-restore"},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "collector": {"$ref": "#/$defs/collector"},
+    "policySha256": {"$ref": "#/$defs/sha256"},
+    "source": {"$ref": "#/$defs/provenance"},
+    "restore": {"$ref": "#/$defs/provenance"},
+    "tools": {"$ref": "#/$defs/tools"},
+    "encryptedArtifact": {"$ref": "#/$defs/artifact"},
+    "plaintext": {"$ref": "#/$defs/plaintext"},
+    "timing": {"$ref": "#/$defs/timing"},
+    "verification": {"$ref": "#/$defs/verification"},
+    "fastapiSmoke": {"$ref": "#/$defs/smoke"},
+    "expressInvariance": {"$ref": "#/$defs/express"},
+    "accessAndRetention": {"$ref": "#/$defs/access"},
+    "cleanup": {"$ref": "#/$defs/cleanup"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "Z$"},
+    "collector": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "identity", "version"],
+      "properties": {
+        "kind": {"const": "controlled-disposable-v1"},
+        "identity": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"}
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "databaseName", "databaseFingerprint", "syntheticOnly", "productionData"],
+      "properties": {
+        "schemaVersion": {"const": 2}, "databaseName": {"type": "string", "minLength": 8, "maxLength": 63, "pattern": "^[a-z][a-z0-9_]*_test_[a-z0-9_]+$"},
+        "databaseFingerprint": {"$ref": "#/$defs/sha256"},
+        "syntheticOnly": {"const": true}, "productionData": {"const": false}
+      }
+    },
+    "pgDumpTool": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version", "executableSha256"],
+      "properties": {"name": {"const": "pg_dump"}, "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"}, "executableSha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "pgRestoreTool": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version", "executableSha256"],
+      "properties": {"name": {"const": "pg_restore"}, "version": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$"}, "executableSha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "tools": {
+      "type": "object", "additionalProperties": false, "required": ["pgDump", "pgRestore"],
+      "properties": {"pgDump": {"$ref": "#/$defs/pgDumpTool"}, "pgRestore": {"$ref": "#/$defs/pgRestoreTool"}}
+    },
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["format", "algorithm", "ciphertextSha256", "ciphertextSizeBytes", "plaintextDumpSha256", "plaintextDumpSizeBytes", "decryptedRestoreInputSha256", "rawKeyPresent", "keyOwner", "keyReference"],
+      "properties": {
+        "format": {"const": "postgres-custom"}, "algorithm": {"const": "AES-256-GCM"},
+        "ciphertextSha256": {"$ref": "#/$defs/sha256"}, "ciphertextSizeBytes": {"type": "integer", "minimum": 1},
+        "plaintextDumpSha256": {"$ref": "#/$defs/sha256"}, "plaintextDumpSizeBytes": {"type": "integer", "minimum": 1, "maximum": 67108864}, "decryptedRestoreInputSha256": {"$ref": "#/$defs/sha256"}, "rawKeyPresent": {"const": false},
+        "keyOwner": {"const": "phase7-local-qualification-runner"}, "keyReference": {"type": "string", "pattern": "^urn:wiseacct:phase7:backup-restore:ephemeral:[a-z0-9][a-z0-9._-]{0,127}$"}
+      }
+    },
+    "plaintext": {
+      "type": "object", "additionalProperties": false,
+      "required": ["published", "retained", "discoveredCount"],
+      "properties": {"published": {"const": false}, "retained": {"const": false}, "discoveredCount": {"const": 0}}
+    },
+    "timing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["backupStartedAt", "backupEndedAt", "backupDurationMs", "restoreStartedAt", "restoreEndedAt", "restoreDurationMs", "rpoSeconds", "rtoSeconds"],
+      "properties": {
+        "backupStartedAt": {"$ref": "#/$defs/timestamp"}, "backupEndedAt": {"$ref": "#/$defs/timestamp"}, "backupDurationMs": {"type": "integer", "minimum": 0},
+        "restoreStartedAt": {"$ref": "#/$defs/timestamp"}, "restoreEndedAt": {"$ref": "#/$defs/timestamp"}, "restoreDurationMs": {"type": "integer", "minimum": 0},
+        "rpoSeconds": {"type": "integer", "minimum": 0}, "rtoSeconds": {"type": "integer", "minimum": 0}
+      }
+    },
+    "verification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["fixtureManifestSha256", "sentinels", "schemaCatalog", "rowCounts", "coreAuthState"],
+      "properties": {
+        "fixtureManifestSha256": {"$ref": "#/$defs/sha256"},
+        "sentinels": {"type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/sentinelProof"}},
+        "schemaCatalog": {"$ref": "#/$defs/comparison"},
+        "rowCounts": {"type": "array", "minItems": 11, "maxItems": 11, "uniqueItems": true, "items": {"$ref": "#/$defs/rowCount"}},
+        "coreAuthState": {"$ref": "#/$defs/coreAuth"}
+      }
+    },
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "sourceSha256", "restoreSha256"],
+      "properties": {"status": {"const": "PASS"}, "sourceSha256": {"$ref": "#/$defs/sha256"}, "restoreSha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "rowCount": {
+      "type": "object", "additionalProperties": false,
+      "required": ["table", "sourceCount", "restoreCount", "sourceDigest", "restoreDigest"],
+      "properties": {"table": {"enum": ["User", "PasswordCredential", "PendingPasswordCredential", "SubjectReservation", "SocialAccount", "RefreshToken", "EmailVerificationToken", "PasswordResetToken", "AuditLog", "Role", "UserRole"]}, "sourceCount": {"type": "integer", "minimum": 0}, "restoreCount": {"type": "integer", "minimum": 0}, "sourceDigest": {"$ref": "#/$defs/sha256"}, "restoreDigest": {"$ref": "#/$defs/sha256"}}
+    },
+    "sentinelProof": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "table", "sourceCount", "restoreCount", "sourceDigest", "restoreDigest"],
+      "properties": {"id": {"enum": ["user", "credential", "role", "session"]}, "table": {"enum": ["User", "PasswordCredential", "Role", "RefreshToken"]}, "sourceCount": {"type": "integer", "minimum": 1}, "restoreCount": {"type": "integer", "minimum": 1}, "sourceDigest": {"$ref": "#/$defs/sha256"}, "restoreDigest": {"$ref": "#/$defs/sha256"}}
+    },
+    "coreAuth": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "sourceSha256", "restoreSha256", "foreignKeyViolations", "sequenceMismatches"],
+      "properties": {"status": {"const": "PASS"}, "sourceSha256": {"$ref": "#/$defs/sha256"}, "restoreSha256": {"$ref": "#/$defs/sha256"}, "foreignKeyViolations": {"const": 0}, "sequenceMismatches": {"const": 0}}
+    },
+    "smoke": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "databaseName", "mutations", "checks"],
+      "properties": {"mode": {"const": "read-only-synthetic"}, "databaseName": {"type": "string", "maxLength": 63, "pattern": "^[a-z][a-z0-9_]*_test_[a-z0-9_]+$"}, "mutations": {"const": 0}, "checks": {"type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/check"}}}
+    },
+    "check": {
+      "type": "object", "additionalProperties": false, "required": ["id", "status"],
+      "properties": {"id": {"enum": ["health", "user-read", "session-read", "role-read"]}, "status": {"const": "PASS"}}
+    },
+    "express": {
+      "type": "object", "additionalProperties": false,
+      "required": ["before", "after"], "properties": {"before": {"$ref": "#/$defs/expressSnapshot"}, "after": {"$ref": "#/$defs/expressSnapshot"}}
+    },
+    "expressSnapshot": {
+      "type": "object", "additionalProperties": false,
+      "required": ["containerId", "imageId", "state", "restartCount", "startedAt"],
+      "properties": {"containerId": {"$ref": "#/$defs/sha256"}, "imageId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "state": {"const": "running"}, "restartCount": {"type": "integer", "minimum": 0}, "startedAt": {"$ref": "#/$defs/timestamp"}}
+    },
+    "access": {
+      "type": "object", "additionalProperties": false,
+      "required": ["accessors", "createdAt", "expiresAt", "retentionSeconds", "deletionConfirmedAt"],
+      "properties": {"accessors": {"const": ["controlled-collector"]}, "createdAt": {"$ref": "#/$defs/timestamp"}, "expiresAt": {"$ref": "#/$defs/timestamp"}, "retentionSeconds": {"type": "integer", "minimum": 1}, "deletionConfirmedAt": {"$ref": "#/$defs/timestamp"}}
+    },
+    "cleanup": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceDatabaseDropped", "restoreDatabaseDropped", "artifactRemoved", "privateTempRemoved", "deletionConfirmed", "deletedCiphertextSha256", "candidateInventory"],
+      "properties": {"sourceDatabaseDropped": {"const": true}, "restoreDatabaseDropped": {"const": true}, "artifactRemoved": {"const": true}, "privateTempRemoved": {"const": true}, "deletionConfirmed": {"const": true}, "deletedCiphertextSha256": {"$ref": "#/$defs/sha256"}, "candidateInventory": {"type": "array", "maxItems": 0}}
+    }
+  }
+}

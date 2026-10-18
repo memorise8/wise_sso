@@ -1,0 +1,10 @@
+PASS security.refresh-none-algorithm
+PASS security.refresh-hs256-rotation
+PASS security.refresh-hs384-algorithm
+PASS security.refresh-hs512-algorithm
+PASS auth.login-issues-verifiable-token
+PASS session.login-logout-replay
+PASS recovery.password-reset-request
+PASS recovery.email-verification-request
+PASS admin.status-mutation
+All 9 contract scenario(s) passed

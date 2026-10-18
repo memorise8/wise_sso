@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.local/schemas/phase7-qualification-group-v2.json",
+  "title": "WiseAcct Phase 7 qualification run group v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "groupId", "gates"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "groupId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "gates": {"type": "array", "maxItems": 7, "items": {"$ref": "#/$defs/gate"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "revision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "imageId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "identifier": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "path": {"type": "string", "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"},
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gateId", "topology", "runId", "evidencePath", "evidenceAggregateSha256",
+        "sourceRevision", "gitTreeObject", "expressApplicationTreeSha256",
+        "fastapiApplicationTreeSha256", "schemaSha256", "expressLockSha256",
+        "fastapiLockSha256", "configSha256", "expressImageId", "fastapiImageId",
+        "collectorAttestationSha256",
+        "status", "sampleSatisfied", "readinessAssertionsSatisfied",
+        "provenanceEvidencePath", "provenanceEvidenceSha256",
+        "collectorAttestationEvidencePath", "collectorAttestationEvidenceSha256",
+        "resultEvidencePath",
+        "resultEvidenceSha256", "cleanupEvidencePath", "cleanupEvidenceSha256",
+        "expressBeforePath", "expressBeforeSha256", "expressAfterPath", "expressAfterSha256"
+      ],
+      "properties": {
+        "gateId": {"enum": ["independent-contract", "shared-state-core", "performance", "security", "chaos", "backup-restore", "local-rollback"]},
+        "topology": {"$ref": "#/$defs/identifier"},
+        "runId": {"$ref": "#/$defs/identifier"},
+        "evidencePath": {"$ref": "#/$defs/path"},
+        "evidenceAggregateSha256": {"$ref": "#/$defs/sha256"},
+        "sourceRevision": {"$ref": "#/$defs/revision"},
+        "gitTreeObject": {"$ref": "#/$defs/revision"},
+        "expressApplicationTreeSha256": {"$ref": "#/$defs/sha256"},
+        "fastapiApplicationTreeSha256": {"$ref": "#/$defs/sha256"},
+        "schemaSha256": {"$ref": "#/$defs/sha256"},
+        "expressLockSha256": {"$ref": "#/$defs/sha256"},
+        "fastapiLockSha256": {"$ref": "#/$defs/sha256"},
+        "configSha256": {"$ref": "#/$defs/sha256"},
+        "expressImageId": {"$ref": "#/$defs/imageId"},
+        "fastapiImageId": {"$ref": "#/$defs/imageId"},
+        "collectorAttestationSha256": {"$ref": "#/$defs/sha256"},
+        "status": {"enum": ["PASS", "FAIL", "INCOMPLETE"]},
+        "sampleSatisfied": {"type": "boolean"},
+        "readinessAssertionsSatisfied": {"type": "boolean"},
+        "provenanceEvidencePath": {"$ref": "#/$defs/path"},
+        "provenanceEvidenceSha256": {"$ref": "#/$defs/sha256"},
+        "collectorAttestationEvidencePath": {"$ref": "#/$defs/path"},
+        "collectorAttestationEvidenceSha256": {"$ref": "#/$defs/sha256"},
+        "resultEvidencePath": {"$ref": "#/$defs/path"},
+        "resultEvidenceSha256": {"$ref": "#/$defs/sha256"},
+        "cleanupEvidencePath": {"$ref": "#/$defs/path"},
+        "cleanupEvidenceSha256": {"$ref": "#/$defs/sha256"},
+        "expressBeforePath": {"$ref": "#/$defs/path"},
+        "expressBeforeSha256": {"$ref": "#/$defs/sha256"},
+        "expressAfterPath": {"$ref": "#/$defs/path"},
+        "expressAfterSha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

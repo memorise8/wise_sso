@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server
+configfile: pyproject.toml
+plugins: anyio-4.14.2, cov-7.1.0
+collecting ... collected 5 items
+
+tests/integration/test_redis_primitives.py::test_nx_ex_and_one_time_consume_under_concurrency[asyncio] PASSED [ 20%]
+tests/integration/test_redis_primitives.py::test_raw_cas_does_not_normalize_serialization[asyncio] PASSED [ 40%]
+tests/integration/test_redis_primitives.py::test_atomic_increment_exact_count_ttl_recovery_and_nonextension[asyncio] PASSED [ 60%]
+tests/integration/test_redis_primitives.py::test_outage_fails_closed_without_buffered_replay[asyncio] PASSED [ 80%]
+tests/integration/test_redis_primitives.py::test_candidate_disconnect_does_not_replay_failed_mutation_after_restart[asyncio] PASSED [100%]
+
+- generated xml file: /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server/evidence/phase2/redis-junit.xml -
+============================== 5 passed in 0.49s ===============================

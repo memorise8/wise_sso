@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "suiteId": "shared-state-core-v1",
+  "trialsPerSchedule": 10,
+  "fullPhase7SampleSatisfied": false,
+  "overallReplacementReady": false,
+  "scenarios": [
+    {
+      "id": "express-handoff-fastapi-exchange",
+      "kind": "handoff-cross-runtime",
+      "producer": "express",
+      "consumer": "fastapi"
+    },
+    {
+      "id": "fastapi-handoff-express-exchange",
+      "kind": "handoff-cross-runtime",
+      "producer": "fastapi",
+      "consumer": "express"
+    },
+    {
+      "id": "express-handoff-mixed-consume-race",
+      "kind": "handoff-consume-race",
+      "producer": "express",
+      "actors": { "express": 10, "fastapi": 10 }
+    },
+    {
+      "id": "fastapi-handoff-mixed-consume-race",
+      "kind": "handoff-consume-race",
+      "producer": "fastapi",
+      "actors": { "express": 10, "fastapi": 10 }
+    },
+    {
+      "id": "mixed-refresh-race",
+      "kind": "refresh-race",
+      "actors": { "express": 10, "fastapi": 10 }
+    },
+    {
+      "id": "express-logout-fastapi-refresh-race",
+      "kind": "logout-refresh-race",
+      "producer": "express",
+      "logout": "express",
+      "refresh": "fastapi"
+    },
+    {
+      "id": "fastapi-logout-express-refresh-race",
+      "kind": "logout-refresh-race",
+      "producer": "fastapi",
+      "logout": "fastapi",
+      "refresh": "express"
+    },
+    {
+      "id": "alternating-shared-rate-limit-boundary",
+      "kind": "alternating-rate-limit",
+      "allowedRequests": 20,
+      "limitedRequests": 2,
+      "route": "/auth/login"
+    },
+    {
+      "id": "mixed-simultaneous-shared-rate-limit",
+      "kind": "simultaneous-rate-limit",
+      "prefillRequests": 10,
+      "actors": { "express": 10, "fastapi": 10 },
+      "route": "/auth/login"
+    },
+    {
+      "id": "mixed-failed-login-race",
+      "kind": "failed-login-race",
+      "actors": { "express": 10, "fastapi": 10 }
+    }
+  ]
+}

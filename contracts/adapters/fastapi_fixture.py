@@ -41,6 +41,7 @@ class _SharedAdapter(Protocol):
     refresh_fixture_token: Callable[[FixtureConfig, str], str]
     seed_refresh_token: Callable[[FixtureConfig, str, str], None]
     setup: Callable[[FixtureConfig, str], dict[str, Any]]
+    expire: Callable[[FixtureConfig, str], dict[str, Any]]
     snapshot: Callable[[FixtureConfig, str], Any]
     load_config: Callable[[], FixtureConfig]
     preflight: Callable[[FixtureConfig], dict[str, Any]]
@@ -65,8 +66,8 @@ AdapterError = _shared.AdapterError
 Config = _shared.Config
 RedisRespClient = _shared.RedisRespClient
 
-# FastAPI deliberately persists into the existing Prisma-owned schema. Sharing
-# these operations keeps fixtures and canonical probes identical across runtimes.
+# The FastAPI implementation deliberately persists into the Prisma-owned schema.
+# Keep fixture data and canonical probes identical across both runtimes.
 ACTIVE_USER_ID = _shared.ACTIVE_USER_ID
 PENDING_USER_ID = _shared.PENDING_USER_ID
 ADMIN_USER_ID = _shared.ADMIN_USER_ID
@@ -79,6 +80,7 @@ seed = _shared.seed
 refresh_fixture_token = _shared.refresh_fixture_token
 seed_refresh_token = _shared.seed_refresh_token
 setup = _shared.setup
+expire = _shared.expire
 snapshot = _shared.snapshot
 
 _REQUIRED_SCHEMA_QUERY = r"""
@@ -96,7 +98,7 @@ THEN 'prisma-compatible' ELSE 'missing' END;
 
 
 def load_config() -> FixtureConfig:
-    """Load shared isolated-target config with an explicit FastAPI opt-in."""
+    """Load the shared contract config with an explicit FastAPI opt-in."""
 
     if os.environ.get("CONTRACT_FASTAPI_RUNTIME") != "1":
         raise AdapterError("CONTRACT_FASTAPI_RUNTIME=1 is required")
@@ -104,7 +106,7 @@ def load_config() -> FixtureConfig:
 
 
 def preflight(config: FixtureConfig) -> dict[str, Any]:
-    """Prove isolation and the Prisma-compatible schema before mutation."""
+    """Prove isolation and the Prisma-compatible schema before any mutation."""
 
     result = _shared.preflight(config)
     schema = psql(config, _REQUIRED_SCHEMA_QUERY)
@@ -118,19 +120,22 @@ def preflight(config: FixtureConfig) -> dict[str, Any]:
 def main(argv: list[str]) -> int:
     try:
         if len(argv) != 2 or argv[0] not in {
+            "expire",
             "preflight",
             "setup",
             "snapshot",
             "teardown",
         }:
             raise AdapterError(
-                "usage: fastapi_fixture.py {preflight|setup|snapshot|teardown} <name>"
+                "usage: fastapi_fixture.py {preflight|setup|expire|snapshot|teardown} <name>"
             )
         command, name = argv
         config = load_config()
         result: Any = preflight(config)
         if command == "setup":
             result = setup(config, name)
+        elif command == "expire":
+            result = expire(config, name)
         elif command == "snapshot":
             result = snapshot(config, name)
         elif command == "teardown":

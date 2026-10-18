@@ -1,0 +1,9 @@
+gate=shared-state-core-v1
+status=PASS
+resultCount=100
+concurrentTrialCount=70
+mixedRuntimeOverlapCount=70
+overlapMismatchCount=0
+jsonlSha256=a9de7f36c34c6a5d51ad1f39715aec927062472ad5bc370b733e9a25de643bf5
+fullPhase7SampleSatisfied=false
+overallReplacementReady=false

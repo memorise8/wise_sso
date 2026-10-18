@@ -1,0 +1,42 @@
+{
+  "status": "PROVISIONAL",
+  "project": "wiseacct-sso-fastapi-dev",
+  "services": {
+    "app-fastapi-dev": {
+      "containerName": "wiseacct-sso-fastapi-dev-app",
+      "hostBindings": ["127.0.0.1:4001:4001/tcp"],
+      "mounts": [],
+      "networks": ["fastapi-dev-network"]
+    },
+    "postgres-fastapi-dev": {
+      "containerName": "wiseacct-sso-fastapi-dev-postgres",
+      "hostBindings": ["127.0.0.1:5433:5432/tcp"],
+      "mounts": [
+        {
+          "source": "fastapi-dev-postgres-data",
+          "target": "/var/lib/postgresql/data",
+          "type": "volume"
+        }
+      ],
+      "networks": ["fastapi-dev-network"]
+    },
+    "redis-fastapi-dev": {
+      "containerName": "wiseacct-sso-fastapi-dev-redis",
+      "hostBindings": ["127.0.0.1:6380:6379/tcp"],
+      "mounts": [
+        {
+          "source": null,
+          "target": "/data",
+          "type": "tmpfs"
+        }
+      ],
+      "networks": ["fastapi-dev-network"]
+    }
+  },
+  "networks": {
+    "fastapi-dev-network": "wiseacct-sso-fastapi-dev-network"
+  },
+  "volumes": {
+    "fastapi-dev-postgres-data": "wiseacct-sso-fastapi-dev-postgres-data"
+  }
+}

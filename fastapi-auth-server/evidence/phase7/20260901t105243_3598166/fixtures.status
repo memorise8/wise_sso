@@ -1,0 +1,7 @@
+gate=independent-contract
+suite=fixtures
+status=PASS
+scenarioSha256=ddfdc1e96875ecdc2cf7e2b329a0e00c8f5fd44ae50f729eade8c50927bf4963
+scenarioCount=9
+jsonlSha256=647ccd3476ac9ae3c8310cbd2efd1bf116bcc5c632c0ec15f7276a52b5a1ecd1
+resultCount=9

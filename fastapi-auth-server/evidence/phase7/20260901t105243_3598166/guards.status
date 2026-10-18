@@ -1,0 +1,7 @@
+gate=independent-contract
+suite=guards
+status=PASS
+scenarioSha256=372b57dfc1a1746b4502494dea0c7cb0342276ab71024f736e2856f5558edc79
+scenarioCount=10
+jsonlSha256=aa86af28b9643fc992db311b4667388ee2e4f8630c9efe61f4d89db226a2d783
+resultCount=10

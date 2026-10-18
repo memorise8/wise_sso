@@ -1,0 +1,11 @@
+{
+  "clientId": "gitlab-temis",
+  "redirectUris": [
+    "https://git.temis.me/users/auth/openid_connect/callback"
+  ],
+  "clientSecretHash": "REPLACE_WITH_ARGON2ID_HASH_OF_GITLAB_CLIENT_SECRET",
+  "requiredRoles": [{"serviceKey": "gitlab", "name": "user"}],
+  "groupsServiceKeys": ["gitlab"],
+  "requirePkce": true,
+  "allowedScopes": ["openid", "profile", "email"]
+}

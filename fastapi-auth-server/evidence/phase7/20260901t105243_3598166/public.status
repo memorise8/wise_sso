@@ -1,0 +1,7 @@
+gate=independent-contract
+suite=public
+status=PASS
+scenarioSha256=7e041612d393511d8bdc72cb940f2f4caf4e39e45352e825abd29a2a586b168f
+scenarioCount=5
+jsonlSha256=33054082a77819b3d21aea7ca8ed45416d2560c06cd97251e8bdd863b7035345
+resultCount=5

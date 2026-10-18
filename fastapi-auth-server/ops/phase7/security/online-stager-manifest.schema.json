@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wiseacct.invalid/schemas/phase7/online-stager-manifest.schema.json",
+  "title": "WiseAcct Phase 7 online stager manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "runId", "status", "createdAt", "expiresAt", "sourceRevision", "gitTreeObject", "toolchainLockSha256", "targetPlatform", "networkScope", "images", "trivyArtifacts", "advisoryReports", "aggregateSha256"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "kind": {"const": "phase7-online-stager-manifest"},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "status": {"const": "STAGED_UNVERIFIED"},
+    "createdAt": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"},
+    "expiresAt": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"},
+    "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "gitTreeObject": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "toolchainLockSha256": {"$ref": "#/$defs/sha256"},
+    "targetPlatform": {"$ref": "#/$defs/platform"},
+    "networkScope": {"$ref": "#/$defs/networkScope"},
+    "images": {"type": "array", "minItems": 8, "maxItems": 8, "items": {"$ref": "#/$defs/image"}},
+    "trivyArtifacts": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/trivyArtifact"}},
+    "advisoryReports": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/advisoryReport"}},
+    "aggregateSha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "blob": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "sizeBytes"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "sizeBytes": {"type": "integer", "minimum": 1, "maximum": 268435456}
+      }
+    },
+    "platform": {
+      "type": "object", "additionalProperties": false,
+      "required": ["os", "architecture", "variant"],
+      "properties": {"os": {"const": "linux"}, "architecture": {"enum": ["amd64", "arm64"]}, "variant": {"type": ["string", "null"], "enum": [null, "v8"]}}
+    },
+    "subjectArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "subjectDigest", "issuer", "identity", "rekorIncluded", "rawArtifact", "descriptor"],
+      "properties": {"status": {"const": "UNVERIFIED"}, "subjectDigest": {"$ref": "#/$defs/digest"}, "issuer": {"type": "string", "minLength": 1}, "identity": {"type": "string", "minLength": 1}, "rekorIncluded": {"type": "boolean"}, "rawArtifact": {"$ref": "#/$defs/blob"}, "descriptor": {"$ref": "#/$defs/blob"}}
+    },
+    "attestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "subjectDigest", "predicateType", "rawArtifact", "descriptor"],
+      "properties": {
+        "status": {"const": "UNVERIFIED"},
+        "subjectDigest": {"$ref": "#/$defs/digest"},
+        "predicateType": {"enum": ["https://slsa.dev/provenance/v1", "https://spdx.dev/Document"]},
+        "rawArtifact": {"$ref": "#/$defs/blob"},
+        "descriptor": {"$ref": "#/$defs/blob"}
+      }
+    },
+    "image": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "repository", "requestedReference", "indexDigest", "platformDigest", "configDigest", "archive", "signatures", "attestations", "fetchedAt"],
+      "properties": {
+        "role": {"enum": ["builder", "collector", "scanner-gitleaks", "scanner-npm-audit", "scanner-pip-audit", "scanner-ruff", "scanner-semgrep", "scanner-trivy"]},
+        "repository": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"},
+        "requestedReference": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}@sha256:[0-9a-f]{64}$"},
+        "indexDigest": {"$ref": "#/$defs/digest"},
+        "platformDigest": {"$ref": "#/$defs/digest"},
+        "configDigest": {"$ref": "#/$defs/digest"},
+        "archive": {"$ref": "#/$defs/blob"},
+        "signatures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/subjectArtifact"}},
+        "attestations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/attestation"}},
+        "fetchedAt": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"}
+      }
+    },
+    "trivyArtifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "repository", "manifestDigest", "payload", "updatedAt", "nextUpdateAt", "signatures", "attestations"],
+      "properties": {
+        "kind": {"enum": ["vulnerability-db", "java-db", "checks-bundle"]},
+        "repository": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{0,254}$"},
+        "manifestDigest": {"$ref": "#/$defs/digest"},
+        "payload": {"$ref": "#/$defs/blob"},
+        "updatedAt": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"},
+        "nextUpdateAt": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"},
+        "signatures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/subjectArtifact"}},
+        "attestations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/attestation"}}
+      }
+    },
+    "destination": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scheme", "host", "port"],
+      "properties": {
+        "scheme": {"const": "https"},
+        "host": {"type": "string", "pattern": "^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$"},
+        "port": {"const": 443}
+      }
+    },
+    "advisoryReport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ecosystem", "producer", "serviceOrigin", "lockSha256", "request", "response", "observedAt"],
+      "properties": {
+        "ecosystem": {"enum": ["pip", "npm"]},
+        "producer": {"enum": ["pip-audit", "npm-audit"]},
+        "serviceOrigin": {"type": "string", "pattern": "^https://[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?:443$"},
+        "lockSha256": {"$ref": "#/$defs/sha256"},
+        "request": {"$ref": "#/$defs/evidence"},
+        "response": {"$ref": "#/$defs/evidence"},
+        "observedAt": {"type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"}
+      }
+    },
+    "networkScope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "observationStatus", "destinations", "evidence"],
+      "properties": {
+        "mode": {"const": "default-deny"},
+        "observationStatus": {"const": "STAGED_UNVERIFIED"},
+        "destinations": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"$ref": "#/$defs/destination"}},
+        "evidence": {"$ref": "#/$defs/evidence"}
+      }
+    },
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rawArtifact", "descriptor"],
+      "properties": {"rawArtifact": {"$ref": "#/$defs/blob"}, "descriptor": {"$ref": "#/$defs/blob"}}
+    }
+  }
+}

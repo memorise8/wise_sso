@@ -1,0 +1,72 @@
+name: wiseacct-sso-fastapi-dev
+
+services:
+  app-fastapi-dev:
+    container_name: wiseacct-sso-fastapi-dev-app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ${WISEACCT_FASTAPI_DEV_ENV_FILE:?Use ops/dev-compose.sh with an explicit synthetic env file}
+    environment:
+      NODE_ENV: development
+      PORT: "4001"
+      DATABASE_URL: postgresql://${AUTH_DB_USER:-fastapi_dev}:${AUTH_DB_PASSWORD:-synthetic-fastapi-db-only}@postgres-fastapi-dev:5432/${AUTH_DB_NAME:-fastapi_sso_dev}
+      REDIS_URL: redis://redis-fastapi-dev:6379/0
+    ports:
+      - "127.0.0.1:4001:4001"
+    depends_on:
+      postgres-fastapi-dev:
+        condition: service_healthy
+      redis-fastapi-dev:
+        condition: service_healthy
+    networks:
+      - fastapi-dev-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4001/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  postgres-fastapi-dev:
+    container_name: wiseacct-sso-fastapi-dev-postgres
+    image: postgres:16-alpine@sha256:23e88eb049fd5d54894d70100df61d38a49ed97909263f79d4ff4c30a5d5fca2
+    environment:
+      POSTGRES_DB: ${AUTH_DB_NAME:-fastapi_sso_dev}
+      POSTGRES_USER: ${AUTH_DB_USER:-fastapi_dev}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-synthetic-fastapi-db-only}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - fastapi-dev-postgres-data:/var/lib/postgresql/data
+    networks:
+      - fastapi-dev-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis-fastapi-dev:
+    container_name: wiseacct-sso-fastapi-dev-redis
+    image: redis:7.4-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    command: ["redis-server", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6380:6379"
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=64m
+    networks:
+      - fastapi-dev-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+networks:
+  fastapi-dev-network:
+    name: wiseacct-sso-fastapi-dev-network
+
+volumes:
+  fastapi-dev-postgres-data:
+    name: wiseacct-sso-fastapi-dev-postgres-data

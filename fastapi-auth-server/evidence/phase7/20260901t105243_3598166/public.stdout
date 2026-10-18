@@ -1,0 +1,6 @@
+PASS public.health
+PASS public.ready
+PASS public.jwks
+PASS public.openid-configuration
+PASS public.not-found
+All 5 contract scenario(s) passed

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "profile.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "suiteId", "manifestPath", "manifestSha256", "flowIds", "loginFlowIds", "expectedFailureFlowIds", "outcomeContract", "epochs", "warmupTrialsPerFlowRuntimeEpoch", "measuredTrialsPerFlowRuntimeEpoch", "successTrialsPerApplicableFlowRuntimeEpoch", "expectedFailureTrialsPerApplicableFlowRuntimeEpoch", "epochRuntimeOrder", "load", "latency", "policy", "overallReplacementReady"],
+  "properties": {
+    "$schema": {"const": "profile.schema.json"},
+    "schemaVersion": {"const": 1},
+    "suiteId": {"const": "phase7-performance-v1"},
+    "manifestPath": {"const": "contracts/manifest.json"},
+    "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "flowIds": {"$ref": "#/$defs/exactFlowIds"},
+    "loginFlowIds": {"const": ["password-direct-login-token"]},
+    "expectedFailureFlowIds": {"$ref": "#/$defs/exactFlowIds"},
+    "outcomeContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["password-direct-login-token", "password-handoff-exchange", "email-verification-attach-handoff-exchange", "password-reset-session-revoke", "oauth-google", "oauth-naver", "oauth-kakao", "refresh-logout-race", "admin-status-role-session-audit", "global-rate-limit"],
+      "properties": {
+        "password-direct-login-token": {"$ref": "#/$defs/outcomePair"},
+        "password-handoff-exchange": {"$ref": "#/$defs/outcomePair"},
+        "email-verification-attach-handoff-exchange": {"$ref": "#/$defs/outcomePair"},
+        "password-reset-session-revoke": {"$ref": "#/$defs/outcomePair"},
+        "oauth-google": {"$ref": "#/$defs/outcomePair"},
+        "oauth-naver": {"$ref": "#/$defs/outcomePair"},
+        "oauth-kakao": {"$ref": "#/$defs/outcomePair"},
+        "refresh-logout-race": {"$ref": "#/$defs/outcomePair"},
+        "admin-status-role-session-audit": {"$ref": "#/$defs/outcomePair"},
+        "global-rate-limit": {"$ref": "#/$defs/outcomePair"}
+      }
+    },
+    "epochs": {"const": 10},
+    "warmupTrialsPerFlowRuntimeEpoch": {"const": 20},
+    "measuredTrialsPerFlowRuntimeEpoch": {"const": 100},
+    "successTrialsPerApplicableFlowRuntimeEpoch": {"const": 80},
+    "expectedFailureTrialsPerApplicableFlowRuntimeEpoch": {"const": 20},
+    "epochRuntimeOrder": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["express", "fastapi"]}}},
+    "load": {"type": "object", "additionalProperties": false, "required": ["model", "ratePerSecond", "timeoutMs", "maxInFlight"], "properties": {"model": {"const": "open-loop"}, "ratePerSecond": {"const": 20}, "timeoutMs": {"const": 5000}, "maxInFlight": {"const": 16}}},
+    "latency": {"type": "object", "additionalProperties": false, "required": ["clock", "interval", "percentile"], "properties": {"clock": {"const": "monotonic"}, "interval": {"const": "scheduled-to-completed"}, "percentile": {"const": "nearest-rank-p95"}}},
+    "policy": {"type": "object", "additionalProperties": false, "required": ["allowOverrides", "retries", "allowOutlierRemoval", "unexpectedOutcomeCountMax", "candidateP95MaxPercentOfBaseline", "candidateErrorIncreasePer1000", "candidateLoginSuccessDecreasePer1000"], "properties": {"allowOverrides": {"const": false}, "retries": {"const": 0}, "allowOutlierRemoval": {"const": false}, "unexpectedOutcomeCountMax": {"const": 0}, "candidateP95MaxPercentOfBaseline": {"const": 120}, "candidateErrorIncreasePer1000": {"const": 10}, "candidateLoginSuccessDecreasePer1000": {"const": 20}}},
+    "overallReplacementReady": {"const": false}
+  },
+  "$defs": {
+    "outcomePair": {"type": "object", "additionalProperties": false, "required": ["success", "expectedFailure"], "properties": {"success": {"const": "success"}, "expectedFailure": {"const": "expected-failure"}}},
+    "exactFlowIds": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "prefixItems": [
+        {"const": "password-direct-login-token"},
+        {"const": "password-handoff-exchange"},
+        {"const": "email-verification-attach-handoff-exchange"},
+        {"const": "password-reset-session-revoke"},
+        {"const": "oauth-google"},
+        {"const": "oauth-naver"},
+        {"const": "oauth-kakao"},
+        {"const": "refresh-logout-race"},
+        {"const": "admin-status-role-session-audit"},
+        {"const": "global-rate-limit"}
+      ],
+      "items": false
+    }
+  }
+}

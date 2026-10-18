@@ -1,0 +1,11 @@
+terminateExpress=PASS
+terminateFastapi=PASS
+dropSharedDatabase=PASS
+dropExpressRole=PASS
+dropFastapiRole=PASS
+redisProbe=PASS
+clearRedis13=PASS
+candidateComposeDown=PASS
+expressSnapshot=PASS
+candidateResources=PASS
+privateTempRemove=PASS

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "suiteId", "profileSha256", "manifestSha256", "runId", "sourceRevision", "provenance", "epochs", "samples"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "suiteId": {"const": "phase7-performance-v1"},
+    "profileSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["databaseSnapshotSha256", "redisNamespace", "harnessRevision", "runtimes"],
+      "properties": {
+        "databaseSnapshotSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "redisNamespace": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "harnessRevision": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+        "runtimes": {
+          "type": "object", "additionalProperties": false, "required": ["express", "fastapi"],
+          "properties": {
+            "express": {"$ref": "#/$defs/runtimeProvenance"},
+            "fastapi": {"$ref": "#/$defs/runtimeProvenance"}
+          }
+        }
+      }
+    },
+    "epochs": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "#/$defs/epoch"}},
+    "samples": {"type": "array", "minItems": 20000, "maxItems": 20000, "items": {"$ref": "#/$defs/sample"}}
+  },
+  "$defs": {
+    "runtimeProvenance": {"type": "object", "additionalProperties": false, "required": ["imageDigest", "configSha256"], "properties": {"imageDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "configSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}},
+    "reset": {"type": "object", "additionalProperties": false, "required": ["runtime", "resetId", "stateSha256", "boundaryNs", "status"], "properties": {"runtime": {"enum": ["express", "fastapi"]}, "resetId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}, "stateSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "boundaryNs": {"type": "integer", "minimum": 0}, "status": {"const": "PASS"}}},
+    "epoch": {"type": "object", "additionalProperties": false, "required": ["epoch", "runtimeOrder", "warmupCompletedPerFlowRuntime", "warmupIncluded", "resets"], "properties": {"epoch": {"type": "integer", "minimum": 1, "maximum": 10}, "runtimeOrder": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["express", "fastapi"]}}, "warmupCompletedPerFlowRuntime": {"const": 20}, "warmupIncluded": {"const": false}, "resets": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/reset"}}}},
+    "sample": {"type": "object", "additionalProperties": false, "required": ["flowId", "runtime", "epoch", "trial", "kind", "scheduledNs", "completedNs", "outcome", "attempt", "retryCount", "outlierRemoved", "resetId"], "properties": {"flowId": {"enum": ["password-direct-login-token", "password-handoff-exchange", "email-verification-attach-handoff-exchange", "password-reset-session-revoke", "oauth-google", "oauth-naver", "oauth-kakao", "refresh-logout-race", "admin-status-role-session-audit", "global-rate-limit"]}, "runtime": {"enum": ["express", "fastapi"]}, "epoch": {"type": "integer", "minimum": 1, "maximum": 10}, "trial": {"type": "integer", "minimum": 1, "maximum": 100}, "kind": {"enum": ["success", "expected-failure"]}, "scheduledNs": {"type": "integer", "minimum": 0}, "completedNs": {"type": "integer", "minimum": 0}, "outcome": {"enum": ["success", "expected-failure", "unexpected-outcome", "unexpected-error", "timeout"]}, "attempt": {"const": 1}, "retryCount": {"const": 0}, "outlierRemoved": {"const": false}, "resetId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"}}}
+  }
+}

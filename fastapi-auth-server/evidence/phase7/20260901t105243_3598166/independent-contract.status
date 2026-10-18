@@ -1,0 +1,4 @@
+gate=independent-contract
+scope=independent-stateful
+status=PASS
+suiteOrder=public,guards,fixtures

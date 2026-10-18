@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evidence-v2.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "suiteId", "profileSha256", "manifestSha256", "runId", "sourceRevision", "provenance", "epochs", "samples"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "suiteId": {"const": "phase7-performance-v2"},
+    "profileSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "runId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+    "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["databaseSnapshotSha256", "redisNamespace", "harnessRevision", "runtimes"],
+      "properties": {
+        "databaseSnapshotSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "redisNamespace": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"},
+        "harnessRevision": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+        "runtimes": {"type": "object", "additionalProperties": false, "required": ["express", "fastapi"], "properties": {"express": {"$ref": "#/$defs/runtimeProvenance"}, "fastapi": {"$ref": "#/$defs/runtimeProvenance"}}}
+      }
+    },
+    "epochs": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "evidence.schema.json#/$defs/epoch"}},
+    "samples": {"type": "array", "minItems": 20000, "maxItems": 20000, "items": {"$ref": "evidence.schema.json#/$defs/sample"}}
+  },
+  "$defs": {
+    "runtimeProvenance": {"type": "object", "additionalProperties": false, "required": ["imageDigest", "configSha256"], "properties": {"imageDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "configSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}
+  }
+}

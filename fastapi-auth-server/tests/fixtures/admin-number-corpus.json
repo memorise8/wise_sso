@@ -1,0 +1,15 @@
+{
+  "cases": [
+    {"input": "9007199254740993", "accepted": true, "integer": "9007199254740992"},
+    {"input": "9007199254740995", "accepted": true, "integer": "9007199254740996"},
+    {"input": "0x20000000000001", "accepted": true, "integer": "9007199254740992"},
+    {"input": "0x20000000000003", "accepted": true, "integer": "9007199254740996"},
+    {"input": "0b100000000000000000000000000000000000000000000000000001", "accepted": true, "integer": "9007199254740992"},
+    {"input": "0o400000000000000001", "accepted": true, "integer": "9007199254740992"},
+    {"input": "1e3", "accepted": true, "integer": "1000"},
+    {"input": "1e309", "accepted": false, "integer": null},
+    {"input": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "accepted": false, "integer": null},
+    {"input": "1.5", "accepted": false, "integer": null},
+    {"input": "-0x1", "accepted": false, "integer": null}
+  ]
+}

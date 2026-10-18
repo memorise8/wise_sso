@@ -1,0 +1,11 @@
+PASS registration.rejects-invalid-request
+PASS email-verification.confirm-rejects-invalid-request
+PASS session.me-requires-bearer
+PASS session.logout-accepts-unknown-refresh
+PASS recovery.password-reset-confirm-rejects-invalid-request
+PASS oauth.google-start-requires-pkce
+PASS oauth.naver-start-requires-pkce
+PASS oauth.kakao-start-requires-pkce
+PASS admin.directory-requires-bearer
+PASS admin.audit-requires-bearer
+All 10 contract scenario(s) passed

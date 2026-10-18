@@ -1,0 +1,4 @@
+gate=adapter-preflight
+status=PASS
+runtimeCount=2
+jsonlSha256=23ef03ba429b2a362c8312a707ff118ff6f557b7fc584b3e5f24711634cc5936

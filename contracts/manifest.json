@@ -9,8 +9,312 @@
     "express": "adapters/express_fixture.py",
     "protocol": "adapters/README.md",
     "dependencies": ["psql", "Python standard-library TCP/RESP"],
-    "safety": "loopback-only, test-named PostgreSQL database, acknowledged isolated Redis DB >= 1, dev mail acknowledgement"
+    "safety": "loopback-only, test-named PostgreSQL database, acknowledged isolated Redis DB >= 1, explicit dev mail or owned-launcher private STARTTLS binding"
   },
+  "phase7FlowStatusSemantics": {
+    "scope": "executable-contract-corpus-only",
+    "qualification": "not-assessed",
+    "complete": "All independent-runtime contract cases currently defined for the flow are executable. This never means Phase 7 qualification, replacement readiness, or production approval.",
+    "partial": "Some deterministic contract cases are executable, but listed corpus, topology, concurrency, or sample-count gaps remain.",
+    "planMapping": "phase7FlowGroups are asset-oriented coverage labels. phase7ApprovedCoreFlows separately preserves the approved qualification order and must not be inferred from group position."
+  },
+  "phase7SharedStateCore": {
+    "suiteId": "shared-state-core-v1",
+    "runner": "bin/shared_state.py",
+    "scenarios": "scenarios/shared-state-core-v1.json",
+    "schedules": 10,
+    "trialsPerSchedule": 10,
+    "plannedTrialRows": 100,
+    "retryCount": 0,
+    "failFast": true,
+    "concurrencyClaim": "concurrent-ingress-smoke-only; at least one mixed-runtime monotonic HTTP request-lifetime overlap is required and does not prove database or Redis critical-section overlap",
+    "fullPhase7SampleSatisfied": false,
+    "overallReplacementReady": false
+  },
+  "phase7DevelopmentFlowDriver": {
+    "runner": "bin/flow_driver.py",
+    "tests": "tests/test_flow_driver.py",
+    "scope": "password login/handoff, private-mail verification/attach/reset, and separately dispatched OAuth mixed-runtime and admin development trials",
+    "flows": [
+      "password-direct-login-token",
+      "password-handoff-exchange",
+      "email-verification-attach-handoff-exchange",
+      "password-reset-session-revoke"
+    ],
+    "mailTests": ["tests/test_private_mail_flow_launcher.py", "tests/test_mail_independent_roles.py"],
+    "googleMixedFlow": {
+      "id": "oauth-google",
+      "launchConfigArgument": "--oauth-google-launch-config",
+      "launchPolicy": "bin/oauth_launch_policy.py",
+      "topologies": ["express-fastapi", "fastapi-express"],
+      "tests": ["tests/test_google_flow_dispatch.py", "tests/test_oauth_google_flow.py", "tests/test_oauth_launch_policy.py", "tests/test_private_oauth_flow_launcher.py"],
+      "unverified": ["provider-error-state-lifecycle"],
+      "independentRuntimeCorpus": false,
+      "qualifyingEvidence": false
+    },
+    "additionalProviderMixedFlows": {
+      "ids": ["oauth-naver", "oauth-kakao"],
+      "launchConfigArgument": "--oauth-launch-config",
+      "launchPolicy": "bin/oauth_launch_policy.py",
+      "fixtureAdapter": "adapters/google_oauth_fixture.py",
+      "providerEnvironment": "CONTRACT_OAUTH_PROVIDER",
+      "topologies": ["express-fastapi", "fastapi-express"],
+      "unverified": ["provider-error-state-lifecycle"],
+      "independentRuntimeCorpus": false,
+      "qualifyingEvidence": false
+    },
+    "qualifyingEvidence": false,
+    "fullPhase7SampleSatisfied": false,
+    "overallReplacementReady": false,
+    "adminDevelopmentFlow": {
+      "id": "admin-status-role-session-audit",
+      "runner": "bin/admin_flow.py",
+      "fixtureAdapter": "adapters/admin_flow_fixture.py",
+      "topologies": ["express", "fastapi", "express-fastapi", "fastapi-express"],
+      "tests": ["tests/test_admin_flow.py", "tests/test_admin_flow_fixture.py", "tests/test_admin_flow_dispatch.py"],
+      "unverified": ["real-engine-admin-corpus", "sample-size-one-per-topology", "cross-runtime-admin-audit-transaction-atomicity", "authenticated-collection", "global-role-cleanup"],
+      "qualifyingEvidence": false,
+      "independentRuntimeCorpus": false
+    },
+    "note": "Local HTTP admin evaluator tests, hermetic mail tests, and provider mixed-only dispatches are not real-engine/live DB/Redis qualification, approved independent per-runtime coverage, full sample coverage, or authenticated collector evidence."
+  },
+  "phase7ApprovedCoreFlows": [
+    {
+      "order": 1,
+      "id": "password-direct-login-token",
+      "name": "Password direct login/token",
+      "status": "partial",
+      "scenarios": ["session.login-logout-replay"],
+      "gaps": [
+        "Unsupported: the approved per-runtime repeated-sample threshold and live DB/Redis execution of the development driver's claim and persistence assertions remain outstanding."
+      ]
+    },
+    {
+      "order": 2,
+      "id": "password-handoff-exchange",
+      "name": "Password handoff/exchange",
+      "status": "partial",
+      "scenarios": ["auth.login-issues-verifiable-token"],
+      "gaps": [
+        "Unsupported: live mixed-runtime handoff ordering evidence, replay races, and the approved repeated-sample threshold remain outstanding; development driver results are nonqualifying."
+      ]
+    },
+    {
+      "order": 3,
+      "id": "email-verification-attach-handoff-exchange",
+      "name": "Email verification/attach/handoff/exchange",
+      "status": "partial",
+      "scenarios": [
+        "recovery.email-verification-request",
+        "email-verification.confirm-rejects-invalid-request"
+      ],
+      "gaps": [
+        "Unsupported: real Express/FastAPI execution of private-mail verification/attach/handoff assertions, live shared DB/Redis ordering, and approved repeated samples remain outstanding; hermetic driver tests are nonqualifying."
+      ]
+    },
+    {
+      "order": 4,
+      "id": "password-reset-session-revoke",
+      "name": "Password reset/session revoke",
+      "status": "partial",
+      "scenarios": [
+        "recovery.password-reset-request",
+        "recovery.password-reset-confirm-rejects-invalid-request",
+        "session.login-logout-replay"
+      ],
+      "gaps": [
+        "Unsupported: real Express/FastAPI execution of private-mail reset and exact session-revocation assertions, live shared DB/Redis ordering, and approved repeated samples remain outstanding; hermetic driver tests are nonqualifying."
+      ]
+    },
+    {
+      "order": 5,
+      "id": "oauth-google",
+      "name": "Google",
+      "status": "partial",
+      "scenarios": ["oauth.google-start-requires-pkce"],
+      "gaps": [
+        "Unsupported: the nonqualifying owned-launcher development path covers deterministic mixed-runtime Google redirect/callback, account linking, handoff/exchange and success-state replay, but provider-error state lifecycle, real Express/FastAPI execution on disposable PostgreSQL/Redis, independent per-runtime cases, authenticated collection and approved repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 6,
+      "id": "oauth-naver",
+      "name": "Naver",
+      "status": "partial",
+      "scenarios": ["oauth.naver-start-requires-pkce"],
+      "gaps": [
+        "Unsupported: the nonqualifying owned-launcher development path covers deterministic mixed-runtime Naver redirect/callback, account linking, handoff/exchange and success-state replay; provider-specific failure corpus, provider-error state lifecycle, real engine/store execution, independent per-runtime cases, authenticated collection and approved repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 7,
+      "id": "oauth-kakao",
+      "name": "Kakao",
+      "status": "partial",
+      "scenarios": ["oauth.kakao-start-requires-pkce"],
+      "gaps": [
+        "Unsupported: the nonqualifying owned-launcher development path covers deterministic mixed-runtime Kakao redirect/callback, account linking, handoff/exchange and success-state replay; provider-specific profile/email corpus, provider-error state lifecycle, real engine/store execution, independent per-runtime cases, authenticated collection and approved repeated samples remain outstanding."
+      ]
+    },
+    {
+      "order": 8,
+      "id": "refresh-logout-race",
+      "name": "Refresh/logout race",
+      "status": "partial",
+      "scenarios": [
+        "security.refresh-none-algorithm",
+        "security.refresh-hs256-rotation",
+        "security.refresh-hs384-algorithm",
+        "security.refresh-hs512-algorithm",
+        "session.login-logout-replay",
+        "session.logout-accepts-unknown-refresh"
+      ],
+      "gaps": [
+        "Unsupported: mixed-runtime refresh/logout orderings, deterministic concurrent race schedules, and the approved repeated-sample threshold remain outstanding."
+      ]
+    },
+    {
+      "order": 9,
+      "id": "admin-status-role-session-audit",
+      "name": "Admin status/role/session/audit",
+      "status": "partial",
+      "scenarios": [
+        "admin.status-mutation",
+        "admin.directory-requires-bearer",
+        "admin.audit-requires-bearer"
+      ],
+      "gaps": [
+        "Unsupported: the nonqualifying admin development driver exercises role/status/session mutations, self-protection, aliases and state/audit checks; real-runtime/store execution, transaction atomicity, approved repeated samples and authenticated collection remain outstanding."
+      ]
+    },
+    {
+      "order": 10,
+      "id": "global-rate-limit",
+      "name": "Global rate-limit",
+      "status": "partial",
+      "scenarios": [
+        "alternating-shared-rate-limit-boundary",
+        "mixed-simultaneous-shared-rate-limit"
+      ],
+      "gaps": [
+        "Unsupported: existing alternating and simultaneous shared-state schedules cover a request-count boundary and observed counter/positive TTL, not time-window expiry, trusted-client-IP/ingress behavior, all auth routes, independent runtime coverage, approved repeated samples or authenticated real-Redis qualification."
+      ]
+    }
+  ],
+  "phase7FlowGroups": [
+    {
+      "id": "public-oidc",
+      "status": "partial",
+      "scenarios": [
+        "public.health",
+        "public.ready",
+        "public.openid-configuration",
+        "public.jwks",
+        "public.not-found"
+      ],
+      "gaps": [
+        "Unsupported: this supporting public-surface group is not one of the ten approved qualifying core flows and has no repeated-sample qualification evidence."
+      ]
+    },
+    {
+      "id": "registration",
+      "status": "partial",
+      "scenarios": ["registration.rejects-invalid-request"],
+      "gaps": [
+        "Unsupported: successful registration needs a deterministic unique-user fixture, a user-state probe, and mail isolation assertions."
+      ]
+    },
+    {
+      "id": "email-verification",
+      "status": "partial",
+      "scenarios": [
+        "recovery.email-verification-request",
+        "email-verification.confirm-rejects-invalid-request"
+      ],
+      "gaps": [
+        "Unsupported: the connected private-mail confirmation/state driver still needs real-engine/live-store execution and qualification samples."
+      ]
+    },
+    {
+      "id": "login-handoff-exchange-me",
+      "status": "partial",
+      "scenarios": [
+        "auth.login-issues-verifiable-token",
+        "session.login-logout-replay",
+        "session.me-requires-bearer"
+      ],
+      "gaps": [
+        "Unsupported: an authenticated /users/me assertion needs a runner-supported Bearer header derived from the captured access token."
+      ]
+    },
+    {
+      "id": "refresh",
+      "status": "partial",
+      "scenarios": [
+        "security.refresh-none-algorithm",
+        "security.refresh-hs256-rotation",
+        "security.refresh-hs384-algorithm",
+        "security.refresh-hs512-algorithm"
+      ],
+      "gaps": [
+        "Unsupported: mixed-runtime E-to-F and F-to-E rotation, deterministic replay races, and the approved per-runtime repeated-sample threshold remain outside this corpus."
+      ]
+    },
+    {
+      "id": "logout-session",
+      "status": "partial",
+      "scenarios": [
+        "session.login-logout-replay",
+        "session.me-requires-bearer",
+        "session.logout-accepts-unknown-refresh"
+      ],
+      "gaps": [
+        "Unsupported: mixed-runtime logout/replay orderings, concurrent logout races, and the approved per-runtime repeated-sample threshold remain outside this corpus."
+      ]
+    },
+    {
+      "id": "password-reset",
+      "status": "partial",
+      "scenarios": [
+        "recovery.password-reset-request",
+        "recovery.password-reset-confirm-rejects-invalid-request"
+      ],
+      "gaps": [
+        "Unsupported: the connected private-mail reset/credential/revocation driver still needs real-engine/live-store execution and qualification samples."
+      ]
+    },
+    {
+      "id": "oauth-three-provider",
+      "status": "partial",
+      "scenarios": [
+        "oauth.google-start-requires-pkce",
+        "oauth.naver-start-requires-pkce",
+        "oauth.kakao-start-requires-pkce"
+      ],
+      "gaps": [
+        "Unsupported: deterministic synthetic transport and mixed-only development flows exist for Google, Naver and Kakao, but provider-specific failure/profile cases, provider-error state lifecycle, independent per-runtime real-engine/store qualification and authenticated repeated samples remain outstanding."
+      ]
+    },
+    {
+      "id": "admin-mutations",
+      "status": "partial",
+      "scenarios": ["admin.status-mutation"],
+      "gaps": [
+        "Unsupported: dedicated admin fixture and mutation/state checks are development-only; real-runtime/store and authenticated repeated-sample qualification remains outstanding."
+      ]
+    },
+    {
+      "id": "admin-directory-audit",
+      "status": "partial",
+      "scenarios": [
+        "admin.directory-requires-bearer",
+        "admin.audit-requires-bearer"
+      ],
+      "gaps": [
+        "Unsupported: authorized pagination, filtering, ordering, and audit redaction need deterministic list fixtures and normalized collection matching."
+      ]
+    }
+  ],
   "validations": [
     { "snapshot": "snapshots/http.json", "schema": "schemas/http-snapshots.schema.json" },
     { "snapshot": "snapshots/http.json#/health", "schema": "schemas/http-response.schema.json" },
@@ -27,6 +331,29 @@
     { "snapshot": "snapshots/state.json#/oauthState", "schema": "schemas/auth-state.schema.json#/$defs/oauthState" }
   ],
   "behaviors": [
+    {
+      "id": "phase7.shared-state-core-v1",
+      "description": "Ten mixed-runtime shared-state schedules run ten trials each against one disposable PostgreSQL database and Redis logical database. The seven concurrent schedules require mixed-runtime HTTP request-lifetime overlap, but database/Redis critical-section overlap is not claimed; passing does not imply full Phase 7 or replacement readiness.",
+      "execution": "shared-fixture-required",
+      "scenarios": [
+        "express-handoff-fastapi-exchange",
+        "fastapi-handoff-express-exchange",
+        "express-handoff-mixed-consume-race",
+        "fastapi-handoff-mixed-consume-race",
+        "mixed-refresh-race",
+        "express-logout-fastapi-refresh-race",
+        "fastapi-logout-express-refresh-race",
+        "alternating-shared-rate-limit-boundary",
+        "mixed-simultaneous-shared-rate-limit",
+        "mixed-failed-login-race"
+      ],
+      "schemas": ["schemas/auth-state.schema.json", "schemas/http-response.schema.json"],
+      "snapshots": ["snapshots/state.json", "snapshots/http.json"],
+      "evidence": [
+        "contracts/bin/shared_state.py",
+        "contracts/scenarios/shared-state-core-v1.json"
+      ]
+    },
     {
       "id": "service.health",
       "description": "Liveness response remains stable.",
@@ -92,11 +419,15 @@
         "GET /users/me"
       ],
       "scenarios": [
+        "registration.rejects-invalid-request",
         "security.refresh-none-algorithm",
         "security.refresh-hs256-rotation",
         "security.refresh-hs384-algorithm",
         "security.refresh-hs512-algorithm",
-        "auth.login-issues-verifiable-token"
+        "auth.login-issues-verifiable-token",
+        "session.login-logout-replay",
+        "session.me-requires-bearer",
+        "session.logout-accepts-unknown-refresh"
       ],
       "schemas": ["schemas/jwt-access-claims.schema.json", "schemas/auth-state.schema.json"],
       "snapshots": ["snapshots/jwt-access.json", "snapshots/state.json"],
@@ -120,7 +451,11 @@
         "GET /auth/kakao/callback",
         "POST /auth/exchange"
       ],
-      "scenarios": [],
+      "scenarios": [
+        "oauth.google-start-requires-pkce",
+        "oauth.naver-start-requires-pkce",
+        "oauth.kakao-start-requires-pkce"
+      ],
       "schemas": ["schemas/auth-state.schema.json", "schemas/jwt-access-claims.schema.json"],
       "snapshots": ["snapshots/state.json", "snapshots/jwt-access.json"],
       "evidence": [
@@ -139,7 +474,12 @@
         "POST /auth/email-verification/request",
         "POST /auth/email-verification/confirm"
       ],
-      "scenarios": ["recovery.password-reset-request", "recovery.email-verification-request"],
+      "scenarios": [
+        "recovery.password-reset-request",
+        "recovery.password-reset-confirm-rejects-invalid-request",
+        "recovery.email-verification-request",
+        "email-verification.confirm-rejects-invalid-request"
+      ],
       "schemas": ["schemas/auth-state.schema.json"],
       "snapshots": ["snapshots/state.json"],
       "evidence": [
@@ -160,7 +500,11 @@
         "DELETE /admin/users/:id/roles/:roleId",
         "POST /admin/users/:id/revoke-sessions"
       ],
-      "scenarios": ["admin.status-mutation"],
+      "scenarios": [
+        "admin.status-mutation",
+        "admin.directory-requires-bearer",
+        "admin.audit-requires-bearer"
+      ],
       "schemas": ["schemas/jwt-access-claims.schema.json", "schemas/auth-state.schema.json"],
       "snapshots": ["snapshots/jwt-access.json", "snapshots/state.json"],
       "evidence": [

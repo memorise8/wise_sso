@@ -1,0 +1,20 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.14, pytest-9.1.1, pluggy-1.6.0 -- /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server
+configfile: pyproject.toml
+plugins: anyio-4.14.2, cov-7.1.0
+collecting ... collected 9 items
+
+tests/integration/test_postgres_phase2.py::test_live_catalog_matches_prisma_mirror[asyncio] PASSED [ 11%]
+tests/integration/test_postgres_phase2.py::test_runtime_role_cannot_create_schema_objects[asyncio] PASSED [ 22%]
+tests/integration/test_postgres_phase2.py::test_prisma_timestamp3_fixture_roundtrips_exactly_in_python[asyncio] PASSED [ 33%]
+tests/integration/test_postgres_phase2.py::test_failed_login_concurrency_is_exact[asyncio-4] PASSED [ 44%]
+tests/integration/test_postgres_phase2.py::test_failed_login_concurrency_is_exact[asyncio-5] PASSED [ 55%]
+tests/integration/test_postgres_phase2.py::test_failed_login_concurrency_is_exact[asyncio-20] PASSED [ 66%]
+tests/integration/test_postgres_phase2.py::test_refresh_rotation_has_one_success_under_twenty_way_race[asyncio] PASSED [ 77%]
+tests/integration/test_argon2_compatibility.py::test_python_verifies_node_generated_hash_fixture[asyncio] PASSED [ 88%]
+tests/integration/test_argon2_compatibility.py::test_node_verifies_python_generated_hash_when_express_module_is_available[asyncio] PASSED [100%]
+
+- generated xml file: /home/ruci/repo/wiseacct_sso_fastapi_provisional/fastapi-auth-server/evidence/phase2/postgres-junit.xml -
+============================== 9 passed in 0.65s ===============================
