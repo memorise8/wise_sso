@@ -136,6 +136,22 @@ async def test_oidc_form_navigation_policy_does_not_change_legacy_csp() -> None:
     assert "cloudflareaccess.com" not in legacy.headers["content-security-policy"]
 
 
+@pytest.mark.anyio
+async def test_oidc_login_referrer_policy_keeps_same_origin_form_origin() -> None:
+    app = SecurityHeadersMiddleware(oidc_probe)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://auth.example.test"
+    ) as client:
+        login = await client.get("/oauth2/login")
+        others = [
+            await client.get(path)
+            for path in ("/login", "/oauth2/authorize", "/oauth2/login/", "/auth/login")
+        ]
+    assert login.headers["referrer-policy"] == "same-origin"
+    for response in others:
+        assert response.headers["referrer-policy"] == "no-referrer"
+
+
 def test_oidc_metric_routes_are_bounded_and_opt_in() -> None:
     assert normalized_route("/oauth2/token") == "unmatched"
     assert normalized_route("/oauth2/token", oidc_enabled=True) == "/oauth2/token"

@@ -765,6 +765,10 @@ class SecurityHeadersMiddleware:
                             "form-action 'self';",
                             f"form-action 'self' {' '.join(self.oidc_form_action_sources)};",
                         )
+                    # Browsers send `Origin: null` for form posts from no-referrer pages,
+                    # which the strict OIDC login Origin check must keep rejecting.
+                    if name == "referrer-policy" and scope.get("path") == "/oauth2/login":
+                        value = "same-origin"
                     headers[name] = (
                         "default-src 'none'"
                         if asset_redirect and name == "content-security-policy"

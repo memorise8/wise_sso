@@ -78,7 +78,7 @@ PROFILES = (
     OidcRuntimeProfile(
         name="gitlab",
         client_id="gitlab-temis",
-        redirect_uri="https://gitlab.temis.me/users/auth/openid_connect/callback",
+        redirect_uri="https://git.temis.me/users/auth/openid_connect/callback",
         required_service="gitlab",
         required_role="user",
     ),

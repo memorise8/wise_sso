@@ -234,6 +234,24 @@ def test_password_login_requires_exact_origin_and_bound_cookies() -> None:
     assert rejected.status_code == 400
     assert service.password_attempts == 0
 
+    for headers, csrf_token in (
+        ({"origin": "null"}, "csrf-1"),
+        ({"origin": "https://evil.example.test"}, "csrf-1"),
+        ({"origin": PUBLIC_ORIGIN}, "wrong-csrf"),
+    ):
+        forged = client.post(
+            "/oauth2/login",
+            headers=headers,
+            data={
+                "transaction": TRANSACTION,
+                "csrf_token": csrf_token,
+                "email": "user@example.test",
+                "password": "password",
+            },
+        )
+        assert forged.status_code == 400
+    assert service.password_attempts == 0
+
     accepted = client.post(
         "/oauth2/login",
         headers={"origin": PUBLIC_ORIGIN},

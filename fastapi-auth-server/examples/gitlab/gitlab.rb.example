@@ -1,6 +1,6 @@
 # NOT applied to /home/ruci/gitlab or a running GitLab instance.
 # Review/merge with existing settings; never overwrite unrelated providers.
-# Future approved external_url: https://gitlab.temis.me (routing/TLS not configured here).
+# Approved external_url: https://git.temis.me (operational routing/TLS is managed outside this repo).
 gitlab_rails['omniauth_enabled'] = true
 gitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']
 gitlab_rails['omniauth_block_auto_created_users'] = true
@@ -32,7 +32,7 @@ gitlab_rails['omniauth_providers'] = [
         token_endpoint: 'https://auth.financenow.kr/oauth2/token',
         userinfo_endpoint: 'https://auth.financenow.kr/oauth2/userinfo',
         jwks_uri: 'https://auth.financenow.kr/.well-known/jwks.json',
-        redirect_uri: 'https://gitlab.temis.me/users/auth/openid_connect/callback'
+        redirect_uri: 'https://git.temis.me/users/auth/openid_connect/callback'
       }
     }
   }

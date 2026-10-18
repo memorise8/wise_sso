@@ -5,7 +5,7 @@ services:
       OIDC_ENABLED: "true"
       OIDC_PUBLIC_ORIGIN: https://localhost:4443
       OIDC_CLIENTS_JSON: >-
-        [{"clientId":"oidc-local-preview","redirectUris":["https://localhost:4443/callback"],"clientSecretHash":"$$argon2id$$v=19$$m=19456,t=2,p=1$$Y7rJWHZ+4BD3kB9UGOXNdg$$YMBeoaLD2+SA7JW7RbQjCv4+2QAnimgF9QV79dSK5+s","requiredRoles":[{"serviceKey":"gitlab","name":"user"}],"groupsServiceKeys":["gitlab"],"requirePkce":true,"allowedScopes":["openid","profile","email"]},{"clientId":"gitlab-temis","redirectUris":["https://gitlab.temis.me/users/auth/openid_connect/callback"],"clientSecretHash":"$$argon2id$$v=19$$m=19456,t=2,p=1$$Y7rJWHZ+4BD3kB9UGOXNdg$$YMBeoaLD2+SA7JW7RbQjCv4+2QAnimgF9QV79dSK5+s","requiredRoles":[{"serviceKey":"gitlab","name":"user"}],"groupsServiceKeys":["gitlab"],"requirePkce":true,"allowedScopes":["openid","profile","email"]}]
+        [{"clientId":"oidc-local-preview","redirectUris":["https://localhost:4443/callback"],"clientSecretHash":"$$argon2id$$v=19$$m=19456,t=2,p=1$$Y7rJWHZ+4BD3kB9UGOXNdg$$YMBeoaLD2+SA7JW7RbQjCv4+2QAnimgF9QV79dSK5+s","requiredRoles":[{"serviceKey":"gitlab","name":"user"}],"groupsServiceKeys":["gitlab"],"requirePkce":true,"allowedScopes":["openid","profile","email"]},{"clientId":"gitlab-temis","redirectUris":["https://git.temis.me/users/auth/openid_connect/callback"],"clientSecretHash":"$$argon2id$$v=19$$m=19456,t=2,p=1$$Y7rJWHZ+4BD3kB9UGOXNdg$$YMBeoaLD2+SA7JW7RbQjCv4+2QAnimgF9QV79dSK5+s","requiredRoles":[{"serviceKey":"gitlab","name":"user"}],"groupsServiceKeys":["gitlab"],"requirePkce":true,"allowedScopes":["openid","profile","email"]}]
   oidc-preview-tls:
     image: sha256:6769dc3a703c719c1d2756bda113659be28ae16cf0da58dd5fd823d6b9a050ea
     pull_policy: never

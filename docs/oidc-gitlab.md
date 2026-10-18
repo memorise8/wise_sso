@@ -35,7 +35,7 @@ do not replace Cloudflare clients or modify legacy `AUTH_CLIENTS_JSON`.
 | Item | Contract |
 | --- | --- |
 | Client ID / ID-token audience | `gitlab-temis` |
-| Registered callback | `https://gitlab.temis.me/users/auth/openid_connect/callback` |
+| Registered callback | `https://git.temis.me/users/auth/openid_connect/callback` |
 | Required role | `gitlab:user` (explicit administrator grant only) |
 | Released groups | Only `gitlab:*`; no Cloudflare/TEMIS role leakage |
 | Scopes | `openid profile email` |
@@ -99,7 +99,7 @@ After separate deployment approval:
 
 1. Integrate/revalidate the feature on the canonical FastAPI release and make its
    approved HTTPS endpoints/JWKS reachable. Keep production issuer/key continuity.
-2. Configure `gitlab.temis.me` DNS/Tunnel/TLS and review GitLab external URL and proxy
+2. Configure `git.temis.me` DNS/Tunnel/TLS and review GitLab external URL and proxy
    trust. The current IP/HTTP external URL does not match the proposed callback.
    Preserve SSH port 2224 and unrelated Compose settings; do not blindly replace YAML.
 3. Register the exact HTTPS callback and privately provision the client secret/hash.
