@@ -285,6 +285,41 @@ def test_provider_flow_requires_browser_binding_and_clears_it_on_callback() -> N
     assert all("Max-Age=0" in value for value in completed.headers.get_list("set-cookie"))
 
 
+def test_provider_callback_accepts_google_informational_parameters() -> None:
+    service = FakeOidcService()
+    client = _client(service)
+    _authorize(client)
+    client.get(f"/oauth2/providers/google/start?transaction={TRANSACTION}")
+
+    completed = client.get(
+        "/oauth2/providers/google/callback",
+        params={
+            "state": PROVIDER_STATE,
+            "code": "provider-code",
+            "scope": "email profile openid https://www.googleapis.com/auth/userinfo.email",
+            "authuser": "0",
+            "hd": "example.test",
+            "prompt": "none",
+            "iss": "https://accounts.google.com",
+        },
+    )
+    assert completed.status_code == 303
+    assert completed.headers["location"].endswith("?code=oidc-code")
+
+
+def test_provider_callback_still_rejects_unknown_and_duplicate_parameters() -> None:
+    for query in (
+        f"code=provider-code&state={PROVIDER_STATE}&redirect_uri=https://evil.example.test",
+        f"code=provider-code&state={PROVIDER_STATE}&scope=openid&scope=email",
+    ):
+        service = FakeOidcService()
+        client = _client(service)
+        _authorize(client)
+        client.get(f"/oauth2/providers/google/start?transaction={TRANSACTION}")
+        rejected = client.get(f"/oauth2/providers/google/callback?{query}")
+        assert rejected.status_code == 400
+
+
 def test_provider_error_is_consumed_without_reflecting_provider_description() -> None:
     service = FakeOidcService()
     client = _client(service)

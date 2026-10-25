@@ -82,6 +82,4 @@ def test_gitlab_callback_is_exact_and_pkce_is_required() -> None:
     assert not gitlab.accepts_redirect_uri(
         "https://git.temis.me/users/auth/openid_connect/callback/"
     )
-    assert not gitlab.accepts_redirect_uri(
-        "http://git.temis.me/users/auth/openid_connect/callback"
-    )
+    assert not gitlab.accepts_redirect_uri("http://git.temis.me/users/auth/openid_connect/callback")

@@ -65,6 +65,9 @@ _TOKEN_FIELDS = frozenset(
         "client_secret",
     }
 )
+_PROVIDER_CALLBACK_FIELDS = frozenset({"code", "state", "error", "error_description"})
+# Google appends these to every callback; they are accepted but never trusted or used.
+_PROVIDER_INFORMATIONAL_FIELDS = frozenset({"scope", "authuser", "prompt", "hd", "iss"})
 
 
 class OidcHttpService(Protocol):
@@ -309,7 +312,7 @@ def build_oidc_app(
             selected = _provider(provider)
             values = _query(
                 request,
-                allowed=frozenset({"code", "state", "error", "error_description"}),
+                allowed=_PROVIDER_CALLBACK_FIELDS | _PROVIDER_INFORMATIONAL_FIELDS,
             )
             state = _required_fields(values, ("state",))["state"]
             _bounded(state, 512)
