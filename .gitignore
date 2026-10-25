@@ -14,3 +14,6 @@ __pycache__/
 .codegraph
 *.log
 auth-server/.auth-server.pid
+
+# Local agent tool state
+.omc/
