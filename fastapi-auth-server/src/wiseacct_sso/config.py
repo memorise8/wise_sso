@@ -37,6 +37,12 @@ _TEMIS_REDIRECT_URIS = (
     "https://temis.me/auth/callback",
     "https://ti.temis.me/auth/callback",
 )
+# TEMIS was renamed to Fantra; the TEMIS callbacks stay until the Fantra cutover completes.
+_FANTRA_REDIRECT_URIS = ("https://fantra.co.kr/auth/callback",)
+_TEMIS_ALLOWED_REDIRECT_URI_SETS = (
+    _TEMIS_REDIRECT_URIS,
+    (*_TEMIS_REDIRECT_URIS, *_FANTRA_REDIRECT_URIS),
+)
 _RSA_ENCRYPTION_OID = bytes.fromhex("2a864886f70d010101")
 
 
@@ -641,7 +647,7 @@ class Settings(BaseSettings):
         if (
             first.client_id != "temis"
             or first.audience != "temis"
-            or first.allowed_redirect_uris != _TEMIS_REDIRECT_URIS
+            or first.allowed_redirect_uris not in _TEMIS_ALLOWED_REDIRECT_URI_SETS
             or first.allowed_origins != ("https://financenow.kr",)
             or first.allow_localhost_in_production is not None
         ):

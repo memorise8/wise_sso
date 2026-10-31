@@ -313,6 +313,47 @@ def test_production_accepts_nonfixture_access_key_and_key_id() -> None:
     assert settings.jwt_access_key_id == "production-key-1"
 
 
+def temis_client_with_redirects(values: dict[str, object], *extra: str) -> dict[str, object]:
+    temis = dict(cast(tuple[dict[str, object], ...], values["auth_clients"])[0])
+    redirects = cast(tuple[str, ...], temis["allowed_redirect_uris"])
+    temis["allowed_redirect_uris"] = (*redirects, *extra)
+    return temis
+
+
+def test_temis_client_accepts_fantra_callback_alongside_temis_callbacks() -> None:
+    values = example_values()
+    make_production_ready(values)
+    replace_signing_key(values, "production-key-1")
+    values["auth_clients"] = (
+        temis_client_with_redirects(values, "https://fantra.co.kr/auth/callback"),
+    )
+
+    settings = Settings.model_validate(values)
+
+    assert settings.auth_clients[0].allowed_redirect_uris == (
+        "https://financenow.kr/auth/callback",
+        "https://temis.me/auth/callback",
+        "https://ti.temis.me/auth/callback",
+        "https://fantra.co.kr/auth/callback",
+    )
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ("https://www.fantra.co.kr/auth/callback",),
+        ("https://evil.example/auth/callback",),
+        ("https://fantra.co.kr/auth/callback", "https://evil.example/auth/callback"),
+    ],
+)
+def test_temis_client_rejects_other_extra_callbacks(extra: tuple[str, ...]) -> None:
+    values = example_values()
+    values["auth_clients"] = (temis_client_with_redirects(values, *extra),)
+
+    with pytest.raises(ValidationError, match="required TEMIS policy"):
+        Settings.model_validate(values)
+
+
 def test_enabled_oauth_provider_requires_credentials() -> None:
     values = example_values()
     values["oauth_enabled_providers"] = ("google",)
