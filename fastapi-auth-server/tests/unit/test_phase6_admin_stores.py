@@ -82,6 +82,7 @@ async def test_admin_directory_filters_pages_and_loads_minimal_roles() -> None:
                         email="user@example.test",
                         name="User",
                         status=UserStatus.ACTIVE,
+                        userType="EMPLOYEE",
                         createdAt=NOW,
                     ),
                 )
@@ -100,6 +101,7 @@ async def test_admin_directory_filters_pages_and_loads_minimal_roles() -> None:
             page=2,
             page_size=5,
             status=UserStatus.ACTIVE,
+            user_type="EMPLOYEE",
             email=" newest@example.test ",
             role="temis:admin",
         ),
@@ -149,9 +151,7 @@ async def test_directory_role_lookup_and_current_db_admin_check_are_minimal() ->
     )
     store = AdminDirectoryStore()
     role = await store.find_role_by_id(cast(AsyncConnection, connection), role_id="role-1")
-    allowed = await store.is_active_temis_admin(
-        cast(AsyncConnection, connection), user_id="admin-1"
-    )
+    allowed = await store.is_active_sso_admin(cast(AsyncConnection, connection), user_id="admin-1")
     assert role is not None and role.service_key == "temis" and allowed
     assert 'SELECT "Role".id, "Role"."serviceKey", "Role".name' in sql(connection.statements[0])
     admin_sql = sql(connection.statements[1])
@@ -166,6 +166,7 @@ async def test_admin_mutations_lock_before_revocation_and_are_idempotent() -> No
         [
             FakeResult(rowcount=1),
             FakeResult(SimpleNamespace(id="target-1")),
+            FakeResult(rowcount=1),
             FakeResult(rowcount=2),
             FakeResult(SimpleNamespace(id="role-1", serviceKey="temis", name="user")),
             FakeResult(rowcount=1),
@@ -206,9 +207,11 @@ async def test_admin_mutations_lock_before_revocation_and_are_idempotent() -> No
     assert changed and revoked == 2 and assigned and removed
     assert "FOR UPDATE" in sql(connection.statements[1])
     assert connection.statements[2].is_update
-    assert "ON CONFLICT" in sql(connection.statements[3])
+    assert '"ssoSessionVersion"' in sql(connection.statements[2])
+    assert sql(connection.statements[3]).startswith('UPDATE "RefreshToken"')
     assert "ON CONFLICT" in sql(connection.statements[4])
-    audit_values = params(connection.statements[6]).values()
+    assert "ON CONFLICT" in sql(connection.statements[5])
+    audit_values = params(connection.statements[7]).values()
     assert "admin-1" in audit_values and "target-1" in audit_values
 
 
@@ -298,3 +301,21 @@ async def test_audit_retention_is_dry_run_by_default_and_strictly_older_than_cut
     )
     assert not executed.dry_run and executed.deleted_count == 2
     assert sql(execute_connection.statements[0]).startswith('DELETE FROM "AuditLog"')
+
+
+@pytest.mark.anyio
+async def test_central_policy_lock_and_admin_count_use_employee_sso_role() -> None:
+    store = AdminMutationStore()
+    connection = FakeConnection(
+        [FakeResult(row=SimpleNamespace(id="sso-role")), FakeResult(scalar=2)]
+    )
+    await store.lock_policy(cast(AsyncConnection, connection))
+    assert await store.active_admin_count(cast(AsyncConnection, connection)) == 2
+    assert sql(connection.statements[0]).endswith("FOR UPDATE")
+    count_sql = sql(connection.statements[1])
+    assert '"User"."userType"' in count_sql
+    for statement in connection.statements:
+        assert "sso" in params(statement).values()
+        assert "admin" in params(statement).values()
+    assert "EMPLOYEE" in params(connection.statements[1]).values()
+    assert "ACTIVE" in params(connection.statements[1]).values()

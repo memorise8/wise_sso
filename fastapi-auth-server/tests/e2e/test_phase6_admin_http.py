@@ -130,6 +130,14 @@ class FakePhase6Services:
         self.calls.append(("find_role", role_id))
         return self.role
 
+    async def set_user_type(self, **values: object) -> bool:
+        self.calls.append(("set_type", values))
+        return True
+
+    async def set_user_types(self, **values: object) -> tuple[int, int]:
+        self.calls.append(("set_types", values))
+        return 1, 1
+
     async def set_user_status(self, **values: object) -> _StatusResult:
         self.calls.append(("set_status", values))
         return _StatusResult(True, 2)
@@ -211,6 +219,7 @@ def test_admin_aliases_authorize_and_list_users(
                 "name": "Target",
                 "status": "ACTIVE",
                 "createdAt": "2026-07-22T03:00:00.000Z",
+                "userType": None,
                 "roles": [{"id": "role-user", "serviceKey": "temis", "name": "user"}],
             }
         ],
@@ -997,7 +1006,7 @@ def test_self_admin_role_removal_and_missing_role_are_rejected(
     client: TestClient, services: FakePhase6Services
 ) -> None:
     headers = {"authorization": "Bearer access-token"}
-    services.role = AdminRoleProfile("role-admin", "temis", "admin")
+    services.role = AdminRoleProfile("role-admin", "sso", "admin")
     self_remove = client.request(
         "DELETE",
         "/admin/users/admin-user/roles/role-admin",
@@ -1035,3 +1044,152 @@ def test_self_admin_role_removal_and_missing_role_are_rejected(
     assert whitespace.status_code == 404
     assert whitespace.json() == {"error": {"code": "ROLE_NOT_FOUND", "message": "Role not found"}}
     assert [name for name, _ in services.calls] == ["authenticate"]
+
+
+@pytest.mark.parametrize("prefix", ["/admin", "/manage-api"])
+@pytest.mark.parametrize("user_type", ["EMPLOYEE", "CUSTOMER", None])
+def test_type_endpoint_authenticates_and_accepts_explicit_null(
+    client: TestClient, services: FakePhase6Services, prefix: str, user_type: str | None
+) -> None:
+    response = client.patch(
+        f"{prefix}/users/target-user/type",
+        headers={"authorization": "Bearer access-token"},
+        json={"userType": user_type, "reasonCode": "TEST"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"userTypeChanged": True}
+    assert services.calls[-1] == (
+        "set_type",
+        {
+            "actor_user_id": "admin-user",
+            "target_user_id": "target-user",
+            "user_type": user_type,
+            "reason_code": "TEST",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "body", [{}, {"userType": "ADMIN"}, {"userType": "EMPLOYEE", "unexpected": True}]
+)
+def test_type_endpoint_rejects_invalid_body_before_mutation(
+    client: TestClient, services: FakePhase6Services, body: dict[str, object]
+) -> None:
+    response = client.patch(
+        "/admin/users/target-user/type", headers={"authorization": "Bearer access-token"}, json=body
+    )
+    assert response.status_code == 400
+    assert not any(call[0] == "set_type" for call in services.calls)
+
+
+def test_type_endpoint_requires_authenticated_admin(
+    client: TestClient, services: FakePhase6Services
+) -> None:
+    response = client.patch("/admin/users/target-user/type", json={"userType": "EMPLOYEE"})
+    assert response.status_code == 401
+    assert not any(call[0] == "set_type" for call in services.calls)
+
+
+@pytest.mark.parametrize("prefix", ["/admin", "/manage-api"])
+@pytest.mark.parametrize("kind", ["EMPLOYEE", "CUSTOMER", None])
+def test_bulk_type_endpoint_uses_authenticated_actor(
+    client: TestClient, services: FakePhase6Services, prefix: str, kind: str | None
+) -> None:
+    response = client.patch(
+        f"{prefix}/users/type",
+        headers={"authorization": "Bearer access-token"},
+        json={"userIds": ["a", "b"], "userType": kind},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"requestedCount": 2, "changedCount": 1, "unchangedCount": 1}
+    assert services.calls[-1] == (
+        "set_types",
+        {
+            "actor_user_id": "admin-user",
+            "target_user_ids": ("a", "b"),
+            "user_type": kind,
+            "reason_code": "ADMIN_BULK_USER_TYPE_CHANGE",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"userIds": [], "userType": "EMPLOYEE"},
+        {"userIds": ["a", "a"], "userType": "EMPLOYEE"},
+        {"userIds": ["a"]},
+        {"userIds": ["a"], "userType": "ADMIN"},
+        {"userIds": ["a"], "userType": "EMPLOYEE", "extra": True},
+        {"userIds": ["a"], "userType": "EMPLOYEE", "reasonCode": " "},
+        {"userIds": [str(i) for i in range(101)], "userType": "EMPLOYEE"},
+        {"userIds": [" a"], "userType": "EMPLOYEE"},
+        {"userIds": [True], "userType": "EMPLOYEE"},
+        {"userIds": ["a" * 129], "userType": "EMPLOYEE"},
+    ],
+)
+def test_bulk_type_endpoint_rejects_invalid_body(
+    client: TestClient, services: FakePhase6Services, body: dict[str, object]
+) -> None:
+    response = client.patch(
+        "/manage-api/users/type", headers={"authorization": "Bearer access-token"}, json=body
+    )
+    assert response.status_code == 400
+    assert not any(call[0] == "set_types" for call in services.calls)
+
+
+def test_bulk_type_endpoint_rejects_unauthenticated_and_non_admin_requests(
+    client: TestClient, services: FakePhase6Services
+) -> None:
+    body = {"userIds": ["a"], "userType": "EMPLOYEE"}
+    assert client.patch("/admin/users/type", json=body).status_code == 401
+    services.authorization_error = DomainError(403, "FORBIDDEN", "Admin required")
+    assert (
+        client.patch(
+            "/admin/users/type", json=body, headers={"authorization": "Bearer access-token"}
+        ).status_code
+        == 403
+    )
+    assert not any(call[0] == "set_types" for call in services.calls)
+
+
+def test_bulk_type_compatibility_normalizes_case_and_rejects_query_and_media_type(
+    client: TestClient, services: FakePhase6Services
+) -> None:
+    headers = {"authorization": "Bearer access-token"}
+    body = {"userIds": ["a", "b"], "userType": "EMPLOYEE"}
+    assert client.patch("/MANAGE-API/USERS/TYPE/", json=body, headers=headers).status_code == 200
+    services.calls.clear()
+    assert (
+        client.patch("/admin/users/type?unexpected=1", json=body, headers=headers).status_code
+        == 400
+    )
+    assert (
+        client.patch(
+            "/admin/users/type",
+            content="userIds=a",
+            headers=headers | {"content-type": "text/plain"},
+        ).status_code
+        == 400
+    )
+    assert not any(call[0] == "set_types" for call in services.calls)
+
+
+@pytest.mark.parametrize("prefix", ["/admin", "/manage-api"])
+def test_bulk_response_is_no_store_in_runtime_app(
+    synthetic_settings: Settings, services: FakePhase6Services, prefix: str
+) -> None:
+    app = create_app(
+        settings=synthetic_settings,
+        readiness_check=lambda: True,
+        phase6_services=cast(Phase6Services, services),
+    )
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.patch(
+            f"{prefix}/users/type",
+            headers={"authorization": "Bearer access-token"},
+            json={"userIds": ["a", "b"], "userType": "EMPLOYEE"},
+        )
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"

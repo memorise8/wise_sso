@@ -30,7 +30,7 @@ class FakeTransaction:
     async def upsert_admin_role(self) -> tuple[str, str, str]:
         self.state["events"].append(("upsert-role",))
         self.state["role_exists"] = True
-        return "role-admin", "temis", "admin"
+        return "role-admin", "sso", "admin"
 
     async def assign_role(self, *, user_id: str, role_id: str) -> bool:
         self.state["events"].append(("assign", user_id, role_id))
@@ -92,7 +92,7 @@ async def test_first_admin_normalizes_active_email_and_orders_atomic_mutations()
         ("upsert-role",),
         ("assign", "user-1", "role-admin"),
         ("revoke", "user-1", now),
-        ("audit", "user-1", "temis", "admin", now),
+        ("audit", "user-1", "sso", "admin", now),
     ]
 
 
@@ -112,7 +112,7 @@ async def test_first_admin_audit_failure_rolls_back_role_and_revocation() -> Non
 async def test_first_admin_requires_active_exact_email_before_mutation() -> None:
     store = FakeStore(active=False)
 
-    with pytest.raises(ActiveUserNotFoundError, match="No active user found"):
+    with pytest.raises(ActiveUserNotFoundError, match="No active employee user found"):
         await grant_first_admin(store, GrantFirstAdminInput("admin@company.com"))
 
     assert store.state["role_exists"] is False

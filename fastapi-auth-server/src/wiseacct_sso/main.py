@@ -51,6 +51,7 @@ from wiseacct_sso.infrastructure.oidc_state import (
 from wiseacct_sso.infrastructure.oidc_tokens import OidcAccessTokenStore, OidcIdTokenSigner
 from wiseacct_sso.infrastructure.redis import RedisOptions, RedisStateStore
 from wiseacct_sso.infrastructure.security import AsyncPasswordHasher, JwtTokenCodec
+from wiseacct_sso.infrastructure.sso_sessions import SsoSessionStore
 from wiseacct_sso.lifecycle import LifecycleHooks, create_lifespan
 from wiseacct_sso.logging import configure_logging
 from wiseacct_sso.oidc_config import OidcClientRegistry
@@ -263,12 +264,15 @@ def create_runtime_app() -> FastAPI:
             codes=OidcAuthorizationCodeStore(oidc_redis),
             access_tokens=OidcAccessTokenStore(oidc_redis),
             id_tokens=OidcIdTokenSigner.from_settings(settings),
+            sessions=SsoSessionStore(oidc_redis),
             provider_config=lambda provider: oidc_provider_config_for(settings, provider),
             oauth_client=runtime_oauth_client,
             redis=runtime_redis,
         )
         oidc_app = build_oidc_app(
             service=oidc_service,
+            portal_service=oidc_service,
+            admin_services=phase6_services,
             public_origin=settings.oidc_public_origin,
             providers=tuple(
                 provider

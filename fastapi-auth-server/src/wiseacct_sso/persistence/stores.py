@@ -24,6 +24,7 @@ from wiseacct_sso.domain.admin import (
     audit_retention_cutoff,
     parse_role_filter,
 )
+from wiseacct_sso.domain.users import DomainError, UserType
 from wiseacct_sso.domain.users import UserStatus as DomainUserStatus
 from wiseacct_sso.persistence.models import (
     AuditLog,
@@ -236,6 +237,7 @@ class PasswordAuthStore:
                 createdAt=registration.created_at,
                 updatedAt=registration.updated_at,
                 emailVerified=False,
+                userType=UserType.CUSTOMER,
             )
         )
         _require_one(created_user.rowcount, "user registration insert")
@@ -565,7 +567,7 @@ async def _seed_temis_and_assign_default_role(
     for service_key, name in (
         ("temis", "pending"),
         ("temis", "user"),
-        ("temis", "admin"),
+        ("sso", "admin"),
         (default_role.service_key, default_role.name),
     ):
         await connection.execute(
@@ -896,6 +898,11 @@ class PasswordResetStore:
         )
         _require_one(updated.rowcount, "password reset credential update")
         await connection.execute(
+            update(User)
+            .where(User.c.id == token.userId)
+            .values(ssoSessionVersion=User.c.ssoSessionVersion + 1)
+        )
+        await connection.execute(
             update(RefreshToken)
             .where(RefreshToken.c.userId == token.userId, RefreshToken.c.revokedAt.is_(None))
             .values(revokedAt=now)
@@ -960,33 +967,6 @@ class OAuthIdentityStore:
         now: datetime,
     ) -> OAuthUserRecord:
         normalized_email = profile.email.strip().lower() if profile.email is not None else None
-        if normalized_email and profile.email_verified:
-            existing = (
-                await connection.execute(
-                    select(User).where(User.c.email == normalized_email).limit(1)
-                )
-            ).one_or_none()
-            if existing is not None:
-                if (
-                    UserStatus(existing.status) is UserStatus.PENDING_EMAIL_VERIFICATION
-                    and not existing.emailVerified
-                ):
-                    removed = await connection.execute(delete(User).where(User.c.id == existing.id))
-                    _require_one(removed.rowcount, "pending OAuth identity replacement delete")
-                elif UserStatus(existing.status) is UserStatus.ACTIVE and existing.emailVerified:
-                    linked = await connection.execute(
-                        insert(SocialAccount).values(
-                            id=application_uuid(),
-                            provider=profile.provider,
-                            providerUserId=profile.provider_user_id,
-                            providerEmail=normalized_email,
-                            userId=existing.id,
-                            createdAt=now,
-                        )
-                    )
-                    _require_one(linked.rowcount, "OAuth identity attach")
-                    return self._record(existing)
-
         user_email = normalized_email
         if user_email:
             email_owner = (
@@ -1012,6 +992,7 @@ class OAuthIdentityStore:
                 id=user_id,
                 email=user_email,
                 emailVerified=profile.email_verified,
+                userType=UserType.CUSTOMER,
                 name=profile.name,
                 profileUrl=profile.profile_url,
                 status=UserStatus.ACTIVE,
@@ -1128,6 +1109,7 @@ class AuditStore:
 
 
 class _AdminUserRow(Protocol):
+    userType: str | None
     id: object
     email: str | None
     name: str | None
@@ -1144,6 +1126,12 @@ class AdminDirectoryStore:
         conditions: list[ColumnElement[bool]] = []
         if input.status is not None:
             conditions.append(User.c.status == input.status)
+        if input.user_type is not None:
+            conditions.append(
+                User.c.userType.is_(None)
+                if input.user_type == "UNCLASSIFIED"
+                else User.c.userType == input.user_type
+            )
         if input.email is not None:
             conditions.append(User.c.email.ilike(f"%{input.email.strip()}%"))
         if input.role is not None:
@@ -1161,7 +1149,14 @@ class AdminDirectoryStore:
 
         page_rows = (
             await connection.execute(
-                select(User.c.id, User.c.email, User.c.name, User.c.status, User.c.createdAt)
+                select(
+                    User.c.id,
+                    User.c.email,
+                    User.c.name,
+                    User.c.status,
+                    User.c.createdAt,
+                    User.c.userType,
+                )
                 .where(*conditions)
                 .order_by(User.c.createdAt.desc())
                 .offset((input.page - 1) * input.page_size)
@@ -1225,7 +1220,7 @@ class AdminDirectoryStore:
             )
         )
 
-    async def is_active_temis_admin(self, connection: AsyncConnection, *, user_id: str) -> bool:
+    async def is_active_sso_admin(self, connection: AsyncConnection, *, user_id: str) -> bool:
         row = (
             await connection.execute(
                 select(User.c.id)
@@ -1237,7 +1232,8 @@ class AdminDirectoryStore:
                 .where(
                     User.c.id == user_id,
                     User.c.status == UserStatus.ACTIVE,
-                    Role.c.serviceKey == "temis",
+                    User.c.userType == UserType.EMPLOYEE,
+                    Role.c.serviceKey == "sso",
                     Role.c.name == "admin",
                 )
                 .limit(1)
@@ -1255,10 +1251,79 @@ class AdminDirectoryStore:
             status=DomainUserStatus(typed.status),
             created_at=typed.createdAt,
             roles=roles,
+            user_type=typed.userType,
         )
 
 
 class AdminMutationStore:
+    async def lock_policy(self, connection: AsyncConnection) -> None:
+        # A shared row lock serializes all central admin/type/role/status mutations.
+        # This prevents two admins concurrently removing the last two admins.
+        row = (
+            await connection.execute(
+                select(Role.c.id)
+                .where(Role.c.serviceKey == "sso", Role.c.name == "admin")
+                .with_for_update()
+            )
+        ).one_or_none()
+        if row is None:
+            raise DomainError(503, "POLICY_MIGRATION_REQUIRED", "Policy migration is required")
+
+    async def user_policy(
+        self, connection: AsyncConnection, *, user_id: str
+    ) -> tuple[str | None, DomainUserStatus]:
+        row = (
+            await connection.execute(
+                select(User.c.userType, User.c.status).where(User.c.id == user_id).with_for_update()
+            )
+        ).one_or_none()
+        if row is None:
+            raise DomainError(404, "USER_NOT_FOUND", "User not found")
+        return row.userType, DomainUserStatus(row.status)
+
+    async def central_admin_assigned(self, connection: AsyncConnection, *, user_id: str) -> bool:
+        row = (
+            await connection.execute(
+                select(UserRole.c.id)
+                .select_from(UserRole.join(Role))
+                .where(
+                    UserRole.c.userId == user_id, Role.c.serviceKey == "sso", Role.c.name == "admin"
+                )
+            )
+        ).one_or_none()
+        return row is not None
+
+    async def active_admin_count(self, connection: AsyncConnection) -> int:
+        return int(
+            (
+                await connection.execute(
+                    select(func.count())
+                    .select_from(User.join(UserRole).join(Role))
+                    .where(
+                        User.c.status == UserStatus.ACTIVE,
+                        User.c.userType == UserType.EMPLOYEE,
+                        Role.c.serviceKey == "sso",
+                        Role.c.name == "admin",
+                    )
+                )
+            ).scalar_one()
+        )
+
+    async def update_user_type(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: str,
+        user_type: str | None,
+        updated_at: datetime,
+    ) -> bool:
+        result = await connection.execute(
+            update(User)
+            .where(User.c.id == user_id)
+            .values(userType=user_type, updatedAt=updated_at)
+        )
+        return result.rowcount == 1
+
     """Atomic admin mutation primitives; the application owns the transaction boundary."""
 
     async def update_user_status(
@@ -1291,6 +1356,11 @@ class AdminMutationStore:
     ) -> int:
         if not await self.lock_user_for_refresh_token_revocation(connection, user_id=user_id):
             return 0
+        await connection.execute(
+            update(User)
+            .where(User.c.id == user_id)
+            .values(ssoSessionVersion=User.c.ssoSessionVersion + 1)
+        )
         result = await connection.execute(
             update(RefreshToken)
             .where(RefreshToken.c.userId == user_id, RefreshToken.c.revokedAt.is_(None))

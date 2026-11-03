@@ -156,6 +156,19 @@ class Phase6Services(Protocol):
 
     async def find_role_by_id(self, role_id: str) -> AdminRoleProfile | None: ...
 
+    async def set_user_type(
+        self, *, actor_user_id: str, target_user_id: str, user_type: str | None, reason_code: str
+    ) -> bool: ...
+
+    async def set_user_types(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_ids: tuple[str, ...],
+        user_type: str | None,
+        reason_code: str,
+    ) -> tuple[int, int]: ...
+
     async def set_user_status(
         self,
         *,

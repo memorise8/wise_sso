@@ -198,7 +198,7 @@ def provider_config_for(settings: Settings, provider: OAuthProvider) -> OAuthPro
         _required(settings.kakao_client_id, "KAKAO_CLIENT_ID"),
         _required(settings.kakao_client_secret, "KAKAO_CLIENT_SECRET"),
         settings.kakao_redirect_uri,
-        "profile_nickname profile_image account_email",
+        "profile_nickname profile_image",
     )
 
 

@@ -41,7 +41,7 @@ def _oauth_settings(settings: Settings) -> Settings:
     [
         ("google", "accounts.google.com", "openid email profile"),
         ("naver", "nid.naver.com", "email profile"),
-        ("kakao", "kauth.kakao.com", "profile_nickname profile_image account_email"),
+        ("kakao", "kauth.kakao.com", "profile_nickname profile_image"),
     ],
 )
 def test_provider_authorization_contract(

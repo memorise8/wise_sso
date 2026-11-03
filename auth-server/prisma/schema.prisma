@@ -14,9 +14,16 @@ enum UserStatus {
   DELETED
 }
 
+enum UserType {
+  EMPLOYEE
+  CUSTOMER
+}
+
 model User {
   id         String   @id @default(uuid())
   email      String?  @unique
+  ssoSessionVersion Int @default(0)
+  userType UserType?
   emailVerified Boolean @default(false)
   name       String?
   profileUrl String?
@@ -34,6 +41,8 @@ model User {
   actorAuditLogs          AuditLog[] @relation("AuditActor")
   targetAuditLogs         AuditLog[] @relation("AuditTarget")
   roles                   UserRole[]
+
+  @@index([userType])
 }
 
 model PasswordCredential {

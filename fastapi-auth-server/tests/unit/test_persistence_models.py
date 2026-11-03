@@ -32,6 +32,8 @@ EXPECTED_TABLES = {
 EXPECTED_COLUMNS = {
     "User": (
         "id",
+        "ssoSessionVersion",
+        "userType",
         "email",
         "name",
         "profileUrl",

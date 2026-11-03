@@ -4,6 +4,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import RedirectResponse
 from starlette.datastructures import Headers
 
 from wiseacct_sso.api.staticfiles import conditional_file_response
@@ -91,10 +92,20 @@ def build_system_router(
             methods=["GET", "HEAD"],
             include_in_schema=False,
         )
+
+    def admin_dashboard(request: Request) -> Response:
+        if settings.oidc_enabled and settings.oidc_public_origin:
+            return RedirectResponse(
+                settings.oidc_public_origin + "/oauth2/admin/dashboard",
+                303,
+                headers={"cache-control": "no-store"},
+            )
+        return html_response("admin-dashboard.html", request)
+
     for path in DASHBOARD_PATHS:
         router.add_api_route(
             path,
-            html_endpoint("admin-dashboard.html"),
+            admin_dashboard,
             methods=["GET", "HEAD"],
             include_in_schema=False,
         )

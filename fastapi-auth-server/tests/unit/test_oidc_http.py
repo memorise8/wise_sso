@@ -121,6 +121,14 @@ class FakeOidcService:
         self.userinfo_token = access_token
         return UserInfo("user-1", "user@example.test", True, None, ("agent-hub:user",))
 
+    async def session_logout_token(self, token: str | None) -> str | None:
+        return None
+
+    async def end_session(
+        self, token: str | None, csrf_token: str, context: OidcRequestContext
+    ) -> None:
+        raise NotImplementedError
+
 
 def _client(service: FakeOidcService) -> TestClient:
     app = build_oidc_app(

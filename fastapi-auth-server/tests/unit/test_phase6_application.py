@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.application.admin import Phase6AdminService
 from wiseacct_sso.domain.admin import (
+    AdminAuditRecord,
     AdminRoleProfile,
     AdminUserListInput,
     AuditRetentionCleanupResult,
@@ -63,7 +64,7 @@ class FakeDirectory:
         self.events = events
         self.authorized = authorized
 
-    async def is_active_temis_admin(self, connection: object, *, user_id: str) -> bool:
+    async def is_active_sso_admin(self, connection: object, *, user_id: str) -> bool:
         self.events.append(f"authorize:{user_id}")
         return self.authorized
 
@@ -73,7 +74,7 @@ class FakeDirectory:
 
     async def find_role_by_id(self, connection: object, *, role_id: str) -> AdminRoleProfile | None:
         self.events.append(f"role-id:{role_id}")
-        return AdminRoleProfile(role_id, "temis", "admin")
+        return AdminRoleProfile(role_id, "sso", "admin")
 
 
 class FakeAudit:
@@ -92,6 +93,9 @@ class FakeAudit:
 class FakeMutations:
     def __init__(self, events: list[str]) -> None:
         self.events = events
+        self.user_type: str | None = "EMPLOYEE"
+        self.admin_count = 2
+        self.has_admin_role = False
         self.status_changed = True
         self.role_assigned = True
         self.role_removed = True
@@ -99,6 +103,25 @@ class FakeMutations:
         self.revoked = 2
         self.fail_audit = False
         self.audits: list[object] = []
+
+    async def lock_policy(self, connection: object) -> None:
+        self.events.append("policy-lock")
+
+    async def user_policy(
+        self, connection: object, **values: object
+    ) -> tuple[str | None, UserStatus]:
+        self.events.append(f"target:{values['user_id']}")
+        return self.user_type, UserStatus.ACTIVE
+
+    async def active_admin_count(self, connection: object) -> int:
+        return self.admin_count
+
+    async def central_admin_assigned(self, connection: object, **values: object) -> bool:
+        return self.has_admin_role
+
+    async def update_user_type(self, connection: object, **values: object) -> bool:
+        self.events.append("type-change")
+        return True
 
     async def update_user_status(self, connection: object, **values: object) -> bool:
         self.events.append(f"status:{values['status']}")
@@ -253,7 +276,17 @@ async def test_status_change_revokes_before_audit_in_one_transaction() -> None:
     )
 
     assert (result.status_changed, result.revoked_refresh_token_count) == (True, 2)
-    assert events == ["begin", "status:SUSPENDED", "revoke", "mutation-audit", "commit"]
+    assert events == [
+        "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "authorize:user",
+        "status:SUSPENDED",
+        "revoke",
+        "mutation-audit",
+        "commit",
+    ]
 
 
 @pytest.mark.anyio
@@ -273,6 +306,10 @@ async def test_mutation_audit_failure_rolls_back_status_and_revocation() -> None
 
     assert events == [
         "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "authorize:user",
         "status:SUSPENDED",
         "revoke",
         "mutation-audit",
@@ -297,7 +334,15 @@ async def test_idempotent_active_status_still_matches_express_update_many_semant
 
     assert result.status_changed is True
     assert result.revoked_refresh_token_count == 0
-    assert events == ["begin", "status:ACTIVE", "mutation-audit", "commit"]
+    assert events == [
+        "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "status:ACTIVE",
+        "mutation-audit",
+        "commit",
+    ]
 
 
 @pytest.mark.anyio
@@ -315,7 +360,15 @@ async def test_assign_role_duplicate_skips_audit() -> None:
     )
 
     assert (result.role_assigned, result.role_id) == (False, "role-1")
-    assert events == ["begin", "upsert-role", "assign-role", "commit"]
+    assert events == [
+        "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "upsert-role",
+        "assign-role",
+        "commit",
+    ]
 
 
 @pytest.mark.anyio
@@ -335,7 +388,17 @@ async def test_remove_role_revokes_then_audits_only_when_removed() -> None:
         "role-1",
         2,
     )
-    assert events == ["begin", "find-role", "remove-role", "revoke", "mutation-audit", "commit"]
+    assert events == [
+        "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "find-role",
+        "remove-role",
+        "revoke",
+        "mutation-audit",
+        "commit",
+    ]
 
 
 @pytest.mark.anyio
@@ -357,7 +420,14 @@ async def test_missing_role_remove_is_an_idempotent_noop() -> None:
         None,
         0,
     )
-    assert events == ["begin", "find-role", "commit"]
+    assert events == [
+        "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "find-role",
+        "commit",
+    ]
 
 
 @pytest.mark.anyio
@@ -381,13 +451,13 @@ async def test_self_protection_runs_before_mutation_io() -> None:
 async def test_self_admin_role_removal_is_rejected_before_transaction() -> None:
     events: list[str] = []
     subject = service(events)
-    cast(FakeMutations, subject._mutations).role = AdminRoleProfile("admin-role", "temis", "admin")
+    cast(FakeMutations, subject._mutations).role = AdminRoleProfile("admin-role", "sso", "admin")
 
     with pytest.raises(DomainError, match="cannot remove"):
         await subject.remove_role(
             actor_user_id="admin",
             target_user_id="admin",
-            service_key="temis",
+            service_key="sso",
             name="admin",
             reason_code="reason",
         )
@@ -405,7 +475,15 @@ async def test_revoke_sessions_always_records_success_audit() -> None:
     )
 
     assert result.revoked_count == 0
-    assert events == ["begin", "revoke", "mutation-audit", "commit"]
+    assert events == [
+        "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "revoke",
+        "mutation-audit",
+        "commit",
+    ]
 
 
 @pytest.mark.anyio
@@ -415,3 +493,346 @@ async def test_audit_cleanup_is_dry_run_by_default_and_transactional() -> None:
 
     assert result == AuditRetentionCleanupResult(NOW, 4, True, 180)
     assert events == ["begin", "commit"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("user_type", [None, "CUSTOMER"])
+@pytest.mark.parametrize("service_key", ["sso", "lab-staff", "gitlab", "agent-hub"])
+async def test_internal_role_assignment_requires_employee(
+    user_type: str | None, service_key: str
+) -> None:
+    events: list[str] = []
+    subject = service(events)
+    cast(FakeMutations, subject._mutations).user_type = user_type
+    with pytest.raises(DomainError) as caught:
+        await subject.assign_role(
+            actor_user_id="admin",
+            target_user_id="user",
+            service_key=service_key,
+            name="admin" if service_key == "sso" else "user",
+            reason_code="TEST",
+        )
+    assert caught.value.code == "EMPLOYEE_REQUIRED"
+    assert events == ["begin", "policy-lock", "authorize:admin", "target:user", "rollback"]
+
+
+@pytest.mark.anyio
+async def test_type_change_revokes_and_audits_in_same_transaction() -> None:
+    events: list[str] = []
+    subject = service(events)
+    changed = await subject.set_user_type(
+        actor_user_id="admin", target_user_id="user", user_type="CUSTOMER", reason_code="TEST"
+    )
+    assert changed
+    assert events == [
+        "begin",
+        "policy-lock",
+        "authorize:admin",
+        "target:user",
+        "authorize:user",
+        "type-change",
+        "revoke",
+        "mutation-audit",
+        "commit",
+    ]
+    audit = cast(FakeMutations, subject._mutations).audits[0]
+    assert cast(AdminAuditRecord, audit).event_type == "admin_user_type_changed"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("operation", ["status", "role", "type"])
+async def test_last_active_central_admin_is_protected(operation: str) -> None:
+    events: list[str] = []
+    subject = service(events)
+    mutations = cast(FakeMutations, subject._mutations)
+    mutations.admin_count = 1
+    mutations.role = AdminRoleProfile("central-admin", "sso", "admin")
+    with pytest.raises(DomainError) as caught:
+        if operation == "status":
+            await subject.set_user_status(
+                actor_user_id="admin", target_user_id="user", status="SUSPENDED", reason_code="TEST"
+            )
+        elif operation == "type":
+            await subject.set_user_type(
+                actor_user_id="admin",
+                target_user_id="user",
+                user_type="CUSTOMER",
+                reason_code="TEST",
+            )
+        else:
+            await subject.remove_role(
+                actor_user_id="admin",
+                target_user_id="user",
+                service_key="sso",
+                name="admin",
+                reason_code="TEST",
+            )
+    assert caught.value.code == "LAST_SSO_ADMIN"
+    assert events[:4] == ["begin", "policy-lock", "authorize:admin", "target:user"]
+    assert events[-1] == "rollback"
+    assert "mutation-audit" not in events
+
+
+@pytest.mark.anyio
+async def test_type_demotion_requires_central_admin_role_removed_first() -> None:
+    events: list[str] = []
+    subject = service(events)
+    cast(FakeMutations, subject._mutations).has_admin_role = True
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_type(
+            actor_user_id="admin", target_user_id="user", user_type=None, reason_code="TEST"
+        )
+    assert caught.value.code == "SSO_ADMIN_MUST_BE_EMPLOYEE"
+    assert "type-change" not in events
+
+
+@pytest.mark.anyio
+async def test_mutation_rechecks_actor_after_policy_lock_before_write() -> None:
+    events: list[str] = []
+    subject = service(events)
+    cast(FakeDirectory, subject._directory).authorized = False
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_type(
+            actor_user_id="admin", target_user_id="user", user_type="CUSTOMER", reason_code="TEST"
+        )
+    assert caught.value.code == "FORBIDDEN"
+    assert events == ["begin", "policy-lock", "authorize:admin", "rollback"]
+
+
+class BulkMutations(FakeMutations):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__(events)
+        self.types: dict[str, str | None] = {
+            "admin": "EMPLOYEE",
+            "a": None,
+            "b": "CUSTOMER",
+            "c": "EMPLOYEE",
+        }
+        self.versions = dict.fromkeys(self.types, 0)
+        self.central_admins = {"admin"}
+        self.admin_count = 1
+        self.fail_second_audit = False
+
+    async def user_policy(
+        self, connection: object, **values: object
+    ) -> tuple[str | None, UserStatus]:
+        uid = str(values["user_id"])
+        self.events.append(f"target:{uid}")
+        if uid not in self.types:
+            raise DomainError(404, "USER_NOT_FOUND", "User not found")
+        return self.types[uid], UserStatus.ACTIVE
+
+    async def update_user_type(self, connection: object, **values: object) -> bool:
+        uid = str(values["user_id"])
+        self.events.append(f"type:{uid}")
+        self.types[uid] = cast(str | None, values["user_type"])
+        return True
+
+    async def revoke_all_refresh_tokens_for_user(self, connection: object, **values: object) -> int:
+        uid = str(values["user_id"])
+        self.events.append(f"revoke:{uid}")
+        self.versions[uid] += 1
+        return 0
+
+    async def central_admin_assigned(self, connection: object, **values: object) -> bool:
+        return values["user_id"] in self.central_admins
+
+    async def create_admin_audit_log(
+        self, connection: object, *, event: object, created_at: datetime
+    ) -> None:
+        if self.fail_second_audit and self.audits:
+            raise RuntimeError("second audit failed")
+        await super().create_admin_audit_log(connection, event=event, created_at=created_at)
+
+
+class BulkDirectory(FakeDirectory):
+    async def is_active_sso_admin(self, connection: object, *, user_id: str) -> bool:
+        self.events.append(f"authorize:{user_id}")
+        return self.authorized and user_id in {"admin", "z-admin"}
+
+
+class BulkDatabase(TrackingDatabase):
+    def __init__(self, events: list[str], mutations: BulkMutations) -> None:
+        super().__init__(events)
+        self.mutations = mutations
+
+    async def transaction[Result](
+        self, work: DatabaseOnlyTransaction[Result], *, max_attempts: int = 3
+    ) -> Result:
+        types, versions, audits = (
+            self.mutations.types.copy(),
+            self.mutations.versions.copy(),
+            self.mutations.audits.copy(),
+        )
+        try:
+            return await super().transaction(work, max_attempts=max_attempts)
+        except Exception:
+            self.mutations.types = types
+            self.mutations.versions = versions
+            self.mutations.audits = audits
+            raise
+
+
+def bulk_subject(events: list[str]) -> tuple[Phase6AdminService, BulkMutations]:
+    subject = service(events)
+    mutations = BulkMutations(events)
+    database = BulkDatabase(events, mutations)
+    subject._database = lambda: cast(Database, database)
+    subject._directory = cast(object, BulkDirectory(events))  # type: ignore[assignment]
+    subject._mutations = cast(object, mutations)  # type: ignore[assignment]
+    return subject, mutations
+
+
+@pytest.mark.anyio
+async def test_bulk_type_changes_lock_once_skip_noops_and_revoke_each_changed_user() -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    result = await subject.set_user_types(
+        actor_user_id="admin",
+        target_user_ids=("c", "b", "a"),
+        user_type="EMPLOYEE",
+        reason_code="BULK_TEST",
+    )
+    assert result == (2, 1)
+    assert store.types == {"admin": "EMPLOYEE", "a": "EMPLOYEE", "b": "EMPLOYEE", "c": "EMPLOYEE"}
+    assert store.versions == {"admin": 0, "a": 1, "b": 1, "c": 0}
+    assert events[:5] == ["begin", "policy-lock", "authorize:admin", "target:a", "target:b"]
+    assert events.index("target:c") < events.index("type:a")
+    assert events.count("policy-lock") == 1
+    audits = cast(list[AdminAuditRecord], store.audits)
+    assert [audit.target_user_id for audit in audits] == ["a", "b"]
+    assert audits[0].details_json is not None and audits[1].details_json is not None
+    assert audits[0].details_json["batchId"] == audits[1].details_json["batchId"]
+    assert audits[0].details_json["batchSize"] == 3
+    assert audits[0].details_json["previousUserType"] is None
+    assert audits[1].details_json["previousUserType"] == "CUSTOMER"
+    assert "assign-role" not in events
+    assert events[-1] == "commit"
+
+
+@pytest.mark.anyio
+async def test_bulk_noops_do_not_revoke_sessions_or_audit() -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    assert await subject.set_user_types(
+        actor_user_id="admin",
+        target_user_ids=("admin", "c"),
+        user_type="EMPLOYEE",
+        reason_code="TEST",
+    ) == (0, 2)
+    assert not store.audits
+    assert all(value == 0 for value in store.versions.values())
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "ids,code", [(("a", "missing"), "USER_NOT_FOUND"), (("a", "admin"), "LAST_SSO_ADMIN")]
+)
+async def test_bulk_preflights_every_user_before_any_writes(
+    ids: tuple[str, ...], code: str
+) -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    original = store.types.copy()
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_types(
+            actor_user_id="admin", target_user_ids=ids, user_type="CUSTOMER", reason_code="TEST"
+        )
+    assert caught.value.code == code
+    assert store.types == original
+    assert not any(event.startswith("type:") for event in events)
+    assert not store.audits
+    assert events[-1] == "rollback"
+
+
+@pytest.mark.anyio
+async def test_bulk_admin_demotion_is_denied_even_with_another_admin() -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    store.types["z-admin"] = "EMPLOYEE"
+    store.central_admins.add("z-admin")
+    store.admin_count = 2
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_types(
+            actor_user_id="admin",
+            target_user_ids=("a", "z-admin"),
+            user_type=None,
+            reason_code="TEST",
+        )
+    assert caught.value.code == "SSO_ADMIN_MUST_BE_EMPLOYEE"
+    assert not any(event.startswith("type:") for event in events)
+
+
+@pytest.mark.anyio
+async def test_bulk_audit_failure_rolls_back_all_types_session_versions_and_audits() -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    original = store.types.copy()
+    store.fail_second_audit = True
+    with pytest.raises(RuntimeError, match="second audit failed"):
+        await subject.set_user_types(
+            actor_user_id="admin",
+            target_user_ids=("a", "b"),
+            user_type="EMPLOYEE",
+            reason_code="TEST",
+        )
+    assert "type:a" in events and "type:b" in events
+    assert store.types == original
+    assert all(value == 0 for value in store.versions.values())
+    assert not store.audits
+    assert events[-1] == "rollback"
+
+
+@pytest.mark.anyio
+async def test_bulk_rechecks_admin_under_policy_lock() -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    cast(BulkDirectory, subject._directory).authorized = False
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_types(
+            actor_user_id="admin", target_user_ids=("a",), user_type="EMPLOYEE", reason_code="TEST"
+        )
+    assert caught.value.code == "FORBIDDEN"
+    assert events == ["begin", "policy-lock", "authorize:admin", "rollback"]
+    assert store.types["a"] is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "ids", [(), ("a", "a"), (" a",), ("",), ("x" * 129,), tuple(str(i) for i in range(101))]
+)
+async def test_bulk_invalid_ids_are_rejected_before_database(ids: tuple[str, ...]) -> None:
+    events: list[str] = []
+    subject, _ = bulk_subject(events)
+    with pytest.raises(DomainError):
+        await subject.set_user_types(
+            actor_user_id="admin", target_user_ids=ids, user_type="EMPLOYEE", reason_code="TEST"
+        )
+    assert not events
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value,reason", [("ADMIN", "TEST"), ("EMPLOYEE", ""), ("EMPLOYEE", " ")])
+async def test_bulk_rejects_invalid_type_or_reason_before_database(value: str, reason: str) -> None:
+    events: list[str] = []
+    subject, _ = bulk_subject(events)
+    with pytest.raises(DomainError):
+        await subject.set_user_types(
+            actor_user_id="admin", target_user_ids=("a",), user_type=value, reason_code=reason
+        )
+    assert not events
+
+
+@pytest.mark.anyio
+async def test_bulk_accepts_hundred_users_without_implicit_role_grants() -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    ids = tuple(f"user-{i}" for i in range(100))
+    store.types.update(dict.fromkeys(ids))
+    store.versions.update(dict.fromkeys(ids, 0))
+    assert await subject.set_user_types(
+        actor_user_id="admin", target_user_ids=ids, user_type="EMPLOYEE", reason_code="TEST"
+    ) == (100, 0)
+    assert len(store.audits) == 100
+    assert all(store.versions[uid] == 1 for uid in ids)
+    assert "assign-role" not in events

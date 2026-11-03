@@ -42,7 +42,7 @@ def test_self_protection_guards_match_admin_routes() -> None:
 
     with pytest.raises(DomainError, match="cannot remove their own admin role"):
         assert_self_admin_role_removal_allowed(
-            "admin-1", "admin-1", AdminRoleProfile("role-1", "temis", "admin")
+            "admin-1", "admin-1", AdminRoleProfile("role-1", "sso", "admin")
         )
     assert_self_admin_role_removal_allowed(
         "admin-1", "admin-1", AdminRoleProfile("role-2", "temis", "user")

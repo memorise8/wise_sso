@@ -13,6 +13,7 @@ from wiseacct_sso.domain.users import DomainError, UserStatus
 type AuditOutcome = Literal["request", "success", "failure"]
 type AdminAuditEventType = Literal[
     "admin_user_status_changed",
+    "admin_user_type_changed",
     "admin_user_role_assigned",
     "admin_user_role_removed",
     "admin_user_sessions_revoked",
@@ -49,6 +50,7 @@ class AdminUserProfile:
     status: UserStatus
     created_at: datetime
     roles: tuple[AdminRoleProfile, ...]
+    user_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,8 +60,11 @@ class AdminUserListInput:
     status: UserStatus | None = None
     email: str | None = None
     role: str | None = None
+    user_type: str | None = None
 
     def __post_init__(self) -> None:
+        if self.user_type not in {None, "EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"}:
+            raise DomainError(400, "INVALID_REQUEST", "Invalid user type")
         _assert_page(self.page, self.page_size)
         if self.email is not None and not self.email.strip():
             raise DomainError(400, "INVALID_REQUEST", "Invalid request")
@@ -211,7 +216,7 @@ def assert_self_status_change_allowed(
 def assert_self_admin_role_removal_allowed(
     actor_user_id: str, target_user_id: str, role: AdminRoleProfile
 ) -> None:
-    if actor_user_id == target_user_id and role.service_key == "temis" and role.name == "admin":
+    if actor_user_id == target_user_id and role.service_key == "sso" and role.name == "admin":
         raise DomainError(403, "FORBIDDEN", "Admins cannot remove their own admin role")
 
 

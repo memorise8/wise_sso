@@ -24,6 +24,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 
+from wiseacct_sso.domain.users import UserType
+
 
 class UserStatus(StrEnum):
     PENDING_EMAIL_VERIFICATION = "PENDING_EMAIL_VERIFICATION"
@@ -60,6 +62,8 @@ User = Table(
     "User",
     metadata,
     Column("id", Text, nullable=False),
+    Column("ssoSessionVersion", Integer, nullable=False, server_default=text("0")),
+    Column("userType", Enum(UserType, name="UserType", native_enum=True, validate_strings=True)),
     Column("email", Text),
     Column("name", Text),
     Column("profileUrl", Text),
@@ -69,6 +73,7 @@ User = Table(
     Column("emailVerified", Boolean, nullable=False, server_default=text("false")),
     PrimaryKeyConstraint("id", name="User_pkey"),
     Index("User_email_key", "email", unique=True),
+    Index("User_userType_idx", "userType"),
 )
 
 PasswordCredential = Table(
