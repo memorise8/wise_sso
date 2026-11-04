@@ -100,6 +100,7 @@ def client_json(**overrides: object) -> dict[str, object]:
         "clientId": "cloudflare-access-dash",
         "redirectUris": ["https://team.cloudflareaccess.com/cdn-cgi/access/callback"],
         "clientSecretHash": _ARGON2ID,
+        "allowedUserTypes": ["EMPLOYEE"],
         "requiredRoles": [{"serviceKey": "agent-hub", "name": "user"}],
         "groupsServiceKeys": ["agent-hub"],
         "requirePkce": True,
@@ -428,3 +429,16 @@ async def test_oidc_opaque_access_token_is_digest_keyed_persistent_and_revocable
     assert first is not None and first.user_id == "user-1"
     assert await store.revoke(token)
     assert await store.get(token) is None
+
+
+def test_every_client_must_explicitly_declare_user_types() -> None:
+    from pydantic import ValidationError
+
+    value = client_json()
+    del value["allowedUserTypes"]
+    with pytest.raises(ValidationError):
+        OidcClientPolicy.model_validate(value)
+    assert OidcClientPolicy.model_validate(client_json()).sso_auto_login is True
+    assert OidcClientPolicy.model_validate(client_json(ssoAutoLogin=False)).sso_auto_login is False
+    with pytest.raises(ValidationError):
+        OidcClientPolicy.model_validate(client_json(ssoAutoLogin="false"))

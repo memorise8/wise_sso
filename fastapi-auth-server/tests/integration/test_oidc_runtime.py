@@ -142,6 +142,7 @@ def _runtime_environment(profile: OidcRuntimeProfile) -> dict[str, str]:
                         "clientId": profile.client_id,
                         "redirectUris": [profile.redirect_uri],
                         "clientSecretHash": CLIENT_SECRET_HASH,
+                        "allowedUserTypes": ["EMPLOYEE"],
                         "requiredRoles": [
                             {
                                 "serviceKey": profile.required_service,
@@ -320,6 +321,7 @@ async def _seed_password_user(
                 id=user_id,
                 email=email,
                 name=f"OIDC {suffix} User",
+                userType="EMPLOYEE",
                 status=status,
                 emailVerified=verified,
                 createdAt=now,
@@ -361,6 +363,7 @@ async def test_oidc_password_code_token_userinfo_and_revocation_runtime(
                 id=user_id,
                 email=email,
                 name="OIDC Runtime User",
+                userType="EMPLOYEE",
                 status=UserStatus.ACTIVE,
                 emailVerified=True,
                 createdAt=now,

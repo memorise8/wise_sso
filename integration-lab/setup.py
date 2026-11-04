@@ -86,6 +86,38 @@ if not (root / "tls.crt").exists():
     (root / "tls.key").chmod(0o600)
     (root / "tls.crt").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 print("Generated integration-lab/.local files. No existing .env files changed.")
-print(
-    "Local fixture credentials: integration-lab/.local/fixtures.json (do not publish)"
-)
+print("Local fixture credentials: integration-lab/.local/fixtures.json (do not publish)")
+
+# Separate local SMTP certificate: never replace the existing browser TLS material.
+# Python's default SSL context trusts this certificate via SSL_CERT_FILE in the lab overlay.
+if not (root / "smtp.crt").exists() or not (root / "smtp.key").exists():
+    smtp_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    smtp_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "mailpit")])
+    smtp_now = datetime.now(UTC)
+    smtp_cert = (
+        x509.CertificateBuilder()
+        .subject_name(smtp_name)
+        .issuer_name(smtp_name)
+        .public_key(smtp_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(smtp_now - timedelta(minutes=5))
+        .not_valid_after(smtp_now + timedelta(days=90))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+        .add_extension(x509.SubjectAlternativeName([x509.DNSName("mailpit")]), critical=False)
+        .sign(smtp_key, hashes.SHA256())
+    )
+    (root / "smtp.key").write_bytes(
+        smtp_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    (root / "smtp.key").chmod(0o600)
+    (root / "smtp.crt").write_bytes(smtp_cert.public_bytes(serialization.Encoding.PEM))
+    (root / "smtp.crt").chmod(0o644)
+# Preserve normal public CA trust for provider HTTP clients sharing this process.
+public_ca = Path("/etc/ssl/certs/ca-certificates.crt").read_bytes()
+(root / "smtp-ca-bundle.crt").write_bytes(public_ca + b"\n" + (root / "smtp.crt").read_bytes())
+(root / "smtp-ca-bundle.crt").chmod(0o644)
+print("Local SMTP certificate ready. Mail is captured locally, never forwarded.")

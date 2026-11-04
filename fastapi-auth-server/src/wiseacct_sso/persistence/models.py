@@ -309,3 +309,20 @@ UserRole = Table(
 )
 
 TABLES: Final[tuple[Table, ...]] = tuple(metadata.sorted_tables)
+
+EmployeeInvitation = Table(
+    "EmployeeInvitation",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("email", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("roles", JSONB, nullable=False),
+    Column("tokenHash", Text, nullable=False, unique=True),
+    Column("status", Text, nullable=False, server_default=text("'PENDING'")),
+    Column("expiresAt", timestamp_ms, nullable=False),
+    Column("deliveredAt", timestamp_ms),
+    Column("createdAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("updatedAt", timestamp_ms, nullable=False),
+    Index("EmployeeInvitation_email_idx", "email"),
+    Index("EmployeeInvitation_status_expiresAt_idx", "status", "expiresAt"),
+)

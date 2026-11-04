@@ -774,6 +774,7 @@ class SecurityHeadersMiddleware:
                         "/oauth2/session",
                         "/oauth2/admin/login",
                         "/oauth2/admin/dashboard",
+                        "/oauth2/invitations/accept",
                     }:
                         value = "same-origin"
                     headers[name] = (

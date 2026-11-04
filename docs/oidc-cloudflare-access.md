@@ -61,7 +61,7 @@ is claimed. Secret/code/token/verifier/state/nonce values must not appear in log
 | `OIDC_KAKAO_REDIRECT_URI` | Optional corresponding Kakao callback |
 
 Each client requires `clientId`, `redirectUris`, `clientSecretHash` (Argon2id PHC),
-`requiredRoles` (nonempty OR), and `groupsServiceKeys`. `requirePkce` defaults to true;
+`requiredRoles` (nonempty OR), `groupsServiceKeys`, and explicit `allowedUserTypes` (no default). `ssoAutoLogin` defaults to true and can be disabled per client. `requirePkce` defaults to true;
 `allowedScopes` defaults to `openid`, `email`, `profile`. Client IDs cannot overlap
 legacy client IDs or audiences. Callback queries cannot predefine code/state/error
 response fields. Existing callback query bytes otherwise remain unchanged.

@@ -1,0 +1,26 @@
+[
+  {
+    "clientId": "gitlab-temis",
+    "clientSecretHash": "REPLACE_WITH_ARGON2ID_HASH",
+    "redirectUris": ["https://gitlab.example.invalid/users/auth/openid_connect/callback"],
+    "allowedUserTypes": ["EMPLOYEE"],
+    "requiredRoles": [{"serviceKey":"gitlab","name":"user"}],
+    "groupsServiceKeys": ["gitlab"], "requirePkce": true, "ssoAutoLogin": true
+  },
+  {
+    "clientId": "agent-hub-dash",
+    "clientSecretHash": "REPLACE_WITH_ARGON2ID_HASH",
+    "redirectUris": ["https://hub.example.invalid/auth/callback"],
+    "allowedUserTypes": ["EMPLOYEE"],
+    "requiredRoles": [{"serviceKey":"agent-hub","name":"user"}],
+    "groupsServiceKeys": ["agent-hub"], "requirePkce": true, "ssoAutoLogin": true
+  },
+  {
+    "clientId": "fantra-oidc",
+    "clientSecretHash": "REPLACE_WITH_ARGON2ID_HASH",
+    "redirectUris": ["https://fantra.example.invalid/auth/callback"],
+    "allowedUserTypes": ["CUSTOMER","EMPLOYEE"],
+    "requiredRoles": [{"serviceKey":"temis","name":"user"}],
+    "groupsServiceKeys": ["temis"], "requirePkce": true, "ssoAutoLogin": true
+  }
+]

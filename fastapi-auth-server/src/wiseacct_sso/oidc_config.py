@@ -62,8 +62,9 @@ class OidcClientPolicy(BaseModel):
         alias="groupsServiceKeys", min_length=1, max_length=32
     )
     allowed_user_types: tuple[Literal["EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"], ...] = Field(
-        default=("EMPLOYEE",), alias="allowedUserTypes", min_length=1, max_length=3
+        alias="allowedUserTypes", min_length=1, max_length=3
     )
+    sso_auto_login: bool = Field(default=True, alias="ssoAutoLogin", strict=True)
     require_pkce: bool = Field(default=True, alias="requirePkce")
     allowed_scopes: tuple[NonEmptyString, ...] = Field(
         default=_DEFAULT_SCOPES, alias="allowedScopes", min_length=1, max_length=16

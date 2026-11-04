@@ -718,7 +718,11 @@ def test_admin_browser_mutations_need_same_origin_csrf_and_bounded_json() -> Non
     rig = admin_rig()
     admin_login(rig)
     csrf = admin_csrf(rig)
-    data = {"userIds": ["target"], "userType": "EMPLOYEE"}
+    data = {
+        "userIds": ["target"],
+        "userType": "EMPLOYEE",
+        "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE",
+    }
     url = "/oauth2/admin/api/users/type"
     for headers in (
         {},
@@ -955,3 +959,22 @@ async def test_live_admin_login_check_exercises_cookie_flow_without_tokens(
         monkeypatch.setenv(key, value)
     await module.main()
     assert capsys.readouterr().out.count("PASS:") == 7
+
+
+def test_client_can_disable_central_session_auto_login() -> None:
+    rig = Rig()
+    rig.login()
+    rig.service._clients = OidcClientRegistry(
+        tuple(
+            client.model_copy(update={"sso_auto_login": False})
+            if client.client_id == "staff"
+            else client
+            for client in rig.service._clients.clients
+        )
+    )
+    result = rig.authorize("staff", prompt="none")
+    assert "error=login_required" in result.headers["location"]
+    result = rig.authorize("staff")
+    assert result.headers["location"].startswith("/oauth2/login?")
+    # The other client still reuses the same session.
+    assert "code=" in rig.authorize("customer", prompt="none").headers["location"]

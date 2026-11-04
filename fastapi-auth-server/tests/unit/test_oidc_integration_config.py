@@ -10,6 +10,7 @@ def oidc_policy(**overrides: object) -> dict[str, object]:
         "clientId": "cloudflare-access-dash",
         "redirectUris": ["https://team.cloudflareaccess.com/cdn-cgi/access/callback"],
         "clientSecretHash": DUMMY_PASSWORD_HASH,
+        "allowedUserTypes": ["EMPLOYEE"],
         "requiredRoles": [{"serviceKey": "agent-hub", "name": "user"}],
         "groupsServiceKeys": ["agent-hub"],
         **overrides,

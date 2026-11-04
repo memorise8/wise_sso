@@ -21,6 +21,11 @@ class Element {
     this.children = [...children];
   }
 
+  setAttribute(name, value) {
+    this.attributes ??= {};
+    this.attributes[name] = String(value);
+  }
+
   addEventListener() {}
 
   querySelector() {

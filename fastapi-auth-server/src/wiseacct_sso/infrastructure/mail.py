@@ -19,12 +19,14 @@ SMTP_TIMEOUT_SECONDS = 10.0
 
 @dataclass(frozen=True, slots=True)
 class MailLinkMessage:
-    kind: Literal["email-verification", "password-reset"]
+    kind: Literal["email-verification", "password-reset", "employee-invitation"]
     to: str
     link: str
 
 
 class MailService(Protocol):
+    async def send_employee_invitation(self, *, to: str, invitation_url: str) -> None: ...
+
     async def send_email_verification(self, *, to: str, verification_url: str) -> None: ...
 
     async def send_password_reset(self, *, to: str, reset_url: str) -> None: ...
@@ -63,6 +65,9 @@ class FakeMailService:
     def __init__(self) -> None:
         self.messages: list[MailLinkMessage] = []
 
+    async def send_employee_invitation(self, *, to: str, invitation_url: str) -> None:
+        self.messages.append(MailLinkMessage("employee-invitation", to, invitation_url))
+
     async def send_email_verification(self, *, to: str, verification_url: str) -> None:
         self.messages.append(MailLinkMessage("email-verification", to, verification_url))
 
@@ -71,6 +76,9 @@ class FakeMailService:
 
 
 class DevMailService:
+    async def send_employee_invitation(self, *, to: str, invitation_url: str) -> None:
+        raise RuntimeError("Employee invitations require an SMTP mail provider")
+
     def __init__(self, logger: DevMailLogger | None = None) -> None:
         self._logger = logger or structlog.get_logger()
 
@@ -103,6 +111,15 @@ class SmtpMailService:
             "Reset your password",
             f"Use this link to reset your password: {reset_url}",
             _password_reset_html(reset_url),
+        )
+
+    async def send_employee_invitation(self, *, to: str, invitation_url: str) -> None:
+        await asyncio.to_thread(
+            self._send,
+            to,
+            "Employee invitation",
+            "Set your own password: " + invitation_url,
+            _verification_html(invitation_url),
         )
 
     def _send(self, to: str, subject: str, text: str, html: str) -> None:

@@ -121,6 +121,7 @@ async def main():
                 json={
                     "userIds": [uid("unapproved"), uid("employee")],
                     "userType": "CUSTOMER",
+                    "reasonCode": "LOCAL_LAB_BULK_PROTECTED_CHECK",
                 },
             )
             require(response, 409)

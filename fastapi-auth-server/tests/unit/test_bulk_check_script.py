@@ -75,6 +75,7 @@ async def test_live_bulk_script_restores_fixture_types_and_logs_out(
             return httpx.Response(200, json={"items": list(reversed(records))})
         assert request.method == "PATCH" and request.url.path == "/admin/users/type"
         data = json.loads(request.content)
+        assert data.get("reasonCode")
         if ids["employee"] in data["userIds"]:
             return httpx.Response(409, json={"error": {"code": "LAST_SSO_ADMIN"}})
         changed = [uid for uid in data["userIds"] if types[uid] != data["userType"]]

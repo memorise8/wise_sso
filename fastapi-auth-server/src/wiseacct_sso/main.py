@@ -37,6 +37,7 @@ from wiseacct_sso.api.routes.users import build_users_router
 from wiseacct_sso.api.staticfiles import ImmutableStaticFiles
 from wiseacct_sso.application.admin import Phase6AdminService
 from wiseacct_sso.application.auth import Phase5AuthService
+from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import OidcService
 from wiseacct_sso.config import Settings, get_settings
 from wiseacct_sso.domain.auth import PasswordPolicy
@@ -273,6 +274,15 @@ def create_runtime_app() -> FastAPI:
             service=oidc_service,
             portal_service=oidc_service,
             admin_services=phase6_services,
+            invitation_service=EmployeeInvitationService(
+                database=runtime_database,
+                admin=phase6_services,
+                mail=mail_service,
+                origin=settings.oidc_public_origin,
+                policy=PasswordPolicy(
+                    min_length=settings.password_min_length, allowed_email_domain=None
+                ),
+            ),
             public_origin=settings.oidc_public_origin,
             providers=tuple(
                 provider

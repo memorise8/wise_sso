@@ -36,7 +36,7 @@ def test_role_filter_matches_express_one_or_two_part_grammar() -> None:
 
 
 def test_self_protection_guards_match_admin_routes() -> None:
-    with pytest.raises(DomainError, match="cannot suspend or delete"):
+    with pytest.raises(DomainError, match="must keep their own account active"):
         assert_self_status_change_allowed("admin-1", "admin-1", UserStatus.SUSPENDED)
     assert_self_status_change_allowed("admin-1", "admin-1", UserStatus.ACTIVE)
 
@@ -105,3 +105,10 @@ def test_retention_cutoff_is_strictly_configured_in_whole_positive_days() -> Non
     for invalid in (0, -1, True):
         with pytest.raises(AuditRetentionCleanupConfigurationError):
             audit_retention_cutoff(now=NOW, retention_days=invalid)
+
+
+@pytest.mark.parametrize("status", [s for s in UserStatus if s is not UserStatus.ACTIVE])
+def test_self_admin_cannot_enter_any_nonactive_state(status: UserStatus) -> None:
+    with pytest.raises(DomainError) as caught:
+        assert_self_status_change_allowed("admin", "admin", status)
+    assert caught.value.code == "FORBIDDEN"

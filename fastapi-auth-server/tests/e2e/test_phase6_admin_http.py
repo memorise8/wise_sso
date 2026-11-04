@@ -973,7 +973,7 @@ def test_mutations_map_defaults_details_and_results(
             "/admin/users/admin-user/status",
             "PATCH",
             {"status": "DELETED"},
-            "Admins cannot suspend or delete their own account",
+            "Admins must keep their own account active",
         ),
         (
             "/admin/users/admin-user/revoke-sessions",
@@ -1098,7 +1098,7 @@ def test_bulk_type_endpoint_uses_authenticated_actor(
     response = client.patch(
         f"{prefix}/users/type",
         headers={"authorization": "Bearer access-token"},
-        json={"userIds": ["a", "b"], "userType": kind},
+        json={"userIds": ["a", "b"], "userType": kind, "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE"},
     )
     assert response.status_code == 200
     assert response.json() == {"requestedCount": 2, "changedCount": 1, "unchangedCount": 1}
@@ -1117,23 +1117,37 @@ def test_bulk_type_endpoint_uses_authenticated_actor(
     "body",
     [
         {},
-        {"userIds": [], "userType": "EMPLOYEE"},
-        {"userIds": ["a", "a"], "userType": "EMPLOYEE"},
+        {"userIds": [], "userType": "EMPLOYEE", "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE"},
+        {
+            "userIds": ["a", "a"],
+            "userType": "EMPLOYEE",
+            "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE",
+        },
         {"userIds": ["a"]},
         {"userIds": ["a"], "userType": "ADMIN"},
         {"userIds": ["a"], "userType": "EMPLOYEE", "extra": True},
         {"userIds": ["a"], "userType": "EMPLOYEE", "reasonCode": " "},
-        {"userIds": [str(i) for i in range(101)], "userType": "EMPLOYEE"},
-        {"userIds": [" a"], "userType": "EMPLOYEE"},
-        {"userIds": [True], "userType": "EMPLOYEE"},
-        {"userIds": ["a" * 129], "userType": "EMPLOYEE"},
+        {
+            "userIds": [str(i) for i in range(101)],
+            "userType": "EMPLOYEE",
+            "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE",
+        },
+        {"userIds": [" a"], "userType": "EMPLOYEE", "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE"},
+        {"userIds": [True], "userType": "EMPLOYEE", "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE"},
+        {
+            "userIds": ["a" * 129],
+            "userType": "EMPLOYEE",
+            "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE",
+        },
     ],
 )
 def test_bulk_type_endpoint_rejects_invalid_body(
     client: TestClient, services: FakePhase6Services, body: dict[str, object]
 ) -> None:
     response = client.patch(
-        "/manage-api/users/type", headers={"authorization": "Bearer access-token"}, json=body
+        "/manage-api/users/type",
+        headers={"authorization": "Bearer access-token"},
+        json={"reasonCode": "TEST", **body},
     )
     assert response.status_code == 400
     assert not any(call[0] == "set_types" for call in services.calls)
@@ -1142,7 +1156,7 @@ def test_bulk_type_endpoint_rejects_invalid_body(
 def test_bulk_type_endpoint_rejects_unauthenticated_and_non_admin_requests(
     client: TestClient, services: FakePhase6Services
 ) -> None:
-    body = {"userIds": ["a"], "userType": "EMPLOYEE"}
+    body = {"userIds": ["a"], "userType": "EMPLOYEE", "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE"}
     assert client.patch("/admin/users/type", json=body).status_code == 401
     services.authorization_error = DomainError(403, "FORBIDDEN", "Admin required")
     assert (
@@ -1158,7 +1172,11 @@ def test_bulk_type_compatibility_normalizes_case_and_rejects_query_and_media_typ
     client: TestClient, services: FakePhase6Services
 ) -> None:
     headers = {"authorization": "Bearer access-token"}
-    body = {"userIds": ["a", "b"], "userType": "EMPLOYEE"}
+    body = {
+        "userIds": ["a", "b"],
+        "userType": "EMPLOYEE",
+        "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE",
+    }
     assert client.patch("/MANAGE-API/USERS/TYPE/", json=body, headers=headers).status_code == 200
     services.calls.clear()
     assert (
@@ -1189,7 +1207,20 @@ def test_bulk_response_is_no_store_in_runtime_app(
         response = client.patch(
             f"{prefix}/users/type",
             headers={"authorization": "Bearer access-token"},
-            json={"userIds": ["a", "b"], "userType": "EMPLOYEE"},
+            json={
+                "userIds": ["a", "b"],
+                "userType": "EMPLOYEE",
+                "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE",
+            },
         )
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
+
+
+def test_bulk_type_change_requires_reason_code(client: TestClient) -> None:
+    response = client.patch(
+        "/admin/users/type",
+        headers={"authorization": "Bearer access-token"},
+        json={"userIds": ["user"], "userType": "EMPLOYEE"},
+    )
+    assert response.status_code == 400

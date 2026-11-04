@@ -21,6 +21,7 @@ def _client(
         "clientId": client_id,
         "redirectUris": [redirect_uri],
         "clientSecretHash": DUMMY_PASSWORD_HASH,
+        "allowedUserTypes": ["EMPLOYEE"],
         "requiredRoles": [{"serviceKey": service_key, "name": "user"}],
         "groupsServiceKeys": [service_key],
         "requirePkce": True,

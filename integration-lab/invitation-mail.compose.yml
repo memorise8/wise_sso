@@ -1,0 +1,32 @@
+# Opt-in local invitation mailbox. Not the deferred customer signup package.
+services:
+  app:
+    environment:
+      MAIL_PROVIDER: smtp
+      MAIL_FROM: "Wise Lab <no-reply@wise-lab.invalid>"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USERNAME: ""
+      SMTP_PASSWORD: ""
+      SSL_CERT_FILE: /run/lab-smtp-ca-bundle.crt
+    volumes:
+      - ./integration-lab/.local/smtp-ca-bundle.crt:/run/lab-smtp-ca-bundle.crt:ro
+  mailpit:
+    image: axllent/mailpit:v1.32.0
+    environment:
+      MP_SMTP_TLS_CERT: /certs/smtp.crt
+      MP_SMTP_TLS_KEY: /certs/smtp.key
+      MP_SMTP_REQUIRE_STARTTLS: "true"
+      MP_SMTP_ALLOWED_RECIPIENTS: '@wise-lab\.invalid$$'
+      MP_DISABLE_VERSION_CHECK: "true"
+      MP_MAX_MESSAGES: "100"
+    ports: ["127.0.0.1:8025:8025"]
+    volumes:
+      - ./integration-lab/.local/smtp.crt:/certs/smtp.crt:ro
+      - ./integration-lab/.local/smtp.key:/certs/smtp.key:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8025/readyz"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+    networks: [oauth-network]

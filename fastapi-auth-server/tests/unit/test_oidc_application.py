@@ -208,6 +208,7 @@ def _client() -> OidcClientPolicy:
             "clientId": "cloudflare-access-dash",
             "redirectUris": ["https://access.example.test/callback"],
             "clientSecretHash": DUMMY_PASSWORD_HASH,
+            "allowedUserTypes": ["EMPLOYEE"],
             "requiredRoles": [{"serviceKey": "agent-hub", "name": "user"}],
             "groupsServiceKeys": ["agent-hub"],
             "requirePkce": False,

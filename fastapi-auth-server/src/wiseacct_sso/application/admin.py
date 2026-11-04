@@ -331,6 +331,10 @@ class Phase6AdminService:
     ) -> AssignRoleResult:
         assert_user_id(target_user_id)
         assert_role_input(service_key, name)
+        if service_key == "temis" and name == "admin":
+            raise DomainError(
+                403, "LEGACY_ADMIN_ROLE_DISABLED", "New temis:admin grants are disabled"
+            )
         created_at = utc_now_ms()
 
         async def mutate(connection: AsyncConnection) -> AssignRoleResult:

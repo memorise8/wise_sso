@@ -1,0 +1,10 @@
+<!doctype html><html lang="ko"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>직원 초대 수락</title><link rel="stylesheet" href="/oauth2/assets/login.css">
+<main><h1>직원 계정 비밀번호 설정</h1><p>초대 링크는 72시간 동안 한 번만 사용할 수 있습니다.</p>
+<form data-invitation-accept>
+<input type="hidden" name="csrf_token" value="__INVITATION_CSRF__">
+<label>새 비밀번호 <input type="password" name="password" autocomplete="new-password" maxlength="1024" required></label>
+<label>비밀번호 확인 <input type="password" name="confirmation" autocomplete="new-password" maxlength="1024" required></label>
+<button type="submit">직원 계정 활성화</button></form><p data-invitation-notice role="status"></p></main>
+<script src="/assets/employee-invitation.js" defer></script></html>

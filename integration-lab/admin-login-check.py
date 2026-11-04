@@ -135,7 +135,7 @@ async def main():
                 for item in response.json()["items"]
                 if item["email"] == fixtures["unapproved"]["email"]
             )
-            body = {"userIds": [row["id"]], "userType": row["userType"]}
+            body = {"userIds": [row["id"]], "userType": row["userType"], "reasonCode": "ADMIN_BULK_USER_TYPE_CHANGE"}
             require(
                 await client.patch(
                     ROOT + "/api/users/type", headers={"origin": ORIGIN}, json=body

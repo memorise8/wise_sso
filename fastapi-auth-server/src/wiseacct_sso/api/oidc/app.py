@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from starlette.exceptions import HTTPException as StarletteHttpException
 
 from wiseacct_sso.api.dependencies import Phase6Services
+from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import (
     AuthorizationRequest,
     AuthorizationResult,
@@ -136,6 +137,7 @@ def build_oidc_app(
     public_origin: str,
     providers: tuple[OAuthProvider, ...] = (),
     static_root: Path | None = None,
+    invitation_service: EmployeeInvitationService | None = None,
     portal_service: OidcService | None = None,
     admin_services: Phase6Services | None = None,
 ) -> FastAPI:
@@ -499,6 +501,7 @@ def build_oidc_app(
             app,
             service=portal_service,
             admin_services=admin_services,
+            invitation_service=invitation_service,
             origin=origin,
             static_root=assets.parent,
             login_template=login_template,

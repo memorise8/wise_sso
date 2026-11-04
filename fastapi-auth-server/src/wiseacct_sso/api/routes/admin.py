@@ -140,7 +140,7 @@ class BulkUserTypeBody(UserTypeBody):
         alias="userIds", min_length=1, max_length=100
     )
     reason_code: Annotated[str, BeforeValidator(_strip), Field(min_length=1, max_length=128)] = (
-        Field(default="ADMIN_BULK_USER_TYPE_CHANGE", alias="reasonCode")
+        Field(alias="reasonCode")
     )
 
     @field_validator("user_ids")

@@ -187,3 +187,19 @@ model UserRole {
 
   @@unique([userId, roleId])
 }
+
+model EmployeeInvitation {
+  id          String   @id @default(uuid())
+  email       String
+  name        String
+  roles       Json
+  tokenHash   String   @unique
+  status      String   @default("PENDING")
+  expiresAt   DateTime
+  deliveredAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([email])
+  @@index([status, expiresAt])
+}

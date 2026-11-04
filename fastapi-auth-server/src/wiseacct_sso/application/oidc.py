@@ -272,6 +272,7 @@ class OidcService:
             clear_session = True
         can_reuse = (
             session is not None
+            and client.sso_auto_login
             and request.prompt in (None, "none")
             and request.max_age != 0
             and (

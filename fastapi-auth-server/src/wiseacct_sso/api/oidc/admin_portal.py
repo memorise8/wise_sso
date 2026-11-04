@@ -13,6 +13,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from wiseacct_sso.api.dependencies import Phase6Services
 from wiseacct_sso.api.errors import error_response, install_error_handlers
 from wiseacct_sso.api.routes.admin import build_admin_router
+from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import AdminBrowserIdentity, OidcService, OidcServiceError
 from wiseacct_sso.domain.users import DomainError
 
@@ -142,6 +143,7 @@ def register_admin_portal(
     origin: str,
     static_root: Path,
     login_template: str,
+    invitation_service: EmployeeInvitationService | None = None,
 ) -> None:
     template = (static_root / "admin-dashboard.html").read_text()
     if template.count(_AUTH_MARKER) != 1 or template.count(_AUTH_END) != 1:
@@ -166,6 +168,10 @@ def register_admin_portal(
     api.state.admin_browser_actor = browser_actor
     install_error_handlers(api)
     api.include_router(build_admin_router(prefix=""))
+    if invitation_service is not None:
+        from .invitations import register_invitation_routes
+
+        register_invitation_routes(app, api, invitation_service, origin, static_root)
     app.mount(ADMIN_API, AdminBrowserMiddleware(api, service=service, origin=origin))
 
     @app.get(ADMIN_LOGIN, include_in_schema=False)
@@ -263,7 +269,21 @@ def register_admin_portal(
         )
         before, _, rest = template.partition(_AUTH_MARKER)
         _, _, after = rest.partition(_AUTH_END)
-        page = (before + panel + after).replace(
+        invitations = ""
+        if invitation_service is not None:
+            invitations = (
+                "<section><h2>직원 초대</h2><form data-employee-invite>"
+                '<label>이메일 <input name="email" type="email" maxlength="320" required></label>'
+                '<label>이름 <input name="name" maxlength="200" required></label>'
+                '<label>서비스 역할 (쉼표 구분) <input name="roles" '
+                'placeholder="gitlab:user,agent-hub:user" maxlength="2048" required></label>'
+                '<button type="submit">초대 메일 보내기</button></form>'
+                '<button type="button" data-invitation-refresh>초대 목록 조회</button>'
+                '<p data-invitation-status role="status"></p>'
+                '<div data-invitation-list></div></section>'
+                '<script src="/assets/admin-invitations.js" defer></script>'
+            )
+        page = (before + panel + invitations + after).replace(
             '<meta name="admin-api-base" content="/manage-api">',
             f'<meta name="admin-api-base" content="{ADMIN_API}">'
             '<meta name="admin-auth-mode" content="session">'

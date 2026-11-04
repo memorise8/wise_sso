@@ -434,7 +434,7 @@ async def test_missing_role_remove_is_an_idempotent_noop() -> None:
 async def test_self_protection_runs_before_mutation_io() -> None:
     subject = service([])
 
-    with pytest.raises(DomainError, match="cannot suspend"):
+    with pytest.raises(DomainError, match="must keep their own account active"):
         await subject.set_user_status(
             actor_user_id="admin",
             target_user_id="admin",
@@ -836,3 +836,31 @@ async def test_bulk_accepts_hundred_users_without_implicit_role_grants() -> None
     assert len(store.audits) == 100
     assert all(store.versions[uid] == 1 for uid in ids)
     assert "assign-role" not in events
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", ["PENDING_EMAIL_VERIFICATION", "SUSPENDED", "DELETED"])
+async def test_last_admin_cannot_enter_any_nonactive_state(status: str) -> None:
+    events: list[str] = []
+    subject = service(events)
+    cast(FakeMutations, subject._mutations).admin_count = 1
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_status(
+            actor_user_id="admin", target_user_id="user", status=status, reason_code="TEST"
+        )
+    assert caught.value.code == "LAST_SSO_ADMIN"
+    assert events[-1] == "rollback"
+
+
+@pytest.mark.anyio
+async def test_new_temis_admin_assignment_is_rejected_before_io() -> None:
+    subject = service([])
+    with pytest.raises(DomainError) as caught:
+        await subject.assign_role(
+            actor_user_id="admin",
+            target_user_id="user",
+            service_key="temis",
+            name="admin",
+            reason_code="TEST",
+        )
+    assert caught.value.code == "LEGACY_ADMIN_ROLE_DISABLED"

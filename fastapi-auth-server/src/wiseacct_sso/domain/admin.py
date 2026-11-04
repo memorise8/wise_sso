@@ -12,6 +12,11 @@ from wiseacct_sso.domain.users import DomainError, UserStatus
 
 type AuditOutcome = Literal["request", "success", "failure"]
 type AdminAuditEventType = Literal[
+    "employee_invitation_created",
+    "employee_invitation_resent",
+    "employee_invitation_cancelled",
+    "employee_invitation_accepted",
+    "employee_invitation_delivery_failed",
     "admin_user_status_changed",
     "admin_user_type_changed",
     "admin_user_role_assigned",
@@ -209,8 +214,8 @@ def assert_self_status_change_allowed(
     actor_user_id: str, target_user_id: str, status: str | UserStatus
 ) -> None:
     parsed = parse_user_status(status)
-    if actor_user_id == target_user_id and parsed in {UserStatus.SUSPENDED, UserStatus.DELETED}:
-        raise DomainError(403, "FORBIDDEN", "Admins cannot suspend or delete their own account")
+    if actor_user_id == target_user_id and parsed is not UserStatus.ACTIVE:
+        raise DomainError(403, "FORBIDDEN", "Admins must keep their own account active")
 
 
 def assert_self_admin_role_removal_allowed(
@@ -226,7 +231,7 @@ def assert_self_session_revoke_allowed(actor_user_id: str, target_user_id: str) 
 
 
 def should_revoke_for_status(status: str | UserStatus) -> bool:
-    return parse_user_status(status) in {UserStatus.SUSPENDED, UserStatus.DELETED}
+    return parse_user_status(status) is not UserStatus.ACTIVE
 
 
 def _utf16_units(value: str) -> int:

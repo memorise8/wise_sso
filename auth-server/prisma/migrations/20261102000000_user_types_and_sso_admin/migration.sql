@@ -1,4 +1,4 @@
--- Additive schema change, with an atomic, audited administrator cutover.
+-- Additive schema change, with an atomic, audited additive administrator grant.
 BEGIN;
 CREATE TYPE "UserType" AS ENUM ('EMPLOYEE', 'CUSTOMER');
 ALTER TABLE "User" ADD COLUMN "userType" "UserType";
@@ -16,7 +16,7 @@ WITH employees AS (
   ) RETURNING id
 )
 INSERT INTO "AuditLog" (id,"eventType",outcome,"userId","targetUserId","reasonCode","detailsJson","createdAt")
-SELECT gen_random_uuid()::text,'admin_user_type_changed','success',id,id,'POLICY_MIGRATION',
+SELECT gen_random_uuid()::text,'admin_user_type_changed','success',NULL,id,'POLICY_MIGRATION',
        '{"previousUserType":null,"userType":"EMPLOYEE"}'::jsonb,CURRENT_TIMESTAMP FROM employees;
 
 INSERT INTO "Role" (id,"serviceKey",name)
@@ -32,15 +32,7 @@ WITH old_admins AS (
  ON CONFLICT ("userId","roleId") DO NOTHING RETURNING "userId"
 )
 INSERT INTO "AuditLog" (id,"eventType",outcome,"userId","targetUserId","reasonCode","detailsJson","createdAt")
-SELECT gen_random_uuid()::text,'admin_user_role_assigned','success',"userId","userId",'POLICY_MIGRATION',
+SELECT gen_random_uuid()::text,'admin_user_role_assigned','success',NULL,"userId",'POLICY_MIGRATION',
        '{"serviceKey":"sso","roleName":"admin"}'::jsonb,CURRENT_TIMESTAMP FROM migrated;
 
--- Keep the old Role row for service-role/history compatibility; remove its grants.
-WITH removed AS (
- DELETE FROM "UserRole" ur USING "Role" r
- WHERE ur."roleId"=r.id AND r."serviceKey"='temis' AND r.name='admin' RETURNING ur."userId"
-)
-INSERT INTO "AuditLog" (id,"eventType",outcome,"userId","targetUserId","reasonCode","detailsJson","createdAt")
-SELECT gen_random_uuid()::text,'admin_user_role_removed','success',"userId","userId",'POLICY_MIGRATION',
-       '{"serviceKey":"temis","roleName":"admin"}'::jsonb,CURRENT_TIMESTAMP FROM removed;
 COMMIT;
