@@ -108,7 +108,7 @@ ops/user-types/apply.sql은 운영자가 검토 후 별도로 실행할 쓰기 S
 - 보안 번들 관련 security_gate/downstream: 원본 2b65126과 수정본 모두 81 passed. 피드백의 보안 번들 실패는 현재 환경에서 재현하지 못했다. 정확한 테스트 이름과 실패 traceback이 필요하며 미확인으로 남긴다. 검증 기준이나 보안 gate를 완화하지 않았다.
 - mypy: 145개 소스 파일 통과. 변경 Python Ruff, JS/bash 문법 검사 통과. Prisma 6.19.3 validate 통과.
 - PGlite 임시 WASM PostgreSQL에서 새 마이그레이션·이전 초안 복구·읽기 전용 preview·분류 멱등성을 검사했다. 직원 초대 서비스가 생성한 SQL도 replay하여 EMPLOYEE·ACTIVE·역할/FK를 확인했다. 실제 운영 조회 결과가 아니다.
-- 실제 Docker/PostgreSQL/SMTP/브라우저 초대 검증과 운영 설정 확인은 위 절차로 수행해야 한다. 여기서 운영 배포나 원격 PR 게시를 수행하지 않았다.
+- 실제 로컬 Docker/PostgreSQL/SMTP에서 마이그레이션과 자동 검사 27개를 통과했고, 직원 초대 브라우저 수동 검증도 완료했다. 운영 환경·실제 서비스 확인은 아직이며 운영 배포나 원격 PR 게시는 수행하지 않았다.
 
 참고: https://docs.prisma.io/docs/orm/v6/prisma-migrate/workflows/development-and-production
 
@@ -126,3 +126,21 @@ node integration-lab/tests/review-migrations.mjs
 ```
 
 합성 SQL export에는 실제 비밀번호/원문 초대 token이 없고 가짜 hash와 합성 계정만 있다. 기존 초안 비교를 위해 Git의 2b65126 커밋이 필요하다. 실제 SMTP·Docker·동시성 검증을 대체하지 않는다.
+
+
+## 2026-11-05 로컬 검증 완료
+
+사용자 로컬에서 직원 초대 테이블 및 이전 초안의 legacy 역할 복구 마이그레이션 2개를 적용했다. 실제 Docker·PostgreSQL·Redis·로컬 SMTP 환경의 자동 검사 27개가 통과했다.
+
+| 검사 | 통과 |
+| --- | ---: |
+| 직원 초대 | 6 |
+| 관리자 브라우저 로그인 | 7 |
+| 사용자 유형 일괄 변경 | 5 |
+| 사용자 유형·관리자 정책 | 3 |
+| 중앙 SSO 세션 | 6 |
+| 합계 | 27 |
+
+관리자 화면의 신규 직원 초대 → 로컬 메일함 수신 → 초대 링크에서 직원이 직접 비밀번호 설정 → 직원 더미 로그인까지 브라우저에서 확인했다. 재발송·이전 링크 거부·일회용 수락·취소·감사 기록은 자동 검사로 확인했다. 72시간 만료 경계는 개발 회귀 검사로 확인했으며 실제 72시간을 기다린 검사는 아니다.
+
+운영 DB 사용자 분류 건수·샘플은 미조회다. 보안 번들 실패 traceback과 실제 Fantra/GitLab/업무 대시보드 연동은 미확인이다. 고객 가입 패키지는 계속 미적용·보류다. 이 로컬 검증을 운영 배포 완료로 취급하지 않는다.
