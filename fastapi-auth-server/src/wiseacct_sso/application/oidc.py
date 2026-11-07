@@ -666,7 +666,7 @@ class OidcService:
             name=user.name,
             roles=tuple(Role(role.service_key, role.name) for role in user.roles),
         )
-        if not has_required_role(identity, client):
+        if not client.allow_without_required_role and not has_required_role(identity, client):
             return None, "OIDC_REQUIRED_ROLE_MISSING"
         try:
             project_groups(identity, client)

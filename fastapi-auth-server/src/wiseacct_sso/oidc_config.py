@@ -61,6 +61,7 @@ class OidcClientPolicy(BaseModel):
     groups_service_keys: tuple[NonEmptyString, ...] = Field(
         alias="groupsServiceKeys", min_length=1, max_length=32
     )
+    allow_without_required_role: bool = Field(default=False, alias="allowWithoutRequiredRole")
     require_pkce: bool = Field(default=True, alias="requirePkce")
     allowed_scopes: tuple[NonEmptyString, ...] = Field(
         default=_DEFAULT_SCOPES, alias="allowedScopes", min_length=1, max_length=16

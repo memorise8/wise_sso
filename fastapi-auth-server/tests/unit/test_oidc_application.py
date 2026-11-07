@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -15,6 +16,7 @@ from wiseacct_sso.application.oidc import (
     TokenExchangeInput,
     _url_with_query,
 )
+from wiseacct_sso.domain.oidc import project_groups
 from wiseacct_sso.infrastructure.oidc_state import (
     OidcAuthorizationCodeStore,
     OidcAuthorizationTransaction,
@@ -201,7 +203,7 @@ class FakeRedisLimiter:
         return self.count
 
 
-def _client() -> OidcClientPolicy:
+def _client(*, allow_without_required_role: bool = False) -> OidcClientPolicy:
     return OidcClientPolicy.model_validate(
         {
             "clientId": "cloudflare-access-dash",
@@ -209,6 +211,7 @@ def _client() -> OidcClientPolicy:
             "clientSecretHash": DUMMY_PASSWORD_HASH,
             "requiredRoles": [{"serviceKey": "agent-hub", "name": "user"}],
             "groupsServiceKeys": ["agent-hub"],
+            "allowWithoutRequiredRole": allow_without_required_role,
             "requirePkce": False,
         }
     )
@@ -319,6 +322,31 @@ async def test_token_exchange_rechecks_current_role_and_audits_denial() -> None:
     assert access.created == 0
     assert audit.events[0].reason_code == "OIDC_REQUIRED_ROLE_MISSING"
     assert audit.events[0].details_json == {"clientId": "cloudflare-access-dash"}
+
+
+def test_required_role_is_enforced_unless_client_opts_out() -> None:
+    service, _, _, _ = build_fake_oidc_service()
+    assert _client().allow_without_required_role is False
+
+    denied, reason = service._eligible_identity(_user(authorized=False), _client())
+    assert denied is None
+    assert reason == "OIDC_REQUIRED_ROLE_MISSING"
+
+    opted_out = _client(allow_without_required_role=True)
+    identity, reason = service._eligible_identity(_user(authorized=False), opted_out)
+    assert reason is None
+    assert identity is not None
+    assert project_groups(identity, opted_out) == ()
+
+
+def test_opt_out_still_requires_active_verified_user() -> None:
+    service, _, _, _ = build_fake_oidc_service()
+    opted_out = _client(allow_without_required_role=True)
+    unverified = replace(_user(authorized=False), email_verified=False)
+    suspended = replace(_user(authorized=False), status=UserStatus.SUSPENDED)
+
+    assert service._eligible_identity(unverified, opted_out) == (None, "OIDC_EMAIL_UNVERIFIED")
+    assert service._eligible_identity(suspended, opted_out) == (None, "OIDC_USER_INACTIVE")
 
 
 @pytest.mark.anyio
