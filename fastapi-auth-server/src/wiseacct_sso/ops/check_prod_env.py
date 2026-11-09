@@ -19,7 +19,7 @@ def validate_policy(settings: Settings) -> None:
         client = clients.get(identifier)
         if (
             client is None
-            or set(client.allowed_user_types) != types
+            or set(client.allowed_user_types or ()) != types
             or {(r.service_key, r.name) for r in client.required_roles} != roles
             or set(client.groups_service_keys) != {key for key, _ in roles}
         ):

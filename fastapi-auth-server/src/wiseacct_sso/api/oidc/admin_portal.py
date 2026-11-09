@@ -280,7 +280,7 @@ def register_admin_portal(
                 '<button type="submit">초대 메일 보내기</button></form>'
                 '<button type="button" data-invitation-refresh>초대 목록 조회</button>'
                 '<p data-invitation-status role="status"></p>'
-                '<div data-invitation-list></div></section>'
+                "<div data-invitation-list></div></section>"
                 '<script src="/assets/admin-invitations.js" defer></script>'
             )
         page = (before + panel + invitations + after).replace(

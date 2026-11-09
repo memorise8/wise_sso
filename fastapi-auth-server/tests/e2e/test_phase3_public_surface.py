@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -124,18 +125,22 @@ def test_static_copies_are_byte_identical_and_served_with_express_cache_contract
     for relative in STATIC_FILES:
         assert (FASTAPI_STATIC / relative).read_bytes() == (EXPRESS_PUBLIC / relative).read_bytes()
 
+    # The portal is rendered per request so unconfigured social buttons are dropped.
     portal = client.get("/login")
     assert portal.status_code == 200
-    assert portal.content == (EXPRESS_PUBLIC / "auth-portal.html").read_bytes()
-    assert portal.headers["cache-control"] == "public, max-age=0"
+    template = (EXPRESS_PUBLIC / "auth-portal.html").read_text()
+    unconfigured = r'<a\b[^>]*href="/auth/(?:naver|kakao)"[^>]*>.*?</a>'
+    assert portal.text == re.sub(unconfigured, "", template, flags=re.DOTALL)
+    assert 'href="/auth/google"' in portal.text
+    assert portal.headers["cache-control"] == "no-store"
     assert client.get("/login?filename=../../config.py").content == portal.content
 
     dashboard = client.get("/manage/dashboard")
     assert dashboard.status_code == 200
     assert dashboard.content == (FASTAPI_STATIC / "admin-dashboard.html").read_bytes()
-    assert b"/assets/admin-dashboard.js?v=20260901a" in dashboard.content
+    assert b"/assets/admin-dashboard.js?v=20261103-session" in dashboard.content
 
-    for path, response in (("/login", portal), ("/manage/dashboard", dashboard)):
+    for path, response in (("/manage/dashboard", dashboard),):
         assert response.headers["etag"]
         assert response.headers["last-modified"]
         for conditional_headers in (

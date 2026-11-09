@@ -232,6 +232,7 @@ class Rig:
                     "allowedUserTypes": ["EMPLOYEE"]
                     if kind == "staff"
                     else ["EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"],
+                    "ssoAutoLogin": True,
                 }
             )
             for kind in ("customer", "staff")

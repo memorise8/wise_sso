@@ -1,3 +1,6 @@
+const isLocalTestOrigin = () =>
+  window.location.hostname === "127.0.0.1" ||
+  window.location.hostname === "localhost";
 // allow: SIZE_OK - Temporarily kept intact for P0 auth hardening because storage, callback, and login flows share browser state and QA harness coverage; split after P0 frontend cleanup.
 const pageByPath = new Map([
   ["/", "login"],
@@ -12,10 +15,15 @@ const accessTokenStorageKey = "wise_sso_access_token";
 const legacyRefreshTokenStorageKey = "wise_sso_refresh_token";
 const browserTokenUrlParams = ["accessToken", "refreshToken", "access_token", "refresh_token"];
 
-const relyingClient = {
-  clientId: "temis",
-  redirectUri: "https://financenow.kr/auth/callback"
-};
+const relyingClient = isLocalTestOrigin()
+  ? {
+      clientId: "oauth-test",
+      redirectUri: `${window.location.origin}/auth/callback`
+    }
+  : {
+      clientId: "temis",
+      redirectUri: "https://financenow.kr/auth/callback"
+    };
 
 const oauthSessionKeys = {
   state: "wise_sso_oauth_state",
@@ -270,10 +278,13 @@ const startOAuthLogin = async (provider) => {
   window.location.assign(startUrl.toString());
 };
 
-for (const link of document.querySelectorAll("a[href='/auth/google']")) {
+for (const link of document.querySelectorAll(
+  "a[href='/auth/google'], a[href='/auth/naver'], a[href='/auth/kakao']"
+)) {
   link.addEventListener("click", (event) => {
     event.preventDefault();
-    void startOAuthLogin("google").catch((error) => {
+    const provider = link.getAttribute("href").split("/").pop();
+    void startOAuthLogin(provider).catch((error) => {
       setNotice("error", error instanceof Error ? error.message : "소셜 로그인을 시작하지 못했습니다.");
     });
   });

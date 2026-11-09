@@ -431,14 +431,15 @@ async def test_oidc_opaque_access_token_is_digest_keyed_persistent_and_revocable
     assert await store.get(token) is None
 
 
-def test_every_client_must_explicitly_declare_user_types() -> None:
+def test_user_types_and_auto_login_default_to_existing_behaviour() -> None:
     from pydantic import ValidationError
 
     value = client_json()
     del value["allowedUserTypes"]
-    with pytest.raises(ValidationError):
-        OidcClientPolicy.model_validate(value)
-    assert OidcClientPolicy.model_validate(client_json()).sso_auto_login is True
-    assert OidcClientPolicy.model_validate(client_json(ssoAutoLogin=False)).sso_auto_login is False
+    value.pop("ssoAutoLogin", None)
+    unrestricted = OidcClientPolicy.model_validate(value)
+    assert unrestricted.allowed_user_types is None
+    assert unrestricted.sso_auto_login is False
+    assert OidcClientPolicy.model_validate(client_json(ssoAutoLogin=True)).sso_auto_login is True
     with pytest.raises(ValidationError):
         OidcClientPolicy.model_validate(client_json(ssoAutoLogin="false"))

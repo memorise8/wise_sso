@@ -32,6 +32,10 @@ class Element {
     return null;
   }
 
+  querySelectorAll() {
+    return [];
+  }
+
   set textContent(value) {
     this.children = [];
     this._text = String(value);

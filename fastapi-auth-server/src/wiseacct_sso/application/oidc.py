@@ -1001,7 +1001,10 @@ class OidcService:
             return None, "OIDC_USER_INACTIVE"
         if not user.email or not user.email_verified:
             return None, "OIDC_EMAIL_UNVERIFIED"
-        if (user.user_type or "UNCLASSIFIED") not in client.allowed_user_types:
+        if (
+            client.allowed_user_types is not None
+            and (user.user_type or "UNCLASSIFIED") not in client.allowed_user_types
+        ):
             return None, "OIDC_USER_TYPE_DENIED"
         identity = OidcIdentity(
             user_id=user.id,
