@@ -864,3 +864,44 @@ async def test_new_temis_admin_assignment_is_rejected_before_io() -> None:
             reason_code="TEST",
         )
     assert caught.value.code == "LEGACY_ADMIN_ROLE_DISABLED"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("service_key", "name", "allowed"),
+    [("gitlab", "user", True), ("agent-hub", "user", False), ("sso", "admin", False)],
+)
+async def test_external_accounts_may_only_receive_gitlab_user(
+    service_key: str, name: str, allowed: bool
+) -> None:
+    events: list[str] = []
+    subject = service(events)
+    cast(FakeMutations, subject._mutations).user_type = "EXTERNAL"
+    assignment = subject.assign_role(
+        actor_user_id="admin",
+        target_user_id="user",
+        service_key=service_key,
+        name=name,
+        reason_code="TEST",
+    )
+    if allowed:
+        await assignment
+        assert events[-1] == "commit"
+        return
+    with pytest.raises(DomainError) as caught:
+        await assignment
+    assert caught.value.code == "EXTERNAL_ROLE_NOT_ALLOWED"
+    assert events[-1] == "rollback"
+
+
+@pytest.mark.anyio
+async def test_external_account_type_cannot_be_reclassified() -> None:
+    events: list[str] = []
+    subject = service(events)
+    cast(FakeMutations, subject._mutations).user_type = "EXTERNAL"
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_type(
+            actor_user_id="admin", target_user_id="user", user_type="EMPLOYEE", reason_code="TEST"
+        )
+    assert caught.value.code == "EXTERNAL_ACCOUNT_MANAGED"
+    assert "type-change" not in events

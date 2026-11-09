@@ -45,6 +45,8 @@ class OidcIdTokenIdentity:
     email_verified: bool
     name: str | None
     groups: tuple[str, ...]
+    account_type: str | None = None
+    account_expires_at: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +64,17 @@ class StoredOidcAccessToken:
     scopes: tuple[str, ...]
     expires_at_epoch_ms: int
     session_version: int | None = None
+
+
+def account_claims(account_type: str | None, expires_at: int | None) -> dict[str, object]:
+    """Account kind for relying services; the expiry is sent only for external accounts."""
+
+    claims: dict[str, object] = {}
+    if account_type is not None:
+        claims["account_type"] = account_type
+    if expires_at is not None:
+        claims["account_expires_at"] = expires_at
+    return claims
 
 
 class OidcTokenCreationError(RuntimeError):
@@ -135,6 +148,7 @@ class OidcIdTokenSigner:
             payload["auth_time"] = auth_time
         if identity.name is not None:
             payload["name"] = identity.name
+        payload.update(account_claims(identity.account_type, identity.account_expires_at))
         if nonce is not None:
             payload["nonce"] = nonce
         return jwt.encode(

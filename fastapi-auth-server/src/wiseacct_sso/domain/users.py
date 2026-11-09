@@ -8,6 +8,7 @@ from typing import Protocol
 class UserType(StrEnum):
     EMPLOYEE = "EMPLOYEE"
     CUSTOMER = "CUSTOMER"
+    EXTERNAL = "EXTERNAL"
 
 
 class UserStatus(StrEnum):

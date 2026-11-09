@@ -273,6 +273,7 @@ async def test_verified_social_email_never_attaches_or_deletes_existing_identity
         name="OAuth User",
         profileUrl=None,
         status=UserStatus.ACTIVE,
+        accountExpiresAt=None,
     )
     connection = FakeConnection(
         [
@@ -315,6 +316,7 @@ async def test_oauth_new_user_reuses_reservation_and_seeds_then_assigns_default_
         name="OAuth User",
         profileUrl=None,
         status=UserStatus.ACTIVE,
+        accountExpiresAt=None,
     )
     connection = FakeConnection(
         [
@@ -365,6 +367,7 @@ async def test_oauth_provider_lookup_returns_owning_user() -> None:
                     name=None,
                     profileUrl=None,
                     status=UserStatus.ACTIVE,
+                    accountExpiresAt=None,
                 )
             )
         ]

@@ -596,3 +596,83 @@ async def test_userinfo_revokes_existing_bearer_after_employee_type_removed(
         await service.userinfo("oidc-access-token")
     assert caught.value.error == "invalid_token"
     assert access.revoked == ["oidc-access-token"]
+
+
+def _external_client() -> OidcClientPolicy:
+    return _client(allow_without_required_role=True).model_copy(
+        update={"allowed_user_types": ("EMPLOYEE", "EXTERNAL")}
+    )
+
+
+def test_external_account_identity_carries_type_and_expiry_until_the_term_ends() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    service, _, _, _ = build_fake_oidc_service()
+    now = datetime(2026, 11, 10, 3, 0)
+    service._clock_ms = lambda: int(now.replace(tzinfo=UTC).timestamp() * 1000)
+    expires = now + timedelta(days=30)
+    guest = replace(_user(authorized=False), user_type="EXTERNAL", account_expires_at=expires)
+
+    assert service._eligible_identity(guest, _client(allow_without_required_role=True)) == (
+        None,
+        "OIDC_USER_TYPE_DENIED",
+    )
+    identity, reason = service._eligible_identity(guest, _external_client())
+    assert reason is None and identity is not None
+    assert identity.account_type == "external"
+    assert identity.account_expires_at == int(expires.replace(tzinfo=UTC).timestamp())
+
+    expired = replace(guest, account_expires_at=now)
+    assert service._eligible_identity(expired, _external_client()) == (
+        None,
+        "OIDC_ACCOUNT_EXPIRED",
+    )
+    employee, _ = service._eligible_identity(_user(), _client())
+    assert employee is not None
+    assert (employee.account_type, employee.account_expires_at) == ("employee", None)
+
+
+@pytest.mark.anyio
+async def test_userinfo_reports_external_term_and_stops_once_it_ends() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from wiseacct_sso.infrastructure.oidc_tokens import StoredOidcAccessToken
+
+    class ReadableAccess(FakeAccessTokens):
+        async def get(self, token: str) -> StoredOidcAccessToken:
+            return StoredOidcAccessToken(
+                "cloudflare-access-dash", "user-1", ("openid", "email"), 2_000_000_000_000
+            )
+
+    access = ReadableAccess()
+    service, _, _, _ = build_fake_oidc_service(access=access)
+    service._clients = OidcClientRegistry((_external_client(),))
+    now = [datetime(2026, 11, 10, 3, 0)]
+    service._clock_ms = lambda: int(now[0].replace(tzinfo=UTC).timestamp() * 1000)
+    expires = now[0] + timedelta(days=90)
+    identities = FakeIdentities(
+        replace(_user(authorized=False), user_type="EXTERNAL", account_expires_at=expires)
+    )
+    service._identities = cast(OidcIdentityStore, identities)
+    service._audit = cast(AuditStore, FakeAudit())
+    await service.exchange_code(
+        TokenExchangeInput(
+            client_id="cloudflare-access-dash",
+            client_secret="secret",
+            grant_type="authorization_code",
+            code="code-1",
+            redirect_uri="https://access.example.test/callback",
+            code_verifier=None,
+        ),
+        OidcRequestContext(None, None),
+    )
+    info = await service.userinfo("oidc-access-token")
+    assert info.account_type == "external"
+    assert info.account_expires_at == int(expires.replace(tzinfo=UTC).timestamp())
+    assert info.groups == ()
+
+    now[0] = expires
+    with pytest.raises(OidcServiceError) as caught:
+        await service.userinfo("oidc-access-token")
+    assert caught.value.error == "invalid_token"
+    assert access.revoked == ["oidc-access-token"]

@@ -28,6 +28,7 @@ from wiseacct_sso.domain.admin import (
     sanitize_audit_details,
     should_revoke_for_status,
 )
+from wiseacct_sso.domain.external_accounts import assert_external_roles
 from wiseacct_sso.domain.tokens import TokenValidationError
 from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
 from wiseacct_sso.infrastructure.security import JwtTokenCodec
@@ -152,7 +153,9 @@ class Phase6AdminService:
             previous, _ = await self._authorize_mutation(connection, actor_user_id, target_user_id)
             if previous == user_type:
                 return False
-            await self._assert_user_type_change_allowed(connection, target_user_id, user_type)
+            await self._assert_user_type_change_allowed(
+                connection, target_user_id, previous, user_type
+            )
             return await self._apply_user_type_change(
                 connection, actor_user_id, target_user_id, previous, user_type, reason_code, now
             )
@@ -193,7 +196,9 @@ class Phase6AdminService:
                 previous, _ = await self._mutations.user_policy(connection, user_id=user_id)
                 if previous == user_type:
                     continue
-                await self._assert_user_type_change_allowed(connection, user_id, user_type)
+                await self._assert_user_type_change_allowed(
+                    connection, user_id, previous, user_type
+                )
                 pending.append((user_id, previous))
             for user_id, previous in pending:
                 await self._apply_user_type_change(
@@ -212,8 +217,18 @@ class Phase6AdminService:
         return await self._database().transaction(database_only_transaction(mutate))
 
     async def _assert_user_type_change_allowed(
-        self, connection: AsyncConnection, user_id: str, user_type: str | None
+        self,
+        connection: AsyncConnection,
+        user_id: str,
+        previous: str | None,
+        user_type: str | None,
     ) -> None:
+        if previous == UserType.EXTERNAL:
+            raise DomainError(
+                409,
+                "EXTERNAL_ACCOUNT_MANAGED",
+                "External accounts are managed through their own term and cannot change type",
+            )
         if user_type != "EMPLOYEE":
             await self._protect_last_admin(connection, user_id)
             if await self._mutations.central_admin_assigned(connection, user_id=user_id):
@@ -341,7 +356,9 @@ class Phase6AdminService:
             target_type, _ = await self._authorize_mutation(
                 connection, actor_user_id, target_user_id
             )
-            if (
+            if target_type == UserType.EXTERNAL:
+                assert_external_roles([{"serviceKey": service_key, "name": name}])
+            elif (
                 service_key not in {"temis", "fantra", "lab-customer"}
                 and target_type != UserType.EMPLOYEE
             ):

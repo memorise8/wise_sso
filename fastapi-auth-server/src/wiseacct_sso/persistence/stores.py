@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, cast
 
-from sqlalchemy import delete, exists, func, insert, select, update
+from sqlalchemy import delete, exists, func, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.sql.elements import ColumnElement
@@ -24,6 +24,7 @@ from wiseacct_sso.domain.admin import (
     audit_retention_cutoff,
     parse_role_filter,
 )
+from wiseacct_sso.domain.external_accounts import is_expired
 from wiseacct_sso.domain.users import DomainError, UserType
 from wiseacct_sso.domain.users import UserStatus as DomainUserStatus
 from wiseacct_sso.persistence.models import (
@@ -40,12 +41,19 @@ from wiseacct_sso.persistence.models import (
     UserRole,
     UserStatus,
     application_uuid,
+    utc_now_ms,
 )
 
 
 def _require_one(rowcount: int, operation: str) -> None:
     if rowcount != 1:
         raise RuntimeError(f"{operation} count was not one")
+
+
+def _not_expired() -> ColumnElement[bool]:
+    """Time-limited external accounts stop authenticating once their term ends."""
+
+    return or_(User.c.accountExpiresAt.is_(None), User.c.accountExpiresAt > utc_now_ms())
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +146,7 @@ class UserReadStore:
                     User.c.name,
                     User.c.status,
                 )
-                .where(User.c.id == user_id, User.c.status == UserStatus.ACTIVE)
+                .where(User.c.id == user_id, User.c.status == UserStatus.ACTIVE, _not_expired())
                 .limit(1)
             )
         ).one_or_none()
@@ -206,6 +214,7 @@ class PasswordAuthStore:
                     PasswordCredential.c.failedLoginCount,
                     PasswordCredential.c.lockedUntil,
                     User.c.status.label("userStatus"),
+                    User.c.accountExpiresAt,
                 )
                 .select_from(
                     PasswordCredential.join(User, PasswordCredential.c.userId == User.c.id)
@@ -222,7 +231,10 @@ class PasswordAuthStore:
             password_hash=str(row.passwordHash),
             failed_login_count=int(row.failedLoginCount),
             locked_until=row.lockedUntil,
-            user_status=UserStatus(row.userStatus),
+            # An expired external account signs in exactly like a suspended one.
+            user_status=UserStatus.SUSPENDED
+            if is_expired(row.accountExpiresAt, utc_now_ms())
+            else UserStatus(row.userStatus),
         )
 
     async def create_user_with_password(
@@ -387,7 +399,7 @@ class TokenIssueStore:
         locked = (
             await connection.execute(
                 select(User.c.id)
-                .where(User.c.id == user_id, User.c.status == UserStatus.ACTIVE)
+                .where(User.c.id == user_id, User.c.status == UserStatus.ACTIVE, _not_expired())
                 .with_for_update()
             )
         ).one_or_none()
@@ -947,6 +959,7 @@ class OAuthIdentityStore:
                     User.c.name,
                     User.c.profileUrl,
                     User.c.status,
+                    User.c.accountExpiresAt,
                 )
                 .select_from(SocialAccount.join(User, SocialAccount.c.userId == User.c.id))
                 .where(
@@ -1006,6 +1019,7 @@ class OAuthIdentityStore:
                 User.c.name,
                 User.c.profileUrl,
                 User.c.status,
+                User.c.accountExpiresAt,
             )
         )
         created_user = created.one_or_none()
@@ -1036,7 +1050,9 @@ class OAuthIdentityStore:
             email_verified=bool(typed.emailVerified),
             name=typed.name,
             profile_url=typed.profileUrl,
-            status=UserStatus(typed.status),
+            status=UserStatus.SUSPENDED
+            if is_expired(typed.accountExpiresAt, utc_now_ms())
+            else UserStatus(typed.status),
         )
 
 
@@ -1047,6 +1063,7 @@ class _OAuthUserRow(Protocol):
     name: str | None
     profileUrl: str | None
     status: str | UserStatus
+    accountExpiresAt: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

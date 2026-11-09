@@ -80,6 +80,7 @@ async def test_password_lookup_and_active_current_user_map_roles() -> None:
                     failedLoginCount=2,
                     lockedUntil=None,
                     userStatus=UserStatus.ACTIVE,
+                    accountExpiresAt=None,
                 )
             )
         ]
@@ -122,6 +123,7 @@ async def test_password_lookup_and_active_current_user_map_roles() -> None:
         ("ledger", "reader"),
     ]
     assert '"User".status =' in sql(user_connection.statements[0])
+    assert '"User"."accountExpiresAt" IS NULL OR' in sql(user_connection.statements[0])
     role_sql = sql(user_connection.statements[1])
     assert 'FROM "UserRole" JOIN "Role"' in role_sql
     assert "ORDER BY" not in role_sql
@@ -323,3 +325,26 @@ async def test_audit_insert_and_normalized_identity_lookups() -> None:
     assert sql(connection.statements[0]).startswith('INSERT INTO "AuditLog"')
     assert "user@example.com" in params(connection.statements[1]).values()
     assert "password@example.com" in params(connection.statements[2]).values()
+
+
+@pytest.mark.anyio
+async def test_expired_external_password_login_reads_as_suspended() -> None:
+    connection = FakeConnection(
+        [
+            FakeResult(
+                SimpleNamespace(
+                    userId="guest-1",
+                    email="guest@example.com",
+                    passwordHash="argon-hash",
+                    failedLoginCount=0,
+                    lockedUntil=None,
+                    userStatus=UserStatus.ACTIVE,
+                    accountExpiresAt=datetime(2020, 1, 1),
+                )
+            )
+        ]
+    )
+    credential = await PasswordAuthStore().find_credential_by_email(
+        cast(AsyncConnection, connection), email="guest@example.com"
+    )
+    assert credential is not None and credential.user_status is UserStatus.SUSPENDED

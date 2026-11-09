@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol, cast
 
 from sqlalchemy import select
@@ -22,6 +23,7 @@ class OidcUserRecord:
     roles: tuple[RoleAssignment, ...]
     user_type: str | None = None
     session_version: int = 0
+    account_expires_at: datetime | None = None
 
 
 class _OidcUserRow(Protocol):
@@ -32,6 +34,7 @@ class _OidcUserRow(Protocol):
     status: str | UserStatus
     ssoSessionVersion: int
     userType: str | None
+    accountExpiresAt: datetime | None
 
 
 class OidcIdentityStore:
@@ -58,6 +61,7 @@ class OidcIdentityStore:
                     User.c.status,
                     User.c.userType,
                     User.c.ssoSessionVersion,
+                    User.c.accountExpiresAt,
                 )
                 .where(User.c.id == user_id)
                 .with_for_update()
@@ -106,6 +110,7 @@ class OidcIdentityStore:
             status=UserStatus(typed.status),
             user_type=typed.userType,
             session_version=typed.ssoSessionVersion,
+            account_expires_at=typed.accountExpiresAt,
             roles=tuple(
                 RoleAssignment(service_key=str(row.serviceKey), name=str(row.name)) for row in rows
             ),

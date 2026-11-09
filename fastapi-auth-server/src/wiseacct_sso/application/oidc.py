@@ -7,7 +7,7 @@ import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal, NoReturn, Protocol
 from urllib.parse import urlencode
 from uuid import uuid4
@@ -16,6 +16,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.domain.auth import PasswordAuthFailure, PasswordAuthReason, normalize_email
+from wiseacct_sso.domain.external_accounts import is_expired
 from wiseacct_sso.domain.oauth import OAuthProvider
 from wiseacct_sso.domain.oidc import (
     OidcIdentity,
@@ -145,6 +146,8 @@ class UserInfo:
     email_verified: Literal[True]
     name: str | None
     groups: tuple[str, ...]
+    account_type: str | None = None
+    account_expires_at: int | None = None
 
 
 ADMIN_AUTH_MAX_AGE_SECONDS = 15 * 60
@@ -769,6 +772,8 @@ class OidcService:
                             email_verified=identity.email_verified,
                             name=identity.name,
                             groups=groups,
+                            account_type=identity.account_type,
+                            account_expires_at=identity.account_expires_at,
                         ),
                         client_id=client.client_id,
                         nonce=stored.nonce,
@@ -831,6 +836,8 @@ class OidcService:
                 email_verified=True,
                 name=identity.name,
                 groups=project_groups(identity, client),
+                account_type=identity.account_type,
+                account_expires_at=identity.account_expires_at,
             )
 
     async def _complete_authorization(
@@ -999,6 +1006,9 @@ class OidcService:
     ) -> tuple[OidcIdentity | None, str | None]:
         if user is None or user.status is not PersistenceUserStatus.ACTIVE:
             return None, "OIDC_USER_INACTIVE"
+        now = datetime.fromtimestamp(self._clock_ms() / 1000, UTC).replace(tzinfo=None)
+        if is_expired(user.account_expires_at, now):
+            return None, "OIDC_ACCOUNT_EXPIRED"
         if not user.email or not user.email_verified:
             return None, "OIDC_EMAIL_UNVERIFIED"
         if (
@@ -1012,6 +1022,12 @@ class OidcService:
             email_verified=True,
             name=user.name,
             roles=tuple(Role(role.service_key, role.name) for role in user.roles),
+            account_type=user.user_type.lower() if user.user_type else None,
+            account_expires_at=(
+                int(user.account_expires_at.replace(tzinfo=UTC).timestamp())
+                if user.account_expires_at is not None
+                else None
+            ),
         )
         if not client.allow_without_required_role and not has_required_role(identity, client):
             return None, "OIDC_REQUIRED_ROLE_MISSING"

@@ -22,7 +22,7 @@
       if (!response.ok) throw new Error("초대가 만료·취소·사용되었거나 비밀번호 정책에 맞지 않습니다.");
       token = null;
       form.reset(); form.hidden = true;
-      notice.textContent = "직원 계정이 활성화되었습니다. 승인된 서비스에서 로그인하세요.";
+      notice.textContent = "계정이 활성화되었습니다. 초대받은 서비스에서 로그인하세요.";
     } catch (error) { notice.textContent = error.message || "잠시 후 다시 시도하세요."; }
     finally { busy = false; form.querySelector("button").disabled = false; }
   });

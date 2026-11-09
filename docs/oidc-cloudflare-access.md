@@ -61,12 +61,17 @@ is claimed. Secret/code/token/verifier/state/nonce values must not appear in log
 | `OIDC_KAKAO_REDIRECT_URI` | Optional corresponding Kakao callback |
 
 Each client requires `clientId`, `redirectUris`, `clientSecretHash` (Argon2id PHC),
-`requiredRoles` (nonempty OR), `groupsServiceKeys`, and explicit `allowedUserTypes` (no default).
+`requiredRoles` (nonempty OR) and `groupsServiceKeys`. `allowedUserTypes` (`EMPLOYEE`,
+`CUSTOMER`, `EXTERNAL`, `UNCLASSIFIED`) is optional; without it the client accepts every
+account type, as before user types existed.
 `allowWithoutRequiredRole` defaults to false; when true, any active email-verified user of an
 allowed type may sign in to that client and `groups` carries only the roles they hold (possibly
 empty), so the relying service must make its own access decision. `ssoAutoLogin` defaults to
-true and can be disabled per client. `requirePkce` defaults to true;
-`allowedScopes` defaults to `openid`, `email`, `profile`. Client IDs cannot overlap
+false and enables central-session sign-in per client. `requirePkce` defaults to true;
+`allowedScopes` defaults to `openid`, `email`, `profile`. ID tokens and UserInfo carry
+`account_type` (`employee`, `customer` or `external`; omitted when unclassified) and, for
+external accounts only, `account_expires_at` (Unix seconds). See
+[external-accounts.md](external-accounts.md). Client IDs cannot overlap
 legacy client IDs or audiences. Callback queries cannot predefine code/state/error
 response fields. Existing callback query bytes otherwise remain unchanged.
 

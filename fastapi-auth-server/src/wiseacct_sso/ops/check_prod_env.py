@@ -5,8 +5,9 @@ import argparse
 from wiseacct_sso.config import Settings
 
 REQUIRED_POLICIES = {
-    "gitlab-temis": ({"EMPLOYEE"}, {("gitlab", "user")}),
-    "agent-hub-dash": ({"EMPLOYEE"}, {("agent-hub", "user")}),
+    "gitlab-temis": ({"EMPLOYEE", "EXTERNAL"}, {("gitlab", "user")}),
+    # agent-hub grants guests per-project access itself, so it opts out of the role gate.
+    "agent-hub-dash": ({"EMPLOYEE", "CUSTOMER", "EXTERNAL"}, {("agent-hub", "user")}),
     "fantra-oidc": ({"CUSTOMER", "EMPLOYEE"}, {("temis", "user")}),
 }
 
@@ -22,6 +23,7 @@ def validate_policy(settings: Settings) -> None:
             or set(client.allowed_user_types or ()) != types
             or {(r.service_key, r.name) for r in client.required_roles} != roles
             or set(client.groups_service_keys) != {key for key, _ in roles}
+            or client.allow_without_required_role != (identifier == "agent-hub-dash")
         ):
             raise ValueError("Production client authorization policy mismatch")
 

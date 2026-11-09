@@ -154,7 +154,7 @@ def mail_token(mail: FakeMailService) -> str:
 @pytest.mark.anyio
 async def test_invitation_lifecycle_hash_only_employee_creation_and_replay() -> None:
     service, db, mail, _ = fixture()
-    identifier = await service.create("admin", " Employee@Example.test ", "Employee", ROLES)
+    identifier = (await service.create("admin", " Employee@Example.test ", "Employee", ROLES)).id
     token = mail_token(mail)
     row = db.tables["EmployeeInvitation"][0]
     assert row["tokenHash"] == token_hash(token) and token not in str(db.tables)
@@ -185,7 +185,7 @@ async def test_invitation_lifecycle_hash_only_employee_creation_and_replay() -> 
 @pytest.mark.parametrize("action", ["cancel", "expire", "account_exists", "audit_failure"])
 async def test_invitation_failure_never_creates_or_elevates_an_account(action: str) -> None:
     service, db, mail, now = fixture()
-    identifier = await service.create("admin", "employee@example.test", "Employee", ROLES)
+    identifier = (await service.create("admin", "employee@example.test", "Employee", ROLES)).id
     token = mail_token(mail)
     if action == "cancel":
         await service.cancel("admin", identifier)
@@ -236,3 +236,92 @@ def test_invitation_input_and_legacy_roles_rejected() -> None:
     with pytest.raises(DomainError):
         token_hash("bad")
     assert len(token_hash(secrets.token_urlsafe(32))) == 64
+
+
+GITLAB = [{"serviceKey": "gitlab", "name": "user"}]
+
+
+@pytest.mark.anyio
+async def test_external_invitation_by_link_creates_a_time_limited_account() -> None:
+    service, db, mail, _ = fixture()
+    issued = await service.create(
+        "admin", "guest@example.test", "Guest", GITLAB, kind="EXTERNAL", days=90, delivery="link"
+    )
+    assert not mail.messages
+    assert issued.url is not None
+    assert issued.url.startswith("https://sso.example.test/oauth2/invitations/accept#token=")
+    assert issued.account_expires_at == datetime(2027, 2, 2, 14, 59, 59, 999000)
+    token = issued.url.split("#token=", 1)[1]
+    row = db.tables["EmployeeInvitation"][0]
+    assert row["kind"] == "EXTERNAL" and row["deliveredAt"] == NOW
+    assert row["tokenHash"] == token_hash(token) and token not in str(db.tables)
+
+    await service.accept(token, "long-password-value")
+    user = db.tables["User"][0]
+    assert user["userType"] == "EXTERNAL"
+    assert user["accountExpiresAt"] == issued.account_expires_at
+    assert [e["eventType"] for e in db.tables["AuditLog"]] == [
+        "external_invitation_created",
+        "external_invitation_accepted",
+    ]
+    assert db.tables["AuditLog"][0]["detailsJson"]["accountExpiresAt"] == (
+        "2027-02-02T14:59:59.999000Z"
+    )
+
+
+@pytest.mark.anyio
+async def test_external_invitation_without_roles_and_new_link_on_resend() -> None:
+    service, _, mail, _ = fixture()
+    issued = await service.create(
+        "admin", "guest@example.test", "Guest", [], kind="EXTERNAL", days=30, delivery="link"
+    )
+    relinked = await service.resend("admin", issued.id, "link")
+    assert relinked.url is not None and relinked.url != issued.url and not mail.messages
+    await service.resend("admin", issued.id)
+    assert mail.messages[-1].to == "guest@example.test"
+
+
+@pytest.mark.anyio
+async def test_external_invitation_cannot_be_accepted_after_its_term_ends() -> None:
+    service, db, _, now = fixture()
+    issued = await service.create(
+        "admin", "guest@example.test", "Guest", [], kind="EXTERNAL", days=1, delivery="link"
+    )
+    assert issued.url is not None and issued.account_expires_at is not None
+    now[0] = issued.account_expires_at
+    with pytest.raises(DomainError):
+        await service.accept(issued.url.split("#token=", 1)[1], "long-password-value")
+    assert not db.tables["User"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("roles", "kind", "days", "code"),
+    [
+        (
+            [{"serviceKey": "agent-hub", "name": "user"}],
+            "EXTERNAL",
+            90,
+            "EXTERNAL_ROLE_NOT_ALLOWED",
+        ),
+        ([], "EXTERNAL", None, "INVALID_ACCOUNT_TERM"),
+        ([], "EXTERNAL", 366, "INVALID_ACCOUNT_TERM"),
+        (ROLES, "EMPLOYEE", 90, "INVALID_ACCOUNT_TERM"),
+        ([], "EMPLOYEE", None, "INVALID_ROLE"),
+    ],
+)
+async def test_invitation_kind_term_and_role_rules(
+    roles: list[dict[str, str]], kind: str, days: int | None, code: str
+) -> None:
+    service, db, _, _ = fixture()
+    with pytest.raises(DomainError) as caught:
+        await service.create(
+            "admin",
+            "guest@example.test",
+            "Guest",
+            roles,
+            kind=kind,
+            days=days,  # type: ignore[arg-type]
+        )
+    assert caught.value.code == code
+    assert not db.tables["EmployeeInvitation"]

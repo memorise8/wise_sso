@@ -277,11 +277,41 @@ def register_admin_portal(
                 '<label>이름 <input name="name" maxlength="200" required></label>'
                 '<label>서비스 역할 (쉼표 구분) <input name="roles" '
                 'placeholder="gitlab:user,agent-hub:user" maxlength="2048" required></label>'
-                '<button type="submit">초대 메일 보내기</button></form>'
+                '<label>전달 방법 <select name="delivery">'
+                '<option value="mail">초대 메일 보내기</option>'
+                '<option value="link">링크 복사해서 직접 전달</option></select></label>'
+                '<button type="submit">초대 만들기</button></form>'
                 '<button type="button" data-invitation-refresh>초대 목록 조회</button>'
                 '<p data-invitation-status role="status"></p>'
                 "<div data-invitation-list></div></section>"
                 '<script src="/assets/admin-invitations.js" defer></script>'
+                "<section><h2>외부 계정 (기한 있음)</h2>"
+                "<p>외주 개발자 등 회사 밖 사람용입니다. 기한이 지나면 로그인할 수 없습니다. "
+                "직원 서비스 권한은 받을 수 없고, "
+                "GitLab이 필요하면 gitlab:user만 줄 수 있습니다.</p>"
+                "<form data-external-create>"
+                '<label>이메일 <input name="email" type="email" maxlength="320" required></label>'
+                '<label>이름 <input name="name" maxlength="200" required></label>'
+                '<label>기한 <select name="preset">'
+                '<option value="90">3개월 (90일)</option>'
+                '<option value="180">6개월 (180일)</option>'
+                '<option value="custom">직접 입력</option></select></label>'
+                "<label data-external-days hidden>일수 (1~365) "
+                '<input name="days" type="number" min="1" max="365" step="1"></label>'
+                '<label><input name="gitlab" type="checkbox"> GitLab 사용 (gitlab:user)</label>'
+                '<label>전달 방법 <select name="delivery">'
+                '<option value="link">링크 복사해서 직접 전달</option>'
+                '<option value="mail">초대 메일 보내기</option></select></label>'
+                "<p data-external-preview></p>"
+                '<button type="submit">외부 계정 만들기</button></form>'
+                "<div data-external-link hidden><input data-external-link-value readonly "
+                'aria-label="초대 링크"><button type="button" data-external-copy>링크 복사</button>'
+                "<p>링크는 72시간 동안 한 번만 쓸 수 있습니다. "
+                "메신저 등으로 직접 전달하세요.</p></div>"
+                '<button type="button" data-external-refresh>외부 계정 목록 조회</button>'
+                '<p data-external-status role="status"></p>'
+                "<div data-external-list></div></section>"
+                '<script src="/assets/admin-external.js" defer></script>'
             )
         page = (before + panel + invitations + after).replace(
             '<meta name="admin-api-base" content="/manage-api">',

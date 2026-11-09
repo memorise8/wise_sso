@@ -117,8 +117,8 @@ class SmtpMailService:
         await asyncio.to_thread(
             self._send,
             to,
-            "Employee invitation",
-            "Set your own password: " + invitation_url,
+            "Wise SSO 계정 초대",
+            "아래 링크에서 비밀번호를 정하면 계정이 활성화됩니다 (72시간 유효): " + invitation_url,
             _verification_html(invitation_url),
         )
 

@@ -443,3 +443,47 @@ def test_user_types_and_auto_login_default_to_existing_behaviour() -> None:
     assert OidcClientPolicy.model_validate(client_json(ssoAutoLogin=True)).sso_auto_login is True
     with pytest.raises(ValidationError):
         OidcClientPolicy.model_validate(client_json(ssoAutoLogin="false"))
+
+
+def test_oidc_id_token_carries_account_type_and_external_expiry(
+    synthetic_settings: Settings,
+) -> None:
+    settings = synthetic_settings
+    now = datetime(2026, 11, 10, 3, 0, tzinfo=UTC)
+    signer = OidcIdTokenSigner(
+        private_key=settings.jwt_access_private_key,
+        key_id=settings.jwt_access_key_id,
+        issuer=settings.jwt_issuer,
+        now=lambda: now,
+    )
+    key = jwt.PyJWK.from_dict(settings.jwt_access_public_jwk.model_dump()).key
+
+    def claims(account_type: str | None, expires_at: int | None) -> dict[str, object]:
+        token = signer.issue(
+            OidcIdTokenIdentity(
+                user_id="user-1",
+                email="guest@example.com",
+                email_verified=True,
+                name=None,
+                groups=(),
+                account_type=account_type,
+                account_expires_at=expires_at,
+            ),
+            client_id="agent-hub-dash",
+        )
+        decoded: dict[str, object] = jwt.decode(
+            token,
+            key,
+            algorithms=["RS256"],
+            issuer=settings.jwt_issuer,
+            audience="agent-hub-dash",
+            options={"verify_exp": False, "verify_iat": False},
+        )
+        return decoded
+
+    external = claims("external", 1_786_579_199)
+    assert external["account_type"] == "external"
+    assert external["account_expires_at"] == 1_786_579_199
+    employee = claims("employee", None)
+    assert employee["account_type"] == "employee" and "account_expires_at" not in employee
+    assert "account_type" not in claims(None, None)

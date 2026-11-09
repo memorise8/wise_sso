@@ -42,6 +42,8 @@ class OidcIdentity:
     name: str | None
     email_verified: bool
     roles: tuple[Role, ...]
+    account_type: str | None = None
+    account_expires_at: int | None = None
 
 
 def has_required_role(identity: OidcIdentity, client: OidcClientRolePolicy) -> bool:

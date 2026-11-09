@@ -31,6 +31,7 @@ from wiseacct_sso.application.oidc import (
 from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS, OAuthProvider
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.infrastructure.oidc_state import provider_state_transaction_id
+from wiseacct_sso.infrastructure.oidc_tokens import account_claims
 from wiseacct_sso.infrastructure.sso_sessions import SSO_COOKIE_NAME
 
 from .parsing import (
@@ -490,6 +491,7 @@ def build_oidc_app(
         }
         if result.name is not None:
             payload["name"] = result.name
+        payload.update(account_claims(result.account_type, result.account_expires_at))
         return JSONResponse(payload)
 
     if (portal_service is None) != (admin_services is None):

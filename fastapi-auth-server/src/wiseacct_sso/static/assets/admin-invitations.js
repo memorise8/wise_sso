@@ -19,21 +19,34 @@
     list.replaceChildren();
     for (const row of result.items) {
       const box = document.createElement("p");
-      box.textContent = `${row.email} · ${row.name} · ${row.status} · 만료 ${row.expiresAt} · ${row.deliveredAt ? "발송 완료" : "미발송"} `;
+      const kind = row.kind === "EXTERNAL" ? `외부 · 계정 기한 ${row.accountExpiresAt}` : "직원";
+      box.textContent = `${row.email} · ${row.name} · ${kind} · ${row.status} · 링크 만료 ${row.expiresAt} · ${row.deliveredAt ? "전달 완료" : "미발송"} `;
       if (row.status === "PENDING") {
-        for (const [action, text] of [["resend", "재발송"], ["cancel", "취소"]]) {
+        for (const [action, text] of [["resend", "재발송"], ["relink", "새 링크"], ["cancel", "취소"]]) {
           const button = document.createElement("button");
           button.type = "button"; button.textContent = text;
           button.addEventListener("click", () => run(async () => {
             if (!window.confirm(`${row.email} 초대를 ${text}할까요?`)) return;
-            await request(`/${encodeURIComponent(row.id)}/${action}`, "POST", {});
+            const path = `/${encodeURIComponent(row.id)}/${action === "relink" ? "resend" : action}`;
+            const result = await request(path, "POST", action === "relink" ? { delivery: "link" } : {});
             await refresh();
+            if (result && result.invitationUrl) showLink(result.invitationUrl);
           }));
           box.append(button);
         }
       }
       list.append(box);
     }
+  }
+  function showLink(url) {
+    const box = document.createElement("p");
+    const field = document.createElement("input");
+    field.readOnly = true; field.value = url; field.setAttribute("aria-label", "초대 링크");
+    const copy = document.createElement("button");
+    copy.type = "button"; copy.textContent = "링크 복사";
+    copy.addEventListener("click", () => run(() => navigator.clipboard.writeText(url)));
+    box.append(field, copy);
+    list.prepend(box);
   }
   async function run(work) {
     if (busy) return;
@@ -51,8 +64,11 @@
         if (pair.length !== 2 || !pair.every(Boolean)) throw new Error("역할은 service:user 형식으로 입력하세요.");
         return { serviceKey: pair[0], name: pair[1] };
       });
-      await request("", "POST", { email: data.get("email"), name: data.get("name"), roles });
+      const created = await request("", "POST", {
+        email: data.get("email"), name: data.get("name"), roles, delivery: data.get("delivery")
+      });
       form.reset(); await refresh();
+      if (created.invitationUrl) showLink(created.invitationUrl);
     });
   });
   document.querySelector("[data-invitation-refresh]").addEventListener("click", () => run(refresh));

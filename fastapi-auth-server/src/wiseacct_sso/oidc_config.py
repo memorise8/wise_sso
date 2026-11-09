@@ -63,9 +63,9 @@ class OidcClientPolicy(BaseModel):
     )
     allow_without_required_role: bool = Field(default=False, alias="allowWithoutRequiredRole")
     # None keeps the pre-user-type behaviour: any account type may sign in.
-    allowed_user_types: tuple[Literal["EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"], ...] | None = Field(
-        default=None, alias="allowedUserTypes", min_length=1, max_length=3
-    )
+    allowed_user_types: (
+        tuple[Literal["EMPLOYEE", "CUSTOMER", "EXTERNAL", "UNCLASSIFIED"], ...] | None
+    ) = Field(default=None, alias="allowedUserTypes", min_length=1, max_length=4)
     sso_auto_login: bool = Field(default=False, alias="ssoAutoLogin", strict=True)
     require_pkce: bool = Field(default=True, alias="requirePkce")
     allowed_scopes: tuple[NonEmptyString, ...] = Field(

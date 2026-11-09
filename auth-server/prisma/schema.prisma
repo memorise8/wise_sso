@@ -17,6 +17,7 @@ enum UserStatus {
 enum UserType {
   EMPLOYEE
   CUSTOMER
+  EXTERNAL
 }
 
 model User {
@@ -24,6 +25,7 @@ model User {
   email      String?  @unique
   ssoSessionVersion Int @default(0)
   userType UserType?
+  accountExpiresAt DateTime?
   emailVerified Boolean @default(false)
   name       String?
   profileUrl String?
@@ -43,6 +45,7 @@ model User {
   roles                   UserRole[]
 
   @@index([userType])
+  @@index([accountExpiresAt])
 }
 
 model PasswordCredential {
@@ -195,6 +198,8 @@ model EmployeeInvitation {
   roles       Json
   tokenHash   String   @unique
   status      String   @default("PENDING")
+  kind        String   @default("EMPLOYEE")
+  accountExpiresAt DateTime?
   expiresAt   DateTime
   deliveredAt DateTime?
   createdAt   DateTime @default(now())
