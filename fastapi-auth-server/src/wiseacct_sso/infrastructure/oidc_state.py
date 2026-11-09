@@ -53,6 +53,7 @@ class OidcAuthorizationTransactionCreateInput:
     code_challenge_method: Literal["S256"] | None
     browser_binding: str
     csrf_token: str
+    admin_browser: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,7 @@ class OidcAuthorizationTransaction:
     browser_binding_hash: str
     csrf_hash: str
     expires_at_epoch_ms: int
+    admin_browser: bool = False
 
     def csrf_matches(self, csrf_token: str) -> bool:
         return hmac.compare_digest(self.csrf_hash, oidc_secret_digest(csrf_token))
@@ -96,6 +98,8 @@ class OidcAuthorizationCodeCreateInput:
     nonce: str | None
     code_challenge: str | None
     code_challenge_method: Literal["S256"] | None
+    auth_time: int | None = None
+    session_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +112,8 @@ class StoredOidcAuthorizationCode:
     code_challenge: str | None
     code_challenge_method: Literal["S256"] | None
     expires_at_epoch_ms: int
+    auth_time: int | None = None
+    session_version: int | None = None
 
 
 class OidcStateCreationError(RuntimeError):
@@ -201,7 +207,11 @@ def _transaction_record(raw: bytes) -> OidcAuthorizationTransaction | None:
         "csrfHash",
         "expiresAtEpochMs",
     }
-    if record is None or set(record) != required or record["purpose"] != "oidc-transaction":
+    if (
+        record is None
+        or set(record) != required
+        or record["purpose"] not in ("oidc-transaction", "admin-browser-login")
+    ):
         return None
     client_id = _nonempty(record["clientId"])
     redirect_uri = _nonempty(record["redirectUri"])
@@ -235,6 +245,7 @@ def _transaction_record(raw: bytes) -> OidcAuthorizationTransaction | None:
         browser_binding_hash=binding_hash,
         csrf_hash=csrf_hash,
         expires_at_epoch_ms=expires,
+        admin_browser=record["purpose"] == "admin-browser-login",
     )
 
 
@@ -282,7 +293,11 @@ def _code_record(raw: bytes) -> StoredOidcAuthorizationCode | None:
         "codeChallengeMethod",
         "expiresAtEpochMs",
     }
-    if record is None or set(record) != required or record["purpose"] != "oidc-code":
+    if (
+        record is None
+        or not required <= set(record) <= required | {"authTime", "sessionVersion"}
+        or record["purpose"] != "oidc-code"
+    ):
         return None
     client_id = _nonempty(record["clientId"])
     redirect_uri = _nonempty(record["redirectUri"])
@@ -301,6 +316,12 @@ def _code_record(raw: bytes) -> StoredOidcAuthorizationCode | None:
         or expires is None
     ):
         return None
+    auth_time = record.get("authTime")
+    if auth_time is not None and (type(auth_time) is not int or auth_time < 0):
+        return None
+    version = record.get("sessionVersion")
+    if version is not None and (type(version) is not int or version < 0):
+        return None
     return StoredOidcAuthorizationCode(
         client_id=client_id,
         redirect_uri=redirect_uri,
@@ -310,6 +331,8 @@ def _code_record(raw: bytes) -> StoredOidcAuthorizationCode | None:
         code_challenge=pkce[0],
         code_challenge_method=pkce[1],
         expires_at_epoch_ms=expires,
+        auth_time=auth_time,
+        session_version=version,
     )
 
 
@@ -329,7 +352,7 @@ class OidcAuthorizationTransactionStore:
         expires = self._now_epoch_ms() + OIDC_TRANSACTION_TTL_SECONDS * 1000
         raw = _serialize(
             {
-                "purpose": "oidc-transaction",
+                "purpose": "admin-browser-login" if input.admin_browser else "oidc-transaction",
                 "clientId": input.client_id,
                 "redirectUri": input.redirect_uri,
                 "scopes": list(input.scopes),
@@ -485,6 +508,8 @@ class OidcAuthorizationCodeStore:
         raw = _serialize(
             {
                 "purpose": "oidc-code",
+                "authTime": input.auth_time,
+                "sessionVersion": input.session_version,
                 "clientId": input.client_id,
                 "redirectUri": input.redirect_uri,
                 "userId": input.user_id,

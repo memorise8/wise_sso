@@ -24,6 +24,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 
+from wiseacct_sso.domain.users import UserType
+
 
 class UserStatus(StrEnum):
     PENDING_EMAIL_VERIFICATION = "PENDING_EMAIL_VERIFICATION"
@@ -60,6 +62,8 @@ User = Table(
     "User",
     metadata,
     Column("id", Text, nullable=False),
+    Column("ssoSessionVersion", Integer, nullable=False, server_default=text("0")),
+    Column("userType", Enum(UserType, name="UserType", native_enum=True, validate_strings=True)),
     Column("email", Text),
     Column("name", Text),
     Column("profileUrl", Text),
@@ -69,6 +73,7 @@ User = Table(
     Column("emailVerified", Boolean, nullable=False, server_default=text("false")),
     PrimaryKeyConstraint("id", name="User_pkey"),
     Index("User_email_key", "email", unique=True),
+    Index("User_userType_idx", "userType"),
 )
 
 PasswordCredential = Table(
@@ -304,3 +309,20 @@ UserRole = Table(
 )
 
 TABLES: Final[tuple[Table, ...]] = tuple(metadata.sorted_tables)
+
+EmployeeInvitation = Table(
+    "EmployeeInvitation",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("email", Text, nullable=False),
+    Column("name", Text, nullable=False),
+    Column("roles", JSONB, nullable=False),
+    Column("tokenHash", Text, nullable=False, unique=True),
+    Column("status", Text, nullable=False, server_default=text("'PENDING'")),
+    Column("expiresAt", timestamp_ms, nullable=False),
+    Column("deliveredAt", timestamp_ms),
+    Column("createdAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("updatedAt", timestamp_ms, nullable=False),
+    Index("EmployeeInvitation_email_idx", "email"),
+    Index("EmployeeInvitation_status_expiresAt_idx", "status", "expiresAt"),
+)

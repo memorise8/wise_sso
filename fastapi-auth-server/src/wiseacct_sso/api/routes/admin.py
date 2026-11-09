@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Annotated, Literal, Never
+from typing import Annotated, Literal, Never, cast
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
 from wiseacct_sso.api.dependencies import InjectedPhase6Services
 from wiseacct_sso.api.errors import ExpressJsonResponse, PublicHttpError
@@ -102,6 +103,9 @@ class _QueryModel(BaseModel):
 
 
 class UserListQuery(_QueryModel):
+    user_type: Literal["EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"] | None = Field(
+        default=None, alias="userType"
+    )
     status: UserStatusValue | None = None
     email: TrimmedNonEmpty | None = None
     role: TrimmedNonEmpty | None = None
@@ -123,6 +127,28 @@ class StatusBody(BaseModel):
 
     status: UserStatusValue
     reason_code: TrimmedNonEmpty = Field(default="ADMIN_STATUS_CHANGE", alias="reasonCode")
+
+
+class UserTypeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_type: Literal["EMPLOYEE", "CUSTOMER"] | None = Field(alias="userType")
+    reason_code: TrimmedNonEmpty = Field(default="ADMIN_USER_TYPE_CHANGE", alias="reasonCode")
+
+
+class BulkUserTypeBody(UserTypeBody):
+    user_ids: tuple[Annotated[str, Field(min_length=1, max_length=128)], ...] = Field(
+        alias="userIds", min_length=1, max_length=100
+    )
+    reason_code: Annotated[str, BeforeValidator(_strip), Field(min_length=1, max_length=128)] = (
+        Field(alias="reasonCode")
+    )
+
+    @field_validator("user_ids")
+    @classmethod
+    def validate_ids(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(values)) != len(values) or any(v != v.strip() for v in values):
+            raise ValueError("User IDs must be unique and have no surrounding whitespace")
+        return values
 
 
 class RoleBody(BaseModel):
@@ -158,6 +184,9 @@ async def _admin_actor(
     original_path = getattr(request.state, "express_original_decoded_path", None)
     audit_route = original_path if isinstance(original_path, str) else request.url.path
     try:
+        browser_actor = getattr(request.app.state, "admin_browser_actor", None)
+        if browser_actor is not None:
+            return await cast(Callable[[Request], Awaitable[str]], browser_actor)(request)
         return await services.authenticate_admin(
             _bearer(authorization),
             route=audit_route,
@@ -309,6 +338,7 @@ def _user_page(page: AdminUserPage) -> ExpressJsonResponse:
                     "email": user.email,
                     "name": user.name,
                     "status": user.status.value,
+                    "userType": user.user_type,
                     "createdAt": _iso(user.created_at),
                     "roles": [
                         {
@@ -354,7 +384,7 @@ def _audit_page(page: AdminAuditLogPage) -> ExpressJsonResponse:
     )
 
 
-def build_admin_router(*, prefix: Literal["/admin", "/manage-api"] = "/admin") -> APIRouter:
+def build_admin_router(*, prefix: Literal["/admin", "/manage-api", ""] = "/admin") -> APIRouter:
     router = APIRouter(prefix=prefix)
 
     @router.get("/users")
@@ -365,7 +395,7 @@ def build_admin_router(*, prefix: Literal["/admin", "/manage-api"] = "/admin") -
         services: InjectedPhase6Services,
         query: Annotated[UserListQuery, Query()],
     ) -> ExpressJsonResponse:
-        _reject_repeated_query(request, ("page", "pageSize", "status", "email", "role"))
+        _reject_repeated_query(request, ("page", "pageSize", "status", "email", "role", "userType"))
         try:
             input = AdminUserListInput(
                 page=query.page,
@@ -373,6 +403,7 @@ def build_admin_router(*, prefix: Literal["/admin", "/manage-api"] = "/admin") -
                 status=UserStatus(query.status) if query.status is not None else None,
                 email=query.email,
                 role=query.role,
+                user_type=query.user_type,
             )
             return _user_page(await services.list_users(input))
         except DomainError as error:
@@ -417,6 +448,52 @@ def build_admin_router(*, prefix: Literal["/admin", "/manage-api"] = "/admin") -
             return _audit_page(await services.list_audit_logs(input))
         except DomainError as error:
             _raise_public(error)
+
+    @router.patch("/users/type")
+    async def set_user_types(
+        request: Request,
+        actor_id: AdminActor,
+        services: InjectedPhase6Services,
+        body: Annotated[BulkUserTypeBody, Body()],
+    ) -> ExpressJsonResponse:
+        if request.scope.get("query_string"):
+            raise PublicHttpError(400, "INVALID_REQUEST", "Query parameters are not allowed")
+        try:
+            changed, unchanged = await services.set_user_types(
+                actor_user_id=actor_id,
+                target_user_ids=body.user_ids,
+                user_type=body.user_type,
+                reason_code=body.reason_code,
+            )
+        except DomainError as error:
+            _raise_public(error)
+        return ExpressJsonResponse(
+            content={
+                "requestedCount": len(body.user_ids),
+                "changedCount": changed,
+                "unchangedCount": unchanged,
+            }
+        )
+
+    @router.patch("/users/{user_id}/type")
+    async def set_user_type(
+        user_id: str,
+        request: Request,
+        actor_id: AdminActor,
+        services: InjectedPhase6Services,
+        body: Annotated[UserTypeBody, Body()],
+    ) -> ExpressJsonResponse:
+        user_id = _admin_path_parameter(request, "id", user_id)
+        try:
+            changed = await services.set_user_type(
+                actor_user_id=actor_id,
+                target_user_id=user_id,
+                user_type=body.user_type,
+                reason_code=body.reason_code,
+            )
+        except DomainError as error:
+            _raise_public(error)
+        return ExpressJsonResponse(content={"userTypeChanged": changed})
 
     @router.patch("/users/{user_id}/status")
     async def set_user_status(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import parse_qsl, urlsplit
 
 from argon2 import extract_parameters
@@ -62,6 +62,10 @@ class OidcClientPolicy(BaseModel):
         alias="groupsServiceKeys", min_length=1, max_length=32
     )
     allow_without_required_role: bool = Field(default=False, alias="allowWithoutRequiredRole")
+    allowed_user_types: tuple[Literal["EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"], ...] = Field(
+        alias="allowedUserTypes", min_length=1, max_length=3
+    )
+    sso_auto_login: bool = Field(default=True, alias="ssoAutoLogin", strict=True)
     require_pkce: bool = Field(default=True, alias="requirePkce")
     allowed_scopes: tuple[NonEmptyString, ...] = Field(
         default=_DEFAULT_SCOPES, alias="allowedScopes", min_length=1, max_length=16

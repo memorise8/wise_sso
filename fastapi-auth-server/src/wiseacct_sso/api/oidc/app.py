@@ -15,11 +15,14 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.exceptions import HTTPException as StarletteHttpException
 
+from wiseacct_sso.api.dependencies import Phase6Services
+from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import (
     AuthorizationRequest,
     AuthorizationResult,
     AuthorizationStart,
     OidcRequestContext,
+    OidcService,
     OidcServiceError,
     TokenExchangeInput,
     TokenResponse,
@@ -28,6 +31,7 @@ from wiseacct_sso.application.oidc import (
 from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS, OAuthProvider
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.infrastructure.oidc_state import provider_state_transaction_id
+from wiseacct_sso.infrastructure.sso_sessions import SSO_COOKIE_NAME
 
 from .parsing import (
     MAX_FORM_BYTES,
@@ -53,6 +57,7 @@ _AUTHORIZE_FIELDS = frozenset(
         "code_challenge_method",
         "response_mode",
         "prompt",
+        "max_age",
     }
 )
 _TOKEN_FIELDS = frozenset(
@@ -73,7 +78,7 @@ _PROVIDER_INFORMATIONAL_FIELDS = frozenset({"scope", "authuser", "prompt", "hd",
 class OidcHttpService(Protocol):
     async def begin_authorization(
         self, request: AuthorizationRequest, context: OidcRequestContext
-    ) -> AuthorizationStart: ...
+    ) -> AuthorizationStart | AuthorizationResult: ...
 
     async def password_login(
         self,
@@ -119,6 +124,12 @@ class OidcHttpService(Protocol):
 
     async def userinfo(self, access_token: str) -> UserInfo: ...
 
+    async def session_logout_token(self, token: str | None) -> str | None: ...
+
+    async def end_session(
+        self, token: str | None, csrf_token: str, context: OidcRequestContext
+    ) -> None: ...
+
 
 def build_oidc_app(
     *,
@@ -126,6 +137,9 @@ def build_oidc_app(
     public_origin: str,
     providers: tuple[OAuthProvider, ...] = (),
     static_root: Path | None = None,
+    invitation_service: EmployeeInvitationService | None = None,
+    portal_service: OidcService | None = None,
+    admin_services: Phase6Services | None = None,
 ) -> FastAPI:
     """Build the full-path OIDC application used by the outer dispatch middleware."""
 
@@ -188,6 +202,14 @@ def build_oidc_app(
             challenge = _optional_bounded(values, "code_challenge", 128)
             challenge_method = _optional_bounded(values, "code_challenge_method", 16)
             prompt = _optional_bounded(values, "prompt", 64)
+            max_age_raw = _optional_bounded(values, "max_age", 10)
+            if max_age_raw is not None and (
+                not max_age_raw.isascii()
+                or not max_age_raw.isdecimal()
+                or int(max_age_raw) > 2_147_483_647
+            ):
+                raise ParseError("invalid max_age")
+            max_age = int(max_age_raw) if max_age_raw is not None else None
             response_mode = _optional_bounded(values, "response_mode", 16)
             if response_mode not in (None, "query"):
                 raise ParseError("unsupported response mode")
@@ -202,6 +224,7 @@ def build_oidc_app(
                     code_challenge=challenge,
                     code_challenge_method=challenge_method,
                     prompt=prompt,
+                    max_age=max_age,
                 ),
                 _context(request),
             )
@@ -209,11 +232,15 @@ def build_oidc_app(
             return _oauth_error("invalid_request", "Invalid authorization request", 400)
         except OidcServiceError as error:
             return _service_error_response(error)
+        if isinstance(start, AuthorizationResult):
+            return RedirectResponse(start.redirect_url, status_code=303)
         response = RedirectResponse(
             f"/oauth2/login?{urlencode({'transaction': start.transaction_id})}",
             status_code=303,
         )
         _set_transaction_cookies(response, start)
+        if start.clear_session:
+            _clear_session_cookie(response)
         return response
 
     @app.get("/oauth2/login", include_in_schema=False)
@@ -282,6 +309,7 @@ def build_oidc_app(
         if transaction is None:
             raise RuntimeError("OIDC login completed without a transaction")
         response = RedirectResponse(result.redirect_url, status_code=303)
+        _set_session_cookie(response, result)
         _clear_transaction_cookies(response, transaction)
         return response
 
@@ -356,7 +384,46 @@ def build_oidc_app(
         if transaction is None:
             raise RuntimeError("OIDC provider callback completed without a transaction")
         response = RedirectResponse(result.redirect_url, status_code=303)
+        _set_session_cookie(response, result)
         _clear_transaction_cookies(response, transaction)
+        return response
+
+    @app.get("/oauth2/session", include_in_schema=False)
+    async def session_page(request: Request) -> Response:
+        csrf = await service.session_logout_token(request.cookies.get(SSO_COOKIE_NAME))
+        if csrf is None:
+            response = HTMLResponse(
+                '<!doctype html><html lang="ko"><meta charset="utf-8">'
+                "<h1>중앙 SSO 세션이 없습니다.</h1></html>"
+            )
+            _clear_session_cookie(response)
+            return response
+        return HTMLResponse(
+            '<!doctype html><html lang="ko"><meta charset="utf-8"><h1>중앙 SSO 로그인 상태</h1>'
+            "<p>종료하면 다음 서비스 로그인 시 다시 인증해야 합니다. "
+            "각 서비스의 기존 로그인은 별도입니다.</p>"
+            '<form method="post" action="/oauth2/session/logout">'
+            f'<input type="hidden" name="csrf_token" value="{html.escape(csrf, quote=True)}">'
+            "<button>중앙 SSO 세션 종료</button></form></html>"
+        )
+
+    @app.post("/oauth2/session/logout", include_in_schema=False)
+    async def session_logout(request: Request) -> Response:
+        try:
+            _require_origin(request, origin)
+            if request.scope.get("query_string"):
+                raise ParseError("query not allowed")
+            values = await _form(request, allowed=frozenset({"csrf_token"}))
+            csrf = _bounded(_required_fields(values, ("csrf_token",))["csrf_token"], 128)
+            await service.end_session(request.cookies.get(SSO_COOKIE_NAME), csrf, _context(request))
+        except ParseError:
+            return _oauth_error("invalid_request", "Invalid logout request", 400)
+        response = HTMLResponse(
+            '<!doctype html><html lang="ko"><meta charset="utf-8">'
+            "<h1>중앙 SSO 세션을 종료했습니다.</h1>"
+            "<p>서비스로 돌아가 다시 로그인할 수 있습니다.</p></html>"
+        )
+        _clear_session_cookie(response)
         return response
 
     @app.post("/oauth2/token", include_in_schema=False)
@@ -424,6 +491,21 @@ def build_oidc_app(
         if result.name is not None:
             payload["name"] = result.name
         return JSONResponse(payload)
+
+    if (portal_service is None) != (admin_services is None):
+        raise ValueError("Both admin portal services are required")
+    if portal_service is not None and admin_services is not None:
+        from .admin_portal import register_admin_portal
+
+        register_admin_portal(
+            app,
+            service=portal_service,
+            admin_services=admin_services,
+            invitation_service=invitation_service,
+            origin=origin,
+            static_root=assets.parent,
+            login_template=login_template,
+        )
 
     return app
 
@@ -524,13 +606,30 @@ def _context(request: Request) -> OidcRequestContext:
             user_agent = None
         else:
             user_agent = user_agent.strip()[:512] or None
-    return OidcRequestContext(address, user_agent)
+    return OidcRequestContext(address, user_agent, request.cookies.get(SSO_COOKIE_NAME))
 
 
 def _require_origin(request: Request, public_origin: str) -> None:
     origins = request.headers.getlist("origin")
     if len(origins) != 1 or origins[0] != public_origin:
         raise ParseError("invalid origin")
+
+
+def _set_session_cookie(response: Response, result: AuthorizationResult) -> None:
+    if result.session_token is not None:
+        response.set_cookie(
+            SSO_COOKIE_NAME,
+            result.session_token,
+            max_age=result.session_max_age,
+            secure=True,
+            httponly=True,
+            samesite="lax",
+            path="/",
+        )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SSO_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
 
 
 def _cookie_suffix(transaction: str) -> str:

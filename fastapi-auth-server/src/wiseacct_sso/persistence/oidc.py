@@ -20,6 +20,8 @@ class OidcUserRecord:
     name: str | None
     status: UserStatus
     roles: tuple[RoleAssignment, ...]
+    user_type: str | None = None
+    session_version: int = 0
 
 
 class _OidcUserRow(Protocol):
@@ -28,6 +30,8 @@ class _OidcUserRow(Protocol):
     emailVerified: object
     name: str | None
     status: str | UserStatus
+    ssoSessionVersion: int
+    userType: str | None
 
 
 class OidcIdentityStore:
@@ -52,6 +56,8 @@ class OidcIdentityStore:
                     User.c.emailVerified,
                     User.c.name,
                     User.c.status,
+                    User.c.userType,
+                    User.c.ssoSessionVersion,
                 )
                 .where(User.c.id == user_id)
                 .with_for_update()
@@ -98,6 +104,8 @@ class OidcIdentityStore:
             email_verified=bool(typed.emailVerified),
             name=typed.name,
             status=UserStatus(typed.status),
+            user_type=typed.userType,
+            session_version=typed.ssoSessionVersion,
             roles=tuple(
                 RoleAssignment(service_key=str(row.serviceKey), name=str(row.name)) for row in rows
             ),

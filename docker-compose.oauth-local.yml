@@ -1,0 +1,67 @@
+name: wiseacct-sso-wiseacct-oauth
+
+services:
+  app:
+    build:
+      context: ./fastapi-auth-server
+      dockerfile: Dockerfile
+    env_file:
+      - ./fastapi-auth-server/.env.oauth-local
+    environment:
+      NODE_ENV: development
+      PORT: "4001"
+      DATABASE_URL: postgresql://fastapi_dev:synthetic-fastapi-db-only@postgres:5432/fastapi_sso_dev
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "127.0.0.1:4003:4001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - oauth-network
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4001/healthz', timeout=2)"
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fastapi_sso_dev
+      POSTGRES_USER: fastapi_dev
+      POSTGRES_PASSWORD: synthetic-fastapi-db-only
+    volumes:
+      - oauth-postgres-data:/var/lib/postgresql/data
+    networks:
+      - oauth-network
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "pg_isready -U fastapi_dev -d fastapi_sso_dev"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "no"]
+    networks:
+      - oauth-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+networks:
+  oauth-network:
+
+volumes:
+  oauth-postgres-data:

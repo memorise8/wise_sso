@@ -29,7 +29,7 @@ from wiseacct_sso.domain.admin import (
     should_revoke_for_status,
 )
 from wiseacct_sso.domain.tokens import TokenValidationError
-from wiseacct_sso.domain.users import DomainError, UserStatus
+from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
 from wiseacct_sso.infrastructure.security import JwtTokenCodec
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import application_uuid, utc_now_ms
@@ -100,7 +100,7 @@ class Phase6AdminService:
 
         assert_user_id(user_id)
         async with self._database().connection() as connection:
-            authorized = await self._directory.is_active_temis_admin(connection, user_id=user_id)
+            authorized = await self._directory.is_active_sso_admin(connection, user_id=user_id)
         if authorized:
             return
 
@@ -122,6 +122,141 @@ class Phase6AdminService:
         # Express also lets an audit-store failure mask the authorization response.
         await self._database().transaction(database_only_transaction(record_denial))
         raise DomainError(403, "FORBIDDEN", "Admin role is required")
+
+    async def _authorize_mutation(
+        self, connection: AsyncConnection, actor_user_id: str, target_user_id: str
+    ) -> tuple[str | None, UserStatus]:
+        await self._mutations.lock_policy(connection)
+        if not await self._directory.is_active_sso_admin(connection, user_id=actor_user_id):
+            raise DomainError(403, "FORBIDDEN", "Active employee SSO admin role is required")
+        return await self._mutations.user_policy(connection, user_id=target_user_id)
+
+    async def _protect_last_admin(self, connection: AsyncConnection, target_user_id: str) -> None:
+        if (
+            await self._directory.is_active_sso_admin(connection, user_id=target_user_id)
+            and await self._mutations.active_admin_count(connection) <= 1
+        ):
+            raise DomainError(
+                409, "LAST_SSO_ADMIN", "Cannot remove the last active SSO administrator"
+            )
+
+    async def set_user_type(
+        self, *, actor_user_id: str, target_user_id: str, user_type: str | None, reason_code: str
+    ) -> bool:
+        assert_user_id(target_user_id)
+        if user_type not in {None, "EMPLOYEE", "CUSTOMER"}:
+            raise DomainError(400, "INVALID_USER_TYPE", "Unsupported user type")
+        now = utc_now_ms()
+
+        async def mutate(connection: AsyncConnection) -> bool:
+            previous, _ = await self._authorize_mutation(connection, actor_user_id, target_user_id)
+            if previous == user_type:
+                return False
+            await self._assert_user_type_change_allowed(connection, target_user_id, user_type)
+            return await self._apply_user_type_change(
+                connection, actor_user_id, target_user_id, previous, user_type, reason_code, now
+            )
+
+        return await self._database().transaction(database_only_transaction(mutate))
+
+    async def set_user_types(
+        self,
+        *,
+        actor_user_id: str,
+        target_user_ids: tuple[str, ...],
+        user_type: str | None,
+        reason_code: str,
+    ) -> tuple[int, int]:
+        """Change at most 100 types atomically, applying the single-user safeguards."""
+        if not 1 <= len(target_user_ids) <= 100 or len(set(target_user_ids)) != len(
+            target_user_ids
+        ):
+            raise DomainError(400, "INVALID_REQUEST", "Select 1 to 100 unique users")
+        for user_id in target_user_ids:
+            assert_user_id(user_id)
+            if user_id != user_id.strip() or len(user_id) > 128:
+                raise DomainError(400, "INVALID_REQUEST", "Invalid user ID")
+        if user_type not in {None, "EMPLOYEE", "CUSTOMER"}:
+            raise DomainError(400, "INVALID_USER_TYPE", "Unsupported user type")
+        if not reason_code.strip() or len(reason_code) > 128:
+            raise DomainError(400, "INVALID_REQUEST", "A reason is required")
+        now = utc_now_ms()
+        batch_id = self._new_id()
+
+        async def mutate(connection: AsyncConnection) -> tuple[int, int]:
+            await self._mutations.lock_policy(connection)
+            if not await self._directory.is_active_sso_admin(connection, user_id=actor_user_id):
+                raise DomainError(403, "FORBIDDEN", "Active employee SSO admin role is required")
+            # Lock in deterministic order; validate every target before any changes.
+            pending: list[tuple[str, str | None]] = []
+            for user_id in sorted(target_user_ids):
+                previous, _ = await self._mutations.user_policy(connection, user_id=user_id)
+                if previous == user_type:
+                    continue
+                await self._assert_user_type_change_allowed(connection, user_id, user_type)
+                pending.append((user_id, previous))
+            for user_id, previous in pending:
+                await self._apply_user_type_change(
+                    connection,
+                    actor_user_id,
+                    user_id,
+                    previous,
+                    user_type,
+                    reason_code,
+                    now,
+                    batch_id=batch_id,
+                    batch_size=len(target_user_ids),
+                )
+            return len(pending), len(target_user_ids) - len(pending)
+
+        return await self._database().transaction(database_only_transaction(mutate))
+
+    async def _assert_user_type_change_allowed(
+        self, connection: AsyncConnection, user_id: str, user_type: str | None
+    ) -> None:
+        if user_type != "EMPLOYEE":
+            await self._protect_last_admin(connection, user_id)
+            if await self._mutations.central_admin_assigned(connection, user_id=user_id):
+                raise DomainError(
+                    409,
+                    "SSO_ADMIN_MUST_BE_EMPLOYEE",
+                    "Remove central admin role before changing user type",
+                )
+
+    async def _apply_user_type_change(
+        self,
+        connection: AsyncConnection,
+        actor_user_id: str,
+        user_id: str,
+        previous: str | None,
+        user_type: str | None,
+        reason_code: str,
+        now: datetime,
+        *,
+        batch_id: str | None = None,
+        batch_size: int | None = None,
+    ) -> bool:
+        changed = await self._mutations.update_user_type(
+            connection, user_id=user_id, user_type=user_type, updated_at=now
+        )
+        if not changed:
+            raise DomainError(409, "USER_CHANGED", "User could not be updated")
+        await self._mutations.revoke_all_refresh_tokens_for_user(
+            connection, user_id=user_id, revoked_at=now
+        )
+        details: dict[str, AuditDetailValue] = {"previousUserType": previous, "userType": user_type}
+        if batch_id is not None:
+            details.update(batchId=batch_id, batchSize=batch_size)
+        await self._record_mutation_audit(
+            connection,
+            event_type="admin_user_type_changed",
+            actor_user_id=actor_user_id,
+            target_user_id=user_id,
+            reason_code=reason_code,
+            details=details,
+            created_at=now,
+        )
+        return changed
 
     async def list_users(self, input: AdminUserListInput) -> AdminUserPage:
         async with self._database().connection() as connection:
@@ -154,6 +289,9 @@ class Phase6AdminService:
         audit_details = self._details(details)
 
         async def mutate(connection: AsyncConnection) -> SetUserStatusResult:
+            await self._authorize_mutation(connection, actor_user_id, target_user_id)
+            if should_revoke_for_status(parsed_status):
+                await self._protect_last_admin(connection, target_user_id)
             changed = await self._mutations.update_user_status(
                 connection,
                 user_id=target_user_id,
@@ -193,9 +331,25 @@ class Phase6AdminService:
     ) -> AssignRoleResult:
         assert_user_id(target_user_id)
         assert_role_input(service_key, name)
+        if service_key == "temis" and name == "admin":
+            raise DomainError(
+                403, "LEGACY_ADMIN_ROLE_DISABLED", "New temis:admin grants are disabled"
+            )
         created_at = utc_now_ms()
 
         async def mutate(connection: AsyncConnection) -> AssignRoleResult:
+            target_type, _ = await self._authorize_mutation(
+                connection, actor_user_id, target_user_id
+            )
+            if (
+                service_key not in {"temis", "fantra", "lab-customer"}
+                and target_type != UserType.EMPLOYEE
+            ):
+                raise DomainError(
+                    403,
+                    "EMPLOYEE_REQUIRED",
+                    "Internal service roles require employee classification",
+                )
             role = await self._mutations.upsert_role(connection, service_key=service_key, name=name)
             assigned = await self._mutations.assign_role_to_user(
                 connection, user_id=target_user_id, role_id=role.id
@@ -240,6 +394,9 @@ class Phase6AdminService:
         removed_at = now or utc_now_ms()
 
         async def mutate(connection: AsyncConnection) -> RemoveRoleResult:
+            await self._authorize_mutation(connection, actor_user_id, target_user_id)
+            if service_key == "sso" and name == "admin":
+                await self._protect_last_admin(connection, target_user_id)
             role = await self._mutations.find_role(connection, service_key=service_key, name=name)
             if role is None:
                 return RemoveRoleResult(False, None, 0)
@@ -287,6 +444,7 @@ class Phase6AdminService:
         audit_details = self._details(details)
 
         async def mutate(connection: AsyncConnection) -> RevokeSessionsResult:
+            await self._authorize_mutation(connection, actor_user_id, target_user_id)
             revoked = await self._mutations.revoke_all_refresh_tokens_for_user(
                 connection, user_id=target_user_id, revoked_at=revoked_at
             )

@@ -155,6 +155,9 @@ def _client() -> RelyingClientPolicy:
 
 
 class TrackingMail:
+    async def send_employee_invitation(self, *, to: str, invitation_url: str) -> None:
+        self.messages.append(MailLinkMessage("employee-invitation", to, invitation_url))
+
     def __init__(self, database: Database) -> None:
         self.database = database
         self.messages: list[MailLinkMessage] = []

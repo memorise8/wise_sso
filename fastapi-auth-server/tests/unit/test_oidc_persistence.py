@@ -49,6 +49,8 @@ async def test_oidc_identity_locks_user_before_plain_role_read() -> None:
                     emailVerified=True,
                     name="Person",
                     status=UserStatus.ACTIVE,
+                    userType="EMPLOYEE",
+                    ssoSessionVersion=0,
                 )
             ),
             FakeResult(

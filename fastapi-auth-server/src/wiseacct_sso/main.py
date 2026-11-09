@@ -37,6 +37,7 @@ from wiseacct_sso.api.routes.users import build_users_router
 from wiseacct_sso.api.staticfiles import ImmutableStaticFiles
 from wiseacct_sso.application.admin import Phase6AdminService
 from wiseacct_sso.application.auth import Phase5AuthService
+from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import OidcService
 from wiseacct_sso.config import Settings, get_settings
 from wiseacct_sso.domain.auth import PasswordPolicy
@@ -51,6 +52,7 @@ from wiseacct_sso.infrastructure.oidc_state import (
 from wiseacct_sso.infrastructure.oidc_tokens import OidcAccessTokenStore, OidcIdTokenSigner
 from wiseacct_sso.infrastructure.redis import RedisOptions, RedisStateStore
 from wiseacct_sso.infrastructure.security import AsyncPasswordHasher, JwtTokenCodec
+from wiseacct_sso.infrastructure.sso_sessions import SsoSessionStore
 from wiseacct_sso.lifecycle import LifecycleHooks, create_lifespan
 from wiseacct_sso.logging import configure_logging
 from wiseacct_sso.oidc_config import OidcClientRegistry
@@ -263,12 +265,24 @@ def create_runtime_app() -> FastAPI:
             codes=OidcAuthorizationCodeStore(oidc_redis),
             access_tokens=OidcAccessTokenStore(oidc_redis),
             id_tokens=OidcIdTokenSigner.from_settings(settings),
+            sessions=SsoSessionStore(oidc_redis),
             provider_config=lambda provider: oidc_provider_config_for(settings, provider),
             oauth_client=runtime_oauth_client,
             redis=runtime_redis,
         )
         oidc_app = build_oidc_app(
             service=oidc_service,
+            portal_service=oidc_service,
+            admin_services=phase6_services,
+            invitation_service=EmployeeInvitationService(
+                database=runtime_database,
+                admin=phase6_services,
+                mail=mail_service,
+                origin=settings.oidc_public_origin,
+                policy=PasswordPolicy(
+                    min_length=settings.password_min_length, allowed_email_domain=None
+                ),
+            ),
             public_origin=settings.oidc_public_origin,
             providers=tuple(
                 provider

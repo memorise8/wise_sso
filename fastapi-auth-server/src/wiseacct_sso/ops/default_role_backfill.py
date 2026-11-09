@@ -68,7 +68,7 @@ class SqlAlchemyDefaultRoleBackfillStore:
             for service_key, name in (
                 ("temis", "pending"),
                 ("temis", "user"),
-                ("temis", "admin"),
+                ("sso", "admin"),
                 (default_role.service_key, default_role.name),
             ):
                 await connection.execute(

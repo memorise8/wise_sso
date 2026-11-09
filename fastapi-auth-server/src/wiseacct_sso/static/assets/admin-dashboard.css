@@ -421,3 +421,36 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 }
+
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.bulk-actions label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.bulk-actions small {
+  flex-basis: 100%;
+  color: var(--text-secondary);
+}
+
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  accent-color: #93c5fd;
+  cursor: pointer;
+}
+
+.bulk-actions select {
+  width: auto;
+  min-width: 8rem;
+}

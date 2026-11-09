@@ -1,9 +1,11 @@
 import inspect
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from urllib.parse import urljoin
 
 from fastapi import APIRouter, Request, Response
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.datastructures import Headers
 
 from wiseacct_sso.api.staticfiles import conditional_file_response
@@ -71,6 +73,21 @@ def build_system_router(
         }
 
     def html_response(filename: str, request: Request) -> Response:
+        if filename == "auth-portal.html":
+            page = (static_root / filename).read_text()
+            for provider in ("naver", "kakao"):
+                client_key = (
+                    settings.naver_client_id if provider == "naver" else settings.kakao_client_id
+                )
+                secret = getattr(settings, f"{provider}_client_secret")
+                if provider not in settings.oauth_enabled_providers or not client_key or not secret:
+                    page = re.sub(
+                        rf'<a\b[^>]*href="/auth/{provider}"[^>]*>.*?</a>',
+                        "",
+                        page,
+                        flags=re.DOTALL,
+                    )
+            return HTMLResponse(page, headers={"cache-control": "no-store"})
         return conditional_file_response(
             static_root / filename,
             request_headers=Headers(scope=request.scope),
@@ -91,10 +108,20 @@ def build_system_router(
             methods=["GET", "HEAD"],
             include_in_schema=False,
         )
+
+    def admin_dashboard(request: Request) -> Response:
+        if settings.oidc_enabled and settings.oidc_public_origin:
+            return RedirectResponse(
+                settings.oidc_public_origin + "/oauth2/admin/dashboard",
+                303,
+                headers={"cache-control": "no-store"},
+            )
+        return html_response("admin-dashboard.html", request)
+
     for path in DASHBOARD_PATHS:
         router.add_api_route(
             path,
-            html_endpoint("admin-dashboard.html"),
+            admin_dashboard,
             methods=["GET", "HEAD"],
             include_in_schema=False,
         )

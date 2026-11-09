@@ -52,6 +52,7 @@ class OidcAccessTokenCreateInput:
     client_id: str
     user_id: str
     scopes: tuple[str, ...]
+    session_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +61,7 @@ class StoredOidcAccessToken:
     user_id: str
     scopes: tuple[str, ...]
     expires_at_epoch_ms: int
+    session_version: int | None = None
 
 
 class OidcTokenCreationError(RuntimeError):
@@ -103,6 +105,7 @@ class OidcIdTokenSigner:
         *,
         client_id: str,
         nonce: str | None = None,
+        auth_time: int | None = None,
     ) -> str:
         if (
             not identity.user_id
@@ -126,6 +129,10 @@ class OidcIdTokenSigner:
             "iss": self._issuer,
             "aud": client_id,
         }
+        if auth_time is not None:
+            if type(auth_time) is not int or not 0 <= auth_time <= int(issued_at.timestamp()):
+                raise ValueError("Invalid authentication time")
+            payload["auth_time"] = auth_time
         if identity.name is not None:
             payload["name"] = identity.name
         if nonce is not None:
@@ -154,6 +161,7 @@ def _serialize(input: OidcAccessTokenCreateInput, expires: int) -> bytes:
     return json.dumps(
         {
             "purpose": "oidc-userinfo",
+            "sessionVersion": input.session_version,
             "clientId": input.client_id,
             "userId": input.user_id,
             "scopes": list(input.scopes),
@@ -169,13 +177,19 @@ def _record(raw: bytes) -> StoredOidcAccessToken | None:
         value = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    if not isinstance(value, Mapping) or set(value) != {
+    required = {
         "purpose",
         "clientId",
         "userId",
         "scopes",
         "expiresAtEpochMs",
+    }
+    if not isinstance(value, Mapping) or not required <= set(value) <= required | {
+        "sessionVersion"
     }:
+        return None
+    version = value.get("sessionVersion")
+    if version is not None and (type(version) is not int or version < 0):
         return None
     scopes = value["scopes"]
     expires = value["expiresAtEpochMs"]
@@ -200,6 +214,7 @@ def _record(raw: bytes) -> StoredOidcAccessToken | None:
         user_id=value["userId"],
         scopes=tuple(cast(list[str], scopes)),
         expires_at_epoch_ms=expires,
+        session_version=version,
     )
 
 

@@ -5,6 +5,11 @@ from enum import StrEnum
 from typing import Protocol
 
 
+class UserType(StrEnum):
+    EMPLOYEE = "EMPLOYEE"
+    CUSTOMER = "CUSTOMER"
+
+
 class UserStatus(StrEnum):
     PENDING_EMAIL_VERIFICATION = "PENDING_EMAIL_VERIFICATION"
     ACTIVE = "ACTIVE"

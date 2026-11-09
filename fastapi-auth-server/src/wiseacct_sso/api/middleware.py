@@ -127,10 +127,12 @@ def _decode_json_body(body: bytes, charset: str) -> str:
 
 _CANONICAL_PUBLIC_ROUTES = {_ascii_lower(path): path for path in _PUBLIC_ROUTES}
 _ADMIN_ROUTE_PATTERNS = (
-    re.compile(r"^/(?P<prefix>admin|manage-api)/(?P<route>users|audit-logs)/?$", re.IGNORECASE),
+    re.compile(
+        r"^/(?P<prefix>admin|manage-api)/(?P<route>users|audit-logs|users/type)/?$", re.IGNORECASE
+    ),
     re.compile(
         r"^/(?P<prefix>admin|manage-api)/users/(?P<id>[^/]+)/"
-        r"(?P<route>status|roles|revoke-sessions)/?$",
+        r"(?P<route>status|type|roles|revoke-sessions)/?$",
         re.IGNORECASE,
     ),
     re.compile(
@@ -276,7 +278,7 @@ def _is_admin_mutation(path: str, method: str) -> bool:
     if canonical is None:
         return False
     return (
-        (method == "PATCH" and canonical.endswith("/status"))
+        (method == "PATCH" and canonical.endswith(("/status", "/type")))
         or (method == "POST" and canonical.endswith(("/roles", "/revoke-sessions")))
         or (method == "DELETE" and "/roles/" in canonical)
     )
@@ -767,7 +769,13 @@ class SecurityHeadersMiddleware:
                         )
                     # Browsers send `Origin: null` for form posts from no-referrer pages,
                     # which the strict OIDC login Origin check must keep rejecting.
-                    if name == "referrer-policy" and scope.get("path") == "/oauth2/login":
+                    if name == "referrer-policy" and scope.get("path") in {
+                        "/oauth2/login",
+                        "/oauth2/session",
+                        "/oauth2/admin/login",
+                        "/oauth2/admin/dashboard",
+                        "/oauth2/invitations/accept",
+                    }:
                         value = "same-origin"
                     headers[name] = (
                         "default-src 'none'"

@@ -145,6 +145,7 @@ async def test_password_registration_upsert_and_success_reset_have_exact_counts(
     )
     rendered = [sql(statement) for statement in registration_connection.statements]
     assert rendered[0].startswith('INSERT INTO "User"')
+    assert params(registration_connection.statements[0])["userType"] == "CUSTOMER"
     assert rendered[1].startswith('INSERT INTO "PasswordCredential"')
     assert "user@example.com" in params(registration_connection.statements[1]).values()
 

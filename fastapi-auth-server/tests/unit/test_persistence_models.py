@@ -32,6 +32,8 @@ EXPECTED_TABLES = {
 EXPECTED_COLUMNS = {
     "User": (
         "id",
+        "ssoSessionVersion",
+        "userType",
         "email",
         "name",
         "profileUrl",
@@ -107,12 +109,25 @@ EXPECTED_COLUMNS = {
 
 
 def test_metadata_has_exact_prisma_owned_table_set() -> None:
-    assert set(metadata.tables) == EXPECTED_TABLES
+    assert set(metadata.tables) == EXPECTED_TABLES | {"EmployeeInvitation"}
     assert all(table.schema is None for table in metadata.tables.values())
     assert {
         name: tuple(column.name for column in table.columns)
         for name, table in metadata.tables.items()
-    } == EXPECTED_COLUMNS
+    } == EXPECTED_COLUMNS | {
+        "EmployeeInvitation": (
+            "id",
+            "email",
+            "name",
+            "roles",
+            "tokenHash",
+            "status",
+            "expiresAt",
+            "deliveredAt",
+            "createdAt",
+            "updatedAt",
+        )
+    }
 
 
 def test_postgresql_specific_types_and_defaults_are_explicit() -> None:

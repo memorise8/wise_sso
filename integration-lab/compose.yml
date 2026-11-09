@@ -1,0 +1,43 @@
+services:
+  app:
+    environment:
+      OIDC_ENABLED: "true"
+      OIDC_PUBLIC_ORIGIN: https://localhost:4444
+      JWT_ISSUER: https://localhost:4444
+      OIDC_CLIENTS_JSON: ${LAB_OIDC_CLIENTS_JSON:?Run integration-lab setup first}
+      # Local provider credentials on legacy /auth callbacks remain unchanged.
+    volumes:
+      - ./integration-lab/.local/fixtures.json:/run/lab-fixtures.json:ro
+
+  dummy-customer:
+    image: wise-sso-integration-lab:local
+    build: ./integration-lab
+    environment:
+      LAB_KIND: customer
+      LAB_CLIENT_ID: lab-customer
+      LAB_CLIENT_SECRET: ${LAB_CUSTOMER_SECRET:?Run setup first}
+      LAB_PUBLIC_ORIGIN: https://localhost:4445
+    networks: [oauth-network]
+
+  dummy-staff:
+    image: wise-sso-integration-lab:local
+    build: ./integration-lab
+    environment:
+      LAB_KIND: staff
+      LAB_CLIENT_ID: lab-staff
+      LAB_CLIENT_SECRET: ${LAB_STAFF_SECRET:?Run setup first}
+      LAB_PUBLIC_ORIGIN: https://localhost:4446
+    networks: [oauth-network]
+
+  lab-tls:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:4444:4444"
+      - "127.0.0.1:4445:4445"
+      - "127.0.0.1:4446:4446"
+    volumes:
+      - ./integration-lab/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./integration-lab/.local/tls.crt:/certs/tls.crt:ro
+      - ./integration-lab/.local/tls.key:/certs/tls.key:ro
+    networks: [oauth-network]
+    depends_on: [app, dummy-customer, dummy-staff]

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hmac
 import secrets
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Literal, NoReturn, Protocol
 from urllib.parse import urlencode
@@ -54,6 +55,11 @@ from wiseacct_sso.infrastructure.security import (
     AsyncPasswordHasher,
     sha256_token,
 )
+from wiseacct_sso.infrastructure.sso_sessions import (
+    SSO_SESSION_TTL_SECONDS,
+    SsoSession,
+    SsoSessionStore,
+)
 from wiseacct_sso.oidc_config import OidcClientPolicy, OidcClientRegistry
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import UserStatus as PersistenceUserStatus
@@ -64,6 +70,7 @@ from wiseacct_sso.persistence.stores import (
     AuditStore,
     FailedLoginStore,
     PasswordAuthStore,
+    PasswordCredentialRecord,
 )
 
 DatabaseProvider = Callable[[], Database]
@@ -81,6 +88,7 @@ class CleanupLogger(Protocol):
 class OidcRequestContext:
     ip_address: str | None
     user_agent: str | None
+    session_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +102,7 @@ class AuthorizationRequest:
     code_challenge: str | None
     code_challenge_method: str | None
     prompt: str | None = None
+    max_age: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,11 +110,14 @@ class AuthorizationStart:
     transaction_id: str
     csrf_token: str
     browser_binding: str
+    clear_session: bool = False
 
 
 @dataclass(frozen=True, slots=True)
 class AuthorizationResult:
     redirect_url: str
+    session_token: str | None = field(default=None, repr=False)
+    session_max_age: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +145,18 @@ class UserInfo:
     email_verified: Literal[True]
     name: str | None
     groups: tuple[str, ...]
+
+
+ADMIN_AUTH_MAX_AGE_SECONDS = 15 * 60
+ADMIN_BROWSER_CLIENT = "wise-sso-admin"
+
+
+@dataclass(frozen=True, slots=True)
+class AdminBrowserIdentity:
+    user_id: str
+    email: str
+    csrf_token: str = field(repr=False)
+    auth_time: int
 
 
 class OidcServiceError(Exception):
@@ -171,6 +195,7 @@ class OidcService:
         codes: OidcAuthorizationCodeStore,
         access_tokens: OidcAccessTokenStore,
         id_tokens: OidcIdTokenSigner,
+        sessions: SsoSessionStore | None = None,
         provider_config: ProviderConfigResolver | None = None,
         oauth_client: OAuthClientProvider | None = None,
         redis: RedisProvider | None = None,
@@ -184,6 +209,7 @@ class OidcService:
             raise ValueError("OIDC client rate-limit settings must be positive")
         if access_token_ttl_seconds <= 0:
             raise ValueError("OIDC access-token expiry must be positive")
+        self._sessions = sessions
         self._database = database
         self._passwords = passwords
         self._clients = clients
@@ -207,8 +233,7 @@ class OidcService:
 
     async def begin_authorization(
         self, request: AuthorizationRequest, context: OidcRequestContext
-    ) -> AuthorizationStart:
-        del context  # Request context is recorded when the authorization decision is made.
+    ) -> AuthorizationStart | AuthorizationResult:
         client = self._client(request.client_id)
         redirect_uri = self._validated_redirect(client, request.redirect_uri)
         if request.response_type != "code":
@@ -218,13 +243,15 @@ class OidcService:
                 redirect_uri,
                 request.state,
             )
-        if request.prompt == "none":
-            self._raise_authorization_error(
-                "login_required", "Interactive login is required", redirect_uri, request.state
-            )
-        if request.prompt not in (None, "login", "consent", "select_account"):
+        if request.prompt not in (None, "none", "login", "consent", "select_account"):
             self._raise_authorization_error(
                 "invalid_request", "Unsupported prompt", redirect_uri, request.state
+            )
+        if request.max_age is not None and (
+            type(request.max_age) is not int or not 0 <= request.max_age <= 2_147_483_647
+        ):
+            self._raise_authorization_error(
+                "invalid_request", "Invalid max_age", redirect_uri, request.state
             )
         try:
             scopes = parse_requested_scopes(" ".join(request.scopes), client.allowed_scopes)
@@ -236,6 +263,57 @@ class OidcService:
         except ValueError as error:
             code = "invalid_scope" if "scope" in str(error).lower() else "invalid_request"
             self._raise_authorization_error(code, str(error), redirect_uri, request.state)
+
+        clear_session = False
+        session = (
+            await self._sessions.get(context.session_token) if self._sessions is not None else None
+        )
+        if context.session_token and session is None:
+            clear_session = True
+        can_reuse = (
+            session is not None
+            and client.sso_auto_login
+            and request.prompt in (None, "none")
+            and request.max_age != 0
+            and (
+                request.max_age is None
+                or self._clock_ms() // 1000 - session.auth_time <= request.max_age
+            )
+        )
+        if can_reuse and session is not None:
+            # Reuse authentication only: the target client's DB authorization is checked afresh.
+            transaction = OidcAuthorizationTransaction(
+                client_id=client.client_id,
+                redirect_uri=redirect_uri,
+                scopes=scopes,
+                state=request.state,
+                nonce=request.nonce,
+                code_challenge=request.code_challenge,
+                code_challenge_method="S256" if request.code_challenge is not None else None,
+                browser_binding_hash="",
+                csrf_hash="",
+                expires_at_epoch_ms=self._clock_ms() + 60_000,
+            )
+            try:
+                return await self._complete_authorization(
+                    session.user_id,
+                    transaction,
+                    context,
+                    login_method="sso",
+                    existing_session=session,
+                )
+            except OidcServiceError as error:
+                if error.error != "login_required":
+                    self._raise_authorization_error(
+                        error.error, error.description, redirect_uri, request.state
+                    )
+                if self._sessions is not None:
+                    await self._sessions.revoke(context.session_token)
+                clear_session = True
+        if request.prompt == "none":
+            self._raise_authorization_error(
+                "login_required", "Interactive login is required", redirect_uri, request.state
+            )
 
         csrf_token = secrets.token_urlsafe(32)
         browser_binding = secrets.token_urlsafe(32)
@@ -251,7 +329,7 @@ class OidcService:
             csrf_token=csrf_token,
         )
         transaction_id = await self._transactions.create(record)
-        return AuthorizationStart(transaction_id, csrf_token, browser_binding)
+        return AuthorizationStart(transaction_id, csrf_token, browser_binding, clear_session)
 
     async def password_login(
         self,
@@ -267,6 +345,25 @@ class OidcService:
         if not transaction.csrf_matches(csrf_token):
             raise OidcServiceError("invalid_request", "Invalid login transaction")
 
+        credential = await self._authenticate_password(
+            email, password, context, transaction.client_id
+        )
+
+        consumed = await self._transactions.consume(transaction_id, browser_binding=browser_binding)
+        if consumed is None or consumed != transaction:
+            raise OidcServiceError("invalid_request", "Invalid login transaction")
+        return await self._complete_authorization(
+            credential.user_id,
+            consumed,
+            context,
+            login_method="password",
+            reset_password_login=True,
+            verified_password_hash=credential.password_hash,
+        )
+
+    async def _authenticate_password(
+        self, email: str, password: str, context: OidcRequestContext, client_id: str
+    ) -> PasswordCredentialRecord:
         normalized_email = normalize_email(email)
         async with self._database().connection() as connection:
             credential = await self._password_store.find_credential_by_email(
@@ -320,23 +417,173 @@ class OidcService:
             await self._write_failure_audit(
                 event_type="oidc_authorize",
                 user_id=failure.user_id,
-                client_id=transaction.client_id,
+                client_id=client_id,
                 reason_code=reason,
                 context=context,
             )
             raise failure
         if credential is None:
             raise RuntimeError("successful OIDC authentication lost its credential")
+        return credential
 
+    async def admin_login_start(self, redirect_uri: str) -> AuthorizationStart:
+        csrf, binding = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        transaction = await self._transactions.create(
+            OidcAuthorizationTransactionCreateInput(
+                client_id=ADMIN_BROWSER_CLIENT,
+                redirect_uri=redirect_uri,
+                scopes=("openid",),
+                state=None,
+                nonce=None,
+                code_challenge=None,
+                code_challenge_method=None,
+                browser_binding=binding,
+                csrf_token=csrf,
+                admin_browser=True,
+            )
+        )
+        return AuthorizationStart(transaction, csrf, binding)
+
+    @staticmethod
+    def _admin_eligible(user: OidcUserRecord | None) -> bool:
+        return (
+            user is not None
+            and user.status is PersistenceUserStatus.ACTIVE
+            and bool(user.email)
+            and user.email_verified
+            and user.user_type == "EMPLOYEE"
+            and any(role.service_key == "sso" and role.name == "admin" for role in user.roles)
+        )
+
+    async def admin_browser_identity(self, context: OidcRequestContext) -> AdminBrowserIdentity:
+        session = (
+            await self._sessions.get(context.session_token) if self._sessions is not None else None
+        )
+        if (
+            session is None
+            or self._clock_ms() // 1000 - session.auth_time >= ADMIN_AUTH_MAX_AGE_SECONDS
+        ):
+            raise OidcServiceError(
+                "login_required", "Administrator reauthentication is required", status_code=401
+            )
+        async with self._database().engine.begin() as connection:
+            user = await self._identities.lock_user(connection, user_id=session.user_id)
+            if (
+                user is None
+                or user.status is not PersistenceUserStatus.ACTIVE
+                or user.session_version != session.version
+            ):
+                raise OidcServiceError(
+                    "login_required", "Administrator session is no longer valid", status_code=401
+                )
+            if not self._admin_eligible(user):
+                await self._create_audit(
+                    connection,
+                    event_type="admin_authorization_failure",
+                    outcome="failure",
+                    user_id=session.user_id,
+                    client_id=ADMIN_BROWSER_CLIENT,
+                    reason_code="FORBIDDEN",
+                    context=context,
+                )
+            else:
+                return AdminBrowserIdentity(
+                    user.id, user.email or "", session.csrf, session.auth_time
+                )
+        raise OidcServiceError(
+            "access_denied", "Active employee SSO admin role is required", status_code=403
+        )
+
+    async def admin_password_login(
+        self,
+        *,
+        transaction_id: str,
+        browser_binding: str,
+        csrf_token: str,
+        email: str,
+        password: str,
+        redirect_uri: str,
+        context: OidcRequestContext,
+    ) -> AuthorizationResult:
+        transaction = await self._bound_transaction(
+            transaction_id, browser_binding, admin_browser=True
+        )
+        if (
+            transaction.client_id != ADMIN_BROWSER_CLIENT
+            or transaction.redirect_uri != redirect_uri
+            or not transaction.csrf_matches(csrf_token)
+        ):
+            raise OidcServiceError("invalid_request", "Invalid admin login transaction")
+        await self._enforce_client_rate_limit(ADMIN_BROWSER_CLIENT)
+        credential = await self._authenticate_password(
+            email, password, context, ADMIN_BROWSER_CLIENT
+        )
         consumed = await self._transactions.consume(transaction_id, browser_binding=browser_binding)
         if consumed is None or consumed != transaction:
-            raise OidcServiceError("invalid_request", "Invalid login transaction")
-        return await self._complete_authorization(
-            credential.user_id,
-            consumed,
-            context,
-            login_method="password",
-            reset_password_login=True,
+            raise OidcServiceError("invalid_request", "Invalid admin login transaction")
+        prepared: str | None = None
+        denied = False
+        try:
+            async with self._database().engine.begin() as connection:
+                user = await self._identities.lock_user(connection, user_id=credential.user_id)
+                current = await self._password_store.find_credential_by_email(
+                    connection, email=credential.email
+                )
+                if (
+                    current is None
+                    or current.user_id != credential.user_id
+                    or not hmac.compare_digest(current.password_hash, credential.password_hash)
+                ):
+                    raise OidcServiceError(
+                        "login_required", "Credentials changed; authenticate again"
+                    )
+                if not self._admin_eligible(user):
+                    denied = True
+                    await self._create_audit(
+                        connection,
+                        event_type="admin_authorization_failure",
+                        outcome="failure",
+                        user_id=credential.user_id,
+                        client_id=ADMIN_BROWSER_CLIENT,
+                        reason_code="FORBIDDEN",
+                        context=context,
+                    )
+                else:
+                    if self._sessions is None or user is None:
+                        raise OidcServiceError(
+                            "temporarily_unavailable",
+                            "Session store is unavailable",
+                            status_code=503,
+                        )
+                    await self._password_store.mark_login_success(
+                        connection, user_id=user.id, updated_at=utc_now_ms()
+                    )
+                    prepared = await self._sessions.create(
+                        user.id, user.session_version, self._clock_ms() // 1000
+                    )
+                    await self._create_audit(
+                        connection,
+                        event_type="admin_browser_login",
+                        outcome="success",
+                        user_id=user.id,
+                        client_id=ADMIN_BROWSER_CLIENT,
+                        reason_code=None,
+                        context=context,
+                    )
+                    await self._sessions.revoke(context.session_token)
+        except Exception:
+            if prepared is not None and self._sessions is not None:
+                try:
+                    await self._sessions.revoke(prepared)
+                except Exception as error:
+                    self._report_cleanup_failure("revoke_admin_login_session", error)
+            raise
+        if denied or prepared is None:
+            raise OidcServiceError(
+                "access_denied", "Active employee SSO admin role is required", status_code=403
+            )
+        return AuthorizationResult(
+            redirect_uri, session_token=prepared, session_max_age=SSO_SESSION_TTL_SECONDS
         )
 
     async def provider_start(
@@ -489,6 +736,12 @@ class OidcService:
             async with self._database().engine.begin() as connection:
                 user = await self._identities.lock_user(connection, user_id=stored.user_id)
                 identity, denial = self._eligible_identity(user, client)
+                if (
+                    user is not None
+                    and stored.session_version is not None
+                    and user.session_version != stored.session_version
+                ):
+                    identity, denial = None, "OIDC_SESSION_REVOKED"
                 if identity is None:
                     await self._create_audit(
                         connection,
@@ -505,6 +758,7 @@ class OidcService:
                             client_id=client.client_id,
                             user_id=identity.user_id,
                             scopes=stored.scopes,
+                            session_version=user.session_version if user is not None else None,
                         )
                     )
                     groups = project_groups(identity, client)
@@ -518,6 +772,7 @@ class OidcService:
                         ),
                         client_id=client.client_id,
                         nonce=stored.nonce,
+                        **({"auth_time": stored.auth_time} if stored.auth_time is not None else {}),
                     )
                     await self._create_audit(
                         connection,
@@ -556,6 +811,12 @@ class OidcService:
         async with self._database().engine.begin() as connection:
             user = await self._identities.lock_user(connection, user_id=stored.user_id)
             identity, _ = self._eligible_identity(user, client)
+            if (
+                user is not None
+                and stored.session_version is not None
+                and user.session_version != stored.session_version
+            ):
+                identity = None
             if identity is None:
                 await self._best_effort_revoke_access(access_token)
                 raise OidcServiceError(
@@ -581,13 +842,41 @@ class OidcService:
         login_method: str,
         reset_password_login: bool = False,
         provider: str | None = None,
+        existing_session: SsoSession | None = None,
+        verified_password_hash: str | None = None,
     ) -> AuthorizationResult:
         client = self._client(transaction.client_id)
         prepared_code: str | None = None
+        prepared_session: str | None = None
+        auth_time = (
+            existing_session.auth_time if existing_session is not None else self._clock_ms() // 1000
+        )
         denial: str | None = None
         try:
             async with self._database().engine.begin() as connection:
                 user = await self._identities.lock_user(connection, user_id=user_id)
+                if existing_session is not None and (
+                    user is None
+                    or user.status is not PersistenceUserStatus.ACTIVE
+                    or user.session_version != existing_session.version
+                ):
+                    raise OidcServiceError("login_required", "Interactive login is required")
+                if (
+                    verified_password_hash is not None
+                    and user is not None
+                    and user.email is not None
+                ):
+                    current = await self._password_store.find_credential_by_email(
+                        connection, email=user.email
+                    )
+                    if (
+                        current is None
+                        or current.user_id != user.id
+                        or not hmac.compare_digest(current.password_hash, verified_password_hash)
+                    ):
+                        raise OidcServiceError(
+                            "login_required", "Credentials changed; authenticate again"
+                        )
                 identity, denial = self._eligible_identity(user, client)
                 if identity is None:
                     await self._create_audit(
@@ -614,8 +903,16 @@ class OidcService:
                             nonce=transaction.nonce,
                             code_challenge=transaction.code_challenge,
                             code_challenge_method=transaction.code_challenge_method,
+                            auth_time=auth_time,
+                            session_version=user.session_version if user is not None else None,
                         )
                     )
+                    if self._sessions is not None and existing_session is None:
+                        if user is None:
+                            raise RuntimeError("Missing authenticated user")
+                        prepared_session = await self._sessions.create(
+                            user.id, user.session_version, auth_time
+                        )
                     await self._create_audit(
                         connection,
                         event_type="oidc_authorize",
@@ -627,9 +924,16 @@ class OidcService:
                         provider=provider,
                         details={"loginMethod": login_method},
                     )
+                    if prepared_session is not None and self._sessions is not None:
+                        await self._sessions.revoke(context.session_token)
         except Exception:
             if prepared_code is not None:
                 await self._best_effort_consume_code(prepared_code, client.client_id)
+            if prepared_session is not None and self._sessions is not None:
+                try:
+                    await self._sessions.revoke(prepared_session)
+                except Exception as error:
+                    self._report_cleanup_failure("revoke_sso_session", error)
             raise
         if prepared_code is None:
             raise OidcServiceError("access_denied", "Account is not eligible", status_code=403)
@@ -638,14 +942,52 @@ class OidcService:
                 transaction.redirect_uri,
                 code=prepared_code,
                 **({"state": transaction.state} if transaction.state is not None else {}),
-            )
+            ),
+            session_token=prepared_session,
+            session_max_age=SSO_SESSION_TTL_SECONDS if prepared_session is not None else 0,
         )
 
+    async def session_logout_token(self, token: str | None) -> str | None:
+        session = await self._sessions.get(token) if self._sessions is not None else None
+        if session is None:
+            return None
+        async with self._database().engine.begin() as connection:
+            user = await self._identities.lock_user(connection, user_id=session.user_id)
+            if (
+                user is None
+                or user.status is not PersistenceUserStatus.ACTIVE
+                or user.session_version != session.version
+            ):
+                if self._sessions is not None:
+                    await self._sessions.revoke(token)
+                return None
+        return session.csrf
+
+    async def end_session(
+        self, token: str | None, csrf_token: str, context: OidcRequestContext
+    ) -> None:
+        session = await self._sessions.get(token) if self._sessions is not None else None
+        if session is None or not hmac.compare_digest(session.csrf, csrf_token):
+            raise OidcServiceError("invalid_request", "Invalid logout request")
+        if self._sessions is None:
+            raise OidcServiceError("invalid_request", "No central session")
+        await self._sessions.revoke(token)
+        async with self._database().engine.begin() as connection:
+            await self._create_audit(
+                connection,
+                event_type="oidc_session_logout",
+                outcome="success",
+                user_id=session.user_id,
+                client_id="sso",
+                reason_code=None,
+                context=context,
+            )
+
     async def _bound_transaction(
-        self, transaction_id: str, browser_binding: str
+        self, transaction_id: str, browser_binding: str, *, admin_browser: bool = False
     ) -> OidcAuthorizationTransaction:
         transaction = await self._transactions.get(transaction_id, browser_binding=browser_binding)
-        if transaction is None:
+        if transaction is None or transaction.admin_browser != admin_browser:
             raise OidcServiceError("invalid_request", "Invalid login transaction")
         if transaction.expires_at_epoch_ms <= self._clock_ms():
             await self._transactions.discard(transaction_id)
@@ -659,6 +1001,8 @@ class OidcService:
             return None, "OIDC_USER_INACTIVE"
         if not user.email or not user.email_verified:
             return None, "OIDC_EMAIL_UNVERIFIED"
+        if (user.user_type or "UNCLASSIFIED") not in client.allowed_user_types:
+            return None, "OIDC_USER_TYPE_DENIED"
         identity = OidcIdentity(
             user_id=user.id,
             email=user.email,

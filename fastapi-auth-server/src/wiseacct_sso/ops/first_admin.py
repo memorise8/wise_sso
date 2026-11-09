@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.domain.admin import AuditRetentionCleanupConfigurationError
+from wiseacct_sso.domain.users import UserType
 from wiseacct_sso.ops.audit_cleanup import _async_postgres_url, _database_url
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import (
@@ -84,10 +85,21 @@ class _SqlAlchemyFirstAdminTransaction:
         self._connection = connection
 
     async def find_active_user_by_email(self, email: str) -> str | None:
+        # Match the admin API lock order: central policy role, then target user.
+        await self._connection.execute(
+            select(Role.c.id)
+            .where(Role.c.serviceKey == "sso", Role.c.name == "admin")
+            .with_for_update()
+        )
         row = (
             await self._connection.execute(
                 select(User.c.id)
-                .where(User.c.email == email, User.c.status == UserStatus.ACTIVE)
+                .where(
+                    User.c.email == email,
+                    User.c.status == UserStatus.ACTIVE,
+                    User.c.userType == UserType.EMPLOYEE,
+                )
+                .with_for_update()
                 .limit(1)
             )
         ).one_or_none()
@@ -95,7 +107,7 @@ class _SqlAlchemyFirstAdminTransaction:
 
     async def upsert_admin_role(self) -> tuple[str, str, str]:
         statement = postgresql_insert(Role).values(
-            id=application_uuid(), serviceKey="temis", name="admin"
+            id=application_uuid(), serviceKey="sso", name="admin"
         )
         row = (
             await self._connection.execute(
@@ -123,6 +135,11 @@ class _SqlAlchemyFirstAdminTransaction:
         ).one_or_none()
         if locked is None:
             return 0
+        await self._connection.execute(
+            update(User)
+            .where(User.c.id == user_id)
+            .values(ssoSessionVersion=User.c.ssoSessionVersion + 1)
+        )
         result = await self._connection.execute(
             update(RefreshToken)
             .where(RefreshToken.c.userId == user_id, RefreshToken.c.revokedAt.is_(None))
@@ -175,7 +192,7 @@ async def grant_first_admin(
     async def provision(transaction: FirstAdminTransaction) -> GrantFirstAdminResult:
         user_id = await transaction.find_active_user_by_email(email)
         if user_id is None:
-            raise ActiveUserNotFoundError("No active user found")
+            raise ActiveUserNotFoundError("No active employee user found")
         role_id, service_key, role_name = await transaction.upsert_admin_role()
         assigned = await transaction.assign_role(user_id=user_id, role_id=role_id)
         revoked = await transaction.revoke_refresh_tokens(user_id=user_id, revoked_at=revoked_at)

@@ -10,6 +10,39 @@ const health = document.querySelector("[data-health]");
 const auditList = document.querySelector("[data-audit]");
 const adminApiBase = document.querySelector("meta[name='admin-api-base']")?.getAttribute("content") ?? "/admin";
 
+const sessionAuth = document.querySelector("meta[name='admin-auth-mode']")?.getAttribute("content") === "session";
+const adminCsrf = document.querySelector("meta[name='admin-session-csrf']")?.getAttribute("content") ?? "";
+if (sessionAuth) window.sessionStorage.removeItem(tokenStorageKey);
+
+const bulkForm = document.querySelector("[data-bulk-type-form]");
+const bulkType = document.querySelector("[data-bulk-type]");
+const bulkSubmit = document.querySelector("[data-bulk-submit]");
+const selectedCount = document.querySelector("[data-selected-count]");
+const selectAll = document.querySelector("[data-select-all]");
+const selectedUserIds = new Set();
+let visibleUserIds = new Set();
+let adminBusy = false;
+
+const syncSelection = () => {
+  if (selectedCount) selectedCount.textContent = `선택 ${selectedUserIds.size}명`;
+  if (selectAll instanceof HTMLInputElement) {
+    selectAll.checked = visibleUserIds.size > 0 && selectedUserIds.size === visibleUserIds.size;
+    selectAll.indeterminate = selectedUserIds.size > 0 && selectedUserIds.size < visibleUserIds.size;
+    selectAll.disabled = adminBusy || visibleUserIds.size === 0;
+  }
+  if (bulkSubmit instanceof HTMLButtonElement) {
+    bulkSubmit.disabled = adminBusy || selectedUserIds.size === 0;
+  }
+  for (const input of userTable?.querySelectorAll("input[data-select-user]") ?? []) {
+    if (input instanceof HTMLInputElement) input.checked = selectedUserIds.has(input.dataset.selectUser);
+  }
+};
+
+const clearSelection = () => {
+  selectedUserIds.clear();
+  syncSelection();
+};
+
 const tokenInput = tokenForm?.querySelector("input[name='token']");
 
 const setNotice = (tone, message) => {
@@ -24,35 +57,43 @@ const setNotice = (tone, message) => {
   }, 4200);
 };
 
-const authToken = () => window.sessionStorage.getItem(tokenStorageKey) ?? "";
+const authToken = () => sessionAuth ? "" : window.sessionStorage.getItem(tokenStorageKey) ?? "";
 
 const setBusy = (busy) => {
-  for (const button of document.querySelectorAll("button")) {
-    if (button instanceof HTMLButtonElement) {
-      button.disabled = busy;
+  adminBusy = busy;
+  for (const control of document.querySelectorAll("button, input, select")) {
+    if (control instanceof HTMLButtonElement || control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
+      control.disabled = busy;
     }
   }
+  syncSelection();
 };
 
 const apiPath = (path) => `${adminApiBase}${path}`;
 
 const apiFetch = async (path, options = {}) => {
   const token = authToken();
-  if (!token) {
+  if (!sessionAuth && !token) {
     throw new Error("관리자 Access Token을 먼저 저장하세요.");
   }
 
   const response = await fetch(apiPath(path), {
     ...options,
+    credentials: "same-origin",
     headers: {
-      authorization: `Bearer ${token}`,
+      ...(sessionAuth ? {} : { authorization: `Bearer ${token}` }),
       "content-type": "application/json",
-      ...(options.headers ?? {})
+      ...(options.headers ?? {}),
+      ...(sessionAuth && !["GET", "HEAD"].includes((options.method ?? "GET").toUpperCase()) ? { "x-admin-csrf": adminCsrf } : {})
     }
   });
   const text = await response.text();
   const payload = text ? JSON.parse(text) : null;
   if (!response.ok) {
+    if (sessionAuth && response.status === 401) {
+      window.location.assign("/oauth2/admin/login?reauth=1");
+      throw new Error("관리자 로그인이 만료됐습니다. 다시 로그인하세요.");
+    }
     throw new Error(payload?.error?.message ?? "요청을 처리하지 못했습니다.");
   }
   return payload;
@@ -77,10 +118,12 @@ const element = (tagName, { className, text } = {}) => {
 };
 
 const renderEmptyUsers = (message) => {
+  visibleUserIds = new Set();
+  clearSelection();
   if (userTable) {
     const row = element("tr");
     const cell = element("td", { className: "empty-cell", text: message });
-    cell.colSpan = 5;
+    cell.colSpan = 7;
     row.append(cell);
     userTable.replaceChildren(row);
   }
@@ -92,7 +135,7 @@ const userQueryString = () => {
   }
   const values = new FormData(filterForm);
   const params = new URLSearchParams({ page: "1", pageSize: "50" });
-  for (const name of ["email", "status", "role"]) {
+  for (const name of ["email", "status", "role", "userType"]) {
     const value = values.get(name);
     if (typeof value === "string" && value.trim()) {
       params.set(name, value.trim());
@@ -122,6 +165,19 @@ const statusSelect = (user) => {
   return label;
 };
 
+const userTypeSelect = (user) => {
+  const select = element("select");
+  select.dataset.userTypeSelect = String(user.id);
+  select.setAttribute("aria-label", "사용자 유형 변경");
+  for (const [value, text] of [["UNCLASSIFIED", "미분류"], ["EMPLOYEE", "직원"], ["CUSTOMER", "고객"]]) {
+    const option = element("option", { text });
+    option.value = value;
+    option.selected = value === (user.userType ?? "UNCLASSIFIED");
+    select.append(option);
+  }
+  return select;
+};
+
 const actionButton = (className, text, datasetName, datasetValue) => {
   const button = element("button", { className, text });
   button.type = "button";
@@ -139,8 +195,16 @@ const renderUsers = (page) => {
     return;
   }
 
+  visibleUserIds = new Set(page.items.map((user) => String(user.id)));
+  selectedUserIds.clear();
   const rows = page.items.map((user) => {
     const row = element("tr");
+    const selectionCell = element("td");
+    const checkbox = element("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.selectUser = String(user.id);
+    checkbox.setAttribute("aria-label", `${user.email ?? user.id} 선택`);
+    selectionCell.append(checkbox);
 
     const identityCell = element("td");
     const identity = element("div", { className: "user-main" });
@@ -180,10 +244,13 @@ const renderUsers = (page) => {
     );
     actionCell.append(actions);
 
-    row.append(identityCell, statusCell, roleCell, createdCell, actionCell);
+    const typeCell = element("td");
+    typeCell.append(userTypeSelect(user));
+    row.append(selectionCell, identityCell, statusCell, typeCell, roleCell, createdCell, actionCell);
     return row;
   });
   userTable.replaceChildren(...rows);
+  syncSelection();
   setSummary(`총 ${page.total}명 중 ${page.items.length}명 표시`);
 };
 
@@ -210,7 +277,7 @@ const patchStatus = async (userId, status) => {
 const addRole = async (userId, name) => {
   await apiFetch(`/users/${encodeURIComponent(userId)}/roles`, {
     method: "POST",
-    body: JSON.stringify({ serviceKey: "temis", name, reasonCode: "ADMIN_DASHBOARD_ROLE_ASSIGN" })
+    body: JSON.stringify({ serviceKey: name === "admin" ? "sso" : "temis", name, reasonCode: "ADMIN_DASHBOARD_ROLE_ASSIGN" })
   });
 };
 
@@ -287,6 +354,7 @@ tokenForm?.addEventListener("submit", (event) => {
     setNotice("error", "Access Token을 입력하세요.");
     return;
   }
+  clearSelection();
   window.sessionStorage.setItem(tokenStorageKey, tokenInput.value.trim());
   tokenInput.value = "";
   setNotice("success", "관리자 토큰을 저장했습니다.");
@@ -298,6 +366,45 @@ document.querySelector("[data-clear-token]")?.addEventListener("click", () => {
   renderEmptyUsers("토큰을 저장한 뒤 조회하세요.");
   setSummary("토큰을 저장한 뒤 조회하세요.");
   setNotice("success", "관리자 토큰을 삭제했습니다.");
+});
+
+filterForm?.addEventListener("input", clearSelection);
+
+selectAll?.addEventListener("change", () => {
+  if (!(selectAll instanceof HTMLInputElement) || adminBusy) return;
+  selectedUserIds.clear();
+  if (selectAll.checked) for (const userId of visibleUserIds) selectedUserIds.add(userId);
+  syncSelection();
+});
+
+bulkForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (adminBusy || !(bulkType instanceof HTMLSelectElement)) return;
+  const ids = Array.from(selectedUserIds);
+  const selectedType = bulkType.value;
+  if (!ids.length || !["EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"].includes(selectedType)) {
+    setNotice("error", "사용자와 변경할 유형을 선택하세요.");
+    return;
+  }
+  const label = { EMPLOYEE: "직원", CUSTOMER: "고객", UNCLASSIFIED: "미분류" }[selectedType];
+  if (!window.confirm(`${ids.length}명의 사용자 유형을 ${label}(으)로 변경합니다. 변경된 사용자의 기존 인증 세션이 폐기됩니다. 계속하시겠습니까?`)) return;
+  setBusy(true);
+  void (async () => {
+    try {
+      const result = await apiFetch("/users/type", {
+        method: "PATCH",
+        body: JSON.stringify({ userIds: ids, userType: selectedType === "UNCLASSIFIED" ? null : selectedType,
+          reasonCode: "ADMIN_DASHBOARD_BULK_USER_TYPE_CHANGE" })
+      });
+      clearSelection();
+      setNotice("success", `${result.changedCount}명 변경, ${result.unchangedCount}명은 기존 유형과 같습니다.`);
+      await loadUsers();
+    } catch (error) {
+      setNotice("error", error instanceof Error ? error.message : "일괄 변경 실패");
+    } finally {
+      setBusy(false);
+    }
+  })();
 });
 
 filterForm?.addEventListener("submit", (event) => {
@@ -315,7 +422,25 @@ document.querySelector("[data-load-audit]")?.addEventListener("click", () => {
 
 userTable?.addEventListener("change", (event) => {
   const target = event.target;
-  if (!(target instanceof HTMLSelectElement)) {
+  if (target instanceof HTMLInputElement && target.dataset.selectUser) {
+    const id = target.dataset.selectUser;
+    if (!adminBusy && visibleUserIds.has(id)) {
+      if (target.checked) selectedUserIds.add(id);
+      else selectedUserIds.delete(id);
+    }
+    syncSelection();
+    return;
+  }
+  if (!(target instanceof HTMLSelectElement) || adminBusy) {
+    return;
+  }
+  const typeUserId = target.dataset.userTypeSelect;
+  if (typeUserId) {
+    void runUserAction(() => apiFetch(`/users/${encodeURIComponent(typeUserId)}/type`, {
+      method: "PATCH",
+      body: JSON.stringify({ userType: target.value === "UNCLASSIFIED" ? null : target.value,
+                             reasonCode: "ADMIN_DASHBOARD_USER_TYPE_CHANGE" })
+    }), "사용자 유형을 변경했습니다.");
     return;
   }
   const userId = target.dataset.statusSelect;
@@ -337,7 +462,7 @@ userTable?.addEventListener("click", (event) => {
   }
   const adminRoleTarget = target.dataset.addAdminRole;
   if (adminRoleTarget) {
-    void runUserAction(() => addRole(adminRoleTarget, "admin"), "temis:admin 역할을 부여했습니다.");
+    void runUserAction(() => addRole(adminRoleTarget, "admin"), "sso:admin 역할을 부여했습니다.");
     return;
   }
   const revokeTarget = target.dataset.revoke;
@@ -365,6 +490,6 @@ void fetch("/healthz")
     }
   });
 
-if (authToken()) {
+if (sessionAuth || authToken()) {
   void loadUsers();
 }

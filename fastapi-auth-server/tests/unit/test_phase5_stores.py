@@ -239,6 +239,7 @@ async def test_password_reset_request_and_confirm_preserve_lock_and_revoke_order
             FakeResult(rowcount=1),
             FakeResult(SimpleNamespace(id="user-1")),
             FakeResult(rowcount=1),
+            FakeResult(rowcount=1),
             FakeResult(rowcount=3),
         ]
     )
@@ -254,34 +255,55 @@ async def test_password_reset_request_and_confirm_preserve_lock_and_revoke_order
     assert params(confirm.statements[3])["failedLoginCount"] == 0
     assert params(confirm.statements[3])["passwordUpdatedAt"] == NOW
     assert params(confirm.statements[3])["updatedAt"] == NOW
-    assert rendered[4].startswith('UPDATE "RefreshToken"')
+    assert rendered[4].startswith('UPDATE "User"')
+    assert '"ssoSessionVersion"' in rendered[4]
+    assert rendered[5].startswith('UPDATE "RefreshToken"')
 
 
 @pytest.mark.anyio
-async def test_oauth_verified_email_attaches_to_existing_active_verified_user() -> None:
-    existing = SimpleNamespace(
-        id="password-user",
-        email="oauth@example.com",
+@pytest.mark.parametrize("status", [UserStatus.ACTIVE, UserStatus.PENDING_EMAIL_VERIFICATION])
+async def test_verified_social_email_never_attaches_or_deletes_existing_identity(
+    status: UserStatus,
+) -> None:
+    existing = SimpleNamespace(id="employee-or-password-user", status=status)
+    created = SimpleNamespace(
+        id="new-customer",
+        email=None,
         emailVerified=True,
-        name="Password User",
+        name="OAuth User",
         profileUrl=None,
         status=UserStatus.ACTIVE,
     )
-    connection = FakeConnection([FakeResult(existing), FakeResult(rowcount=1)])
+    connection = FakeConnection(
+        [
+            FakeResult(existing),
+            FakeResult(created),
+            FakeResult(rowcount=1),
+            FakeResult(rowcount=1),
+            FakeResult(rowcount=1),
+            FakeResult(rowcount=1),
+            FakeResult(rowcount=1),
+            FakeResult(SimpleNamespace(id="role-pending")),
+            FakeResult(rowcount=1),
+        ]
+    )
     result = await OAuthIdentityStore().resolve_or_create(
         cast(AsyncConnection, connection),
         profile=OAuthProfileRecord(
-            "google", "google-1", " OAuth@Example.com ", True, "OAuth User", None
+            "google", "google-1", "OAuth@Example.com", True, "OAuth User", None
         ),
         default_role=DefaultRole(),
         now=NOW,
     )
-    assert result.id == "password-user"
-    assert len(connection.statements) == 2
-    assert sql(connection.statements[1]).startswith('INSERT INTO "SocialAccount"')
-    statement_params = params(connection.statements[1])
-    assert "oauth@example.com" in statement_params.values()
-    assert "password-user" in statement_params.values()
+    assert result.id == "new-customer"
+    rendered = [sql(statement) for statement in connection.statements]
+    assert not any(statement.startswith("DELETE") for statement in rendered)
+    assert rendered[1].startswith('INSERT INTO "User"')
+    assert params(connection.statements[1])["email"] is None
+    assert params(connection.statements[1])["userType"] == "CUSTOMER"
+    social = params(connection.statements[2])
+    assert social["userId"] != existing.id
+    assert social["userId"] == params(connection.statements[1])["id"]
 
 
 @pytest.mark.anyio
@@ -329,57 +351,6 @@ async def test_oauth_new_user_reuses_reservation_and_seeds_then_assigns_default_
         "pending",
     ]
     assert rendered[9].startswith('INSERT INTO "UserRole"')
-
-
-@pytest.mark.anyio
-async def test_oauth_verified_profile_replaces_pending_unverified_identity() -> None:
-    pending = SimpleNamespace(
-        id="pending-user",
-        email="oauth@example.com",
-        emailVerified=False,
-        name=None,
-        profileUrl=None,
-        status=UserStatus.PENDING_EMAIL_VERIFICATION,
-    )
-    created = SimpleNamespace(
-        id="canonical-user",
-        email="oauth@example.com",
-        emailVerified=True,
-        name="OAuth User",
-        profileUrl=None,
-        status=UserStatus.ACTIVE,
-    )
-    connection = FakeConnection(
-        [
-            FakeResult(pending),
-            FakeResult(rowcount=1),
-            FakeResult(None),
-            FakeResult(None),
-            FakeResult(created, rowcount=1),
-            FakeResult(rowcount=1),
-            FakeResult(rowcount=1),
-            FakeResult(rowcount=0),
-            FakeResult(rowcount=0),
-            FakeResult(rowcount=0),
-            FakeResult(SimpleNamespace(id="role-user")),
-            FakeResult(rowcount=1),
-        ]
-    )
-    result = await OAuthIdentityStore().resolve_or_create(
-        cast(AsyncConnection, connection),
-        profile=OAuthProfileRecord(
-            "google", "google-1", "oauth@example.com", True, "OAuth User", None
-        ),
-        default_role=DefaultRole(),
-        now=NOW,
-    )
-    assert result.id == "canonical-user"
-    rendered = [sql(statement) for statement in connection.statements]
-    assert rendered[0].startswith('SELECT "User".')
-    assert rendered[1].startswith('DELETE FROM "User"')
-    assert rendered[2].startswith('SELECT "User".id')
-    assert rendered[4].startswith('INSERT INTO "User"')
-    assert rendered[5].startswith('INSERT INTO "SocialAccount"')
 
 
 @pytest.mark.anyio

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.application.oidc import (
     AuthorizationRequest,
+    AuthorizationStart,
     OidcRequestContext,
     OidcService,
     OidcServiceError,
@@ -209,6 +210,7 @@ def _client(*, allow_without_required_role: bool = False) -> OidcClientPolicy:
             "clientId": "cloudflare-access-dash",
             "redirectUris": ["https://access.example.test/callback"],
             "clientSecretHash": DUMMY_PASSWORD_HASH,
+            "allowedUserTypes": ["EMPLOYEE"],
             "requiredRoles": [{"serviceKey": "agent-hub", "name": "user"}],
             "groupsServiceKeys": ["agent-hub"],
             "allowWithoutRequiredRole": allow_without_required_role,
@@ -230,6 +232,7 @@ def _user(*, authorized: bool = True) -> OidcUserRecord:
         name="Person",
         status=UserStatus.ACTIVE,
         roles=roles,
+        user_type="EMPLOYEE",
     )
 
 
@@ -289,6 +292,7 @@ async def test_begin_authorization_creates_independent_browser_and_csrf_secrets(
         ),
         OidcRequestContext(None, None),
     )
+    assert isinstance(start, AuthorizationStart)
     assert start.transaction_id == "transaction-1"
     assert start.browser_binding != start.csrf_token
     assert transactions.created is not None
@@ -502,3 +506,93 @@ def test_redirect_append_preserves_registered_uri_bytes_and_duplicate_query_orde
     result = _url_with_query(redirect_uri, code="code/value", state="state value")
 
     assert result == (f"{redirect_uri}&code=code%2Fvalue&state=state+value")
+
+
+@pytest.mark.parametrize("user_type", [None, "CUSTOMER"])
+def test_internal_client_denies_non_employee_even_with_required_role(user_type: str | None) -> None:
+    from dataclasses import replace
+
+    service, _, _, _ = build_fake_oidc_service()
+    identity, reason = service._eligible_identity(replace(_user(), user_type=user_type), _client())
+    assert identity is None
+    assert reason == "OIDC_USER_TYPE_DENIED"
+
+
+@pytest.mark.parametrize("user_type", [None, "CUSTOMER", "EMPLOYEE"])
+def test_public_client_explicitly_allows_unclassified_and_customer(user_type: str | None) -> None:
+    from dataclasses import replace
+
+    service, _, _, _ = build_fake_oidc_service()
+    client = _client().model_copy(
+        update={"allowed_user_types": ("EMPLOYEE", "CUSTOMER", "UNCLASSIFIED")}
+    )
+    identity, reason = service._eligible_identity(replace(_user(), user_type=user_type), client)
+    assert identity is not None
+    assert reason is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("user_type", [None, "CUSTOMER"])
+async def test_code_exchange_rejects_non_employee_after_role_granted(user_type: str | None) -> None:
+    from dataclasses import replace
+
+    service, _, access, _ = build_fake_oidc_service()
+    audit = FakeAudit()
+    service._identities = cast(
+        OidcIdentityStore, FakeIdentities(replace(_user(), user_type=user_type))
+    )
+    service._audit = cast(AuditStore, audit)
+    with pytest.raises(OidcServiceError) as caught:
+        await service.exchange_code(
+            TokenExchangeInput(
+                client_id="cloudflare-access-dash",
+                client_secret="secret",
+                grant_type="authorization_code",
+                code="code-1",
+                redirect_uri="https://access.example.test/callback",
+                code_verifier=None,
+            ),
+            OidcRequestContext(None, None),
+        )
+    assert caught.value.error == "invalid_grant"
+    assert access.created == 0
+    assert audit.events[0].reason_code == "OIDC_USER_TYPE_DENIED"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("user_type", [None, "CUSTOMER"])
+async def test_userinfo_revokes_existing_bearer_after_employee_type_removed(
+    user_type: str | None,
+) -> None:
+    from dataclasses import replace
+
+    from wiseacct_sso.infrastructure.oidc_tokens import StoredOidcAccessToken
+
+    class ReadableAccess(FakeAccessTokens):
+        async def get(self, token: str) -> StoredOidcAccessToken:
+            return StoredOidcAccessToken(
+                "cloudflare-access-dash", "user-1", ("openid", "email"), 2_000_000_000_000
+            )
+
+    access = ReadableAccess()
+    service, _, _, _ = build_fake_oidc_service(access=access)
+    identities = FakeIdentities(_user())
+    service._identities = cast(OidcIdentityStore, identities)
+    service._audit = cast(AuditStore, FakeAudit())
+    await service.exchange_code(
+        TokenExchangeInput(
+            client_id="cloudflare-access-dash",
+            client_secret="secret",
+            grant_type="authorization_code",
+            code="code-1",
+            redirect_uri="https://access.example.test/callback",
+            code_verifier=None,
+        ),
+        OidcRequestContext(None, None),
+    )
+    assert access.created == 1
+    identities.user = replace(_user(), user_type=user_type)
+    with pytest.raises(OidcServiceError) as caught:
+        await service.userinfo("oidc-access-token")
+    assert caught.value.error == "invalid_token"
+    assert access.revoked == ["oidc-access-token"]

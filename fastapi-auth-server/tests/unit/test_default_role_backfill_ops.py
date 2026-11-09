@@ -117,7 +117,7 @@ async def test_serializable_role_seed_and_assignment_share_one_retry_safe_transa
     assert [(item["serviceKey"], item["name"]) for item in seeds] == [
         ("temis", "pending"),
         ("temis", "user"),
-        ("temis", "admin"),
+        ("sso", "admin"),
         ("temis", "user"),
     ]
     assert all(
