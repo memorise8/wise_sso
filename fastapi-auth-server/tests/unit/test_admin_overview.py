@@ -193,3 +193,25 @@ def test_client_access_respects_user_types_and_role_free_clients() -> None:
         allowWithoutRequiredRole=True,
     )
     assert client_access(hub, **values) == (True, "역할 없이 허용")
+
+
+def test_managed_services_leave_open_sign_up_services_out() -> None:
+    from wiseacct_sso.api.oidc.admin_overview import managed_services
+    from wiseacct_sso.oidc_config import OidcClientRegistry
+
+    hub = _client(
+        clientId="agent-hub-dash",
+        requiredRoles=[{"serviceKey": "agent-hub", "name": "user"}],
+        groupsServiceKeys=["agent-hub"],
+        allowWithoutRequiredRole=True,
+    )
+    fantra = _client(
+        clientId="fantra-oidc",
+        requiredRoles=[{"serviceKey": "temis", "name": "user"}],
+        groupsServiceKeys=["temis"],
+    )
+    items = managed_services(OidcClientRegistry((_client(), hub, fantra)))
+    assert [(i["label"], i["roles"]) for i in items] == [
+        ("GitLab", ["gitlab:user"]),
+        ("에이전트 허브", ["agent-hub:user"]),
+    ]

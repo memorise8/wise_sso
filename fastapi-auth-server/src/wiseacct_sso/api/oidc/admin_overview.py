@@ -226,6 +226,34 @@ async def service_access(
     return {"users": result}
 
 
+SERVICE_NOTES = {
+    "agent-hub-dash": (
+        "역할이 없어도 SSO 로그인은 되고, 실제 사용 여부는 허브의 초대·명단이 정합니다. "
+        "agent-hub:user가 있으면 직원으로 들어갑니다."
+    ),
+    "gitlab-temis": (
+        "gitlab:user가 있어야 로그인됩니다. 프로젝트 접근 권한은 GitLab에서 따로 줍니다."
+    ),
+}
+
+
+def managed_services(clients: OidcClientRegistry) -> list[dict[str, object]]:
+    """OIDC services whose access an admin grants through roles (TEMIS/Fantra use open sign-up)."""
+
+    return [
+        {
+            "clientId": client.client_id,
+            "label": SERVICE_LABELS.get(client.client_id, client.client_id),
+            "roles": [f"{r.service_key}:{r.name}" for r in client.required_roles],
+            "allowWithoutRequiredRole": client.allow_without_required_role,
+            "note": SERVICE_NOTES.get(client.client_id, ""),
+        }
+        for client in clients.clients
+        if client.required_roles
+        and not any(r.service_key == "temis" for r in client.required_roles)
+    ]
+
+
 def register_overview_routes(
     api: FastAPI,
     admin: Phase6AdminService,
@@ -249,6 +277,11 @@ def register_overview_routes(
         async with database().connection() as connection:
             return {"items": await role_catalogue(connection)}
 
+    @api.get("/services")
+    async def services(request: Request, actor: AdminActor) -> dict[str, object]:
+        await authorized(request, actor)
+        return {"items": managed_services(clients)}
+
     @api.get("/service-access")
     async def access(request: Request, actor: AdminActor) -> dict[str, object]:
         await authorized(request, actor)
@@ -261,6 +294,7 @@ def register_overview_routes(
 
 __all__ = [
     "client_access",
+    "managed_services",
     "register_overview_routes",
     "role_catalogue",
     "service_access",

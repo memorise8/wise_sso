@@ -10,8 +10,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261111-access">
-    <script defer src="/assets/admin-dashboard.js?v=20261111-access"></script>
+    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261111-services">
+    <script defer src="/assets/admin-dashboard.js?v=20261111-services"></script>
+    <script defer src="/assets/admin-service.js?v=20261111-services"></script>
   </head>
   <body>
     <main class="admin-shell">
@@ -38,6 +39,26 @@
           <div data-tone="warn"><dt>24시간 로그인 실패</dt><dd data-stat="loginFailures">-</dd><small data-stat="locked"></small></div>
         </dl>
         <p class="overview-note">활성 사용자 기준입니다. 정지·삭제 계정은 아래 목록의 상태 필터로 확인하세요.</p>
+      </section>
+
+      <section class="service-panel" aria-labelledby="service-title" data-service-panel hidden>
+        <div class="section-head">
+          <div>
+            <h2 id="service-title">서비스별 권한</h2>
+            <p>GitLab·허브처럼 관리자가 권한을 주는 서비스입니다. TEMIS·Fantra는 회원가입으로 들어옵니다.</p>
+          </div>
+        </div>
+        <div class="service-tabs" data-service-tabs role="tablist"></div>
+        <p class="service-note" data-service-note></p>
+        <form class="service-add" data-service-add>
+          <label>
+            <span>추가할 사용자 이메일</span>
+            <input name="email" type="email" maxlength="320" required placeholder="name@example.com">
+          </label>
+          <button class="primary-button" type="submit">권한 주기</button>
+        </form>
+        <p class="type-fixed" data-service-count></p>
+        <div class="service-members" data-service-members></div>
       </section>
 
       <!-- ADMIN_AUTH_PANEL_START -->
