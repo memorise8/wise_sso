@@ -23,6 +23,23 @@
         <div class="health" data-health>연결 확인 중</div>
       </header>
 
+      <section class="overview" aria-labelledby="overview-title" data-overview hidden>
+        <div class="section-head">
+          <h2 id="overview-title">한눈에 보기</h2>
+          <button class="secondary-button" type="button" data-overview-refresh>새로고침</button>
+        </div>
+        <dl class="overview-grid">
+          <div><dt>직원</dt><dd data-stat="EMPLOYEE">-</dd></div>
+          <div><dt>고객</dt><dd data-stat="CUSTOMER">-</dd></div>
+          <div><dt>외부</dt><dd data-stat="EXTERNAL">-</dd></div>
+          <div><dt>미분류</dt><dd data-stat="UNCLASSIFIED">-</dd></div>
+          <div data-tone="warn"><dt>30일 안에 만료될 외부 계정</dt><dd data-stat="expiring30">-</dd><small data-stat="expiring7"></small></div>
+          <div><dt>대기 중인 초대</dt><dd data-stat="pendingInvitations">-</dd><small data-stat="expiredInvitations"></small></div>
+          <div data-tone="warn"><dt>24시간 로그인 실패</dt><dd data-stat="loginFailures">-</dd><small data-stat="locked"></small></div>
+        </dl>
+        <p class="overview-note">활성 사용자 기준입니다. 정지·삭제 계정은 아래 목록의 상태 필터로 확인하세요.</p>
+      </section>
+
       <!-- ADMIN_AUTH_PANEL_START -->
     <section class="token-panel" aria-labelledby="token-title">
         <div>
@@ -40,23 +57,6 @@
       </section>
 
       <!-- ADMIN_AUTH_PANEL_END -->
-
-      <section class="overview" aria-labelledby="overview-title" data-overview hidden>
-        <div class="section-head">
-          <h2 id="overview-title">한눈에 보기</h2>
-          <button class="secondary-button" type="button" data-overview-refresh>새로고침</button>
-        </div>
-        <dl class="overview-grid">
-          <div><dt>직원</dt><dd data-stat="EMPLOYEE">-</dd></div>
-          <div><dt>고객</dt><dd data-stat="CUSTOMER">-</dd></div>
-          <div><dt>외부</dt><dd data-stat="EXTERNAL">-</dd></div>
-          <div><dt>미분류</dt><dd data-stat="UNCLASSIFIED">-</dd></div>
-          <div data-tone="warn"><dt>30일 안에 만료될 외부 계정</dt><dd data-stat="expiring30">-</dd><small data-stat="expiring7"></small></div>
-          <div><dt>대기 중인 초대</dt><dd data-stat="pendingInvitations">-</dd><small data-stat="expiredInvitations"></small></div>
-          <div data-tone="warn"><dt>24시간 로그인 실패</dt><dd data-stat="loginFailures">-</dd><small data-stat="locked"></small></div>
-        </dl>
-        <p class="overview-note">활성 사용자 기준입니다. 정지·삭제 계정은 아래 목록의 상태 필터로 확인하세요.</p>
-      </section>
 
       <section class="workspace" aria-label="사용자 목록">
         <form class="filters" data-filter-form>
