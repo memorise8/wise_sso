@@ -6,7 +6,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.api.routes.admin import AdminActor
@@ -35,7 +35,11 @@ async def summary_numbers(connection: AsyncConnection, now: datetime) -> dict[st
     by_type = dict.fromkeys(USER_TYPES, 0)
     rows = await connection.execute(
         select(User.c.userType, func.count())
-        .where(User.c.status == UserStatus.ACTIVE)
+        .where(
+            User.c.status == UserStatus.ACTIVE,
+            # An external account past its term is not usable even before the sweep runs.
+            or_(User.c.accountExpiresAt.is_(None), User.c.accountExpiresAt > now),
+        )
         .group_by(User.c.userType)
     )
     for user_type, count in rows.all():

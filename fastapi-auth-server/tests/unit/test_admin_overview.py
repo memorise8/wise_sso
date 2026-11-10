@@ -76,6 +76,7 @@ async def test_summary_counts_active_users_by_type_and_upcoming_expiries() -> No
     assert data["last24Hours"] == {"loginFailures": 7}
     assert data["lockedAccounts"] == 0
     assert '"User".status = ' in connection.sql(0)
+    assert '"User"."accountExpiresAt" IS NULL OR' in connection.sql(0)
     expiring = connection.sql(2)
     assert '"User"."userType" = ' in expiring and '"User"."accountExpiresAt" >' in expiring
     assert '"AuditLog".outcome = ' in connection.sql(6)
