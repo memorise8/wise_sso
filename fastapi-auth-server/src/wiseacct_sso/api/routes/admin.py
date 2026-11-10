@@ -103,7 +103,7 @@ class _QueryModel(BaseModel):
 
 
 class UserListQuery(_QueryModel):
-    user_type: Literal["EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"] | None = Field(
+    user_type: Literal["EMPLOYEE", "CUSTOMER", "EXTERNAL", "UNCLASSIFIED"] | None = Field(
         default=None, alias="userType"
     )
     status: UserStatusValue | None = None

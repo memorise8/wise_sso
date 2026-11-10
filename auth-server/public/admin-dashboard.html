@@ -10,8 +10,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20260729b">
-    <script defer src="/assets/admin-dashboard.js?v=20260729b"></script>
+    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261111-overview">
+    <script defer src="/assets/admin-dashboard.js?v=20261111-overview"></script>
   </head>
   <body>
     <main class="admin-shell">
@@ -23,10 +23,11 @@
         <div class="health" data-health>연결 확인 중</div>
       </header>
 
-      <section class="token-panel" aria-labelledby="token-title">
+      <!-- ADMIN_AUTH_PANEL_START -->
+    <section class="token-panel" aria-labelledby="token-title">
         <div>
           <h2 id="token-title">관리자 Access Token</h2>
-          <p>temis:admin 권한이 있는 access token만 사용할 수 있습니다.</p>
+          <p>sso:admin 권한이 있는 access token만 사용할 수 있습니다.</p>
         </div>
         <form class="token-form" data-token-form>
           <label>
@@ -36,6 +37,25 @@
           <button class="primary-button" type="submit">저장</button>
           <button class="secondary-button" type="button" data-clear-token>삭제</button>
         </form>
+      </section>
+
+      <!-- ADMIN_AUTH_PANEL_END -->
+
+      <section class="overview" aria-labelledby="overview-title" data-overview hidden>
+        <div class="section-head">
+          <h2 id="overview-title">한눈에 보기</h2>
+          <button class="secondary-button" type="button" data-overview-refresh>새로고침</button>
+        </div>
+        <dl class="overview-grid">
+          <div><dt>직원</dt><dd data-stat="EMPLOYEE">-</dd></div>
+          <div><dt>고객</dt><dd data-stat="CUSTOMER">-</dd></div>
+          <div><dt>외부</dt><dd data-stat="EXTERNAL">-</dd></div>
+          <div><dt>미분류</dt><dd data-stat="UNCLASSIFIED">-</dd></div>
+          <div data-tone="warn"><dt>30일 안에 만료될 외부 계정</dt><dd data-stat="expiring30">-</dd><small data-stat="expiring7"></small></div>
+          <div><dt>대기 중인 초대</dt><dd data-stat="pendingInvitations">-</dd><small data-stat="expiredInvitations"></small></div>
+          <div data-tone="warn"><dt>24시간 로그인 실패</dt><dd data-stat="loginFailures">-</dd><small data-stat="locked"></small></div>
+        </dl>
+        <p class="overview-note">활성 사용자 기준입니다. 정지·삭제 계정은 아래 목록의 상태 필터로 확인하세요.</p>
       </section>
 
       <section class="workspace" aria-label="사용자 목록">
@@ -55,6 +75,10 @@
             </select>
           </label>
           <label>
+            <span>사용자 유형</span>
+            <select name="userType"><option value="">전체</option><option value="EMPLOYEE">직원</option><option value="CUSTOMER">고객</option><option value="EXTERNAL">외부</option><option value="UNCLASSIFIED">미분류</option></select>
+          </label>
+          <label>
             <span>역할</span>
             <input name="role" type="search" placeholder="temis:user">
           </label>
@@ -66,12 +90,29 @@
           <button class="secondary-button" type="button" data-refresh>새로고침</button>
         </div>
 
+        <form class="bulk-actions" data-bulk-type-form aria-label="선택한 사용자 유형 일괄 변경">
+          <span data-selected-count aria-live="polite">선택 0명</span>
+          <label>
+            <span>변경할 유형</span>
+            <select name="userType" data-bulk-type>
+              <option value="">선택하세요</option>
+              <option value="EMPLOYEE">직원</option>
+              <option value="CUSTOMER">고객</option>
+              <option value="UNCLASSIFIED">미분류</option>
+            </select>
+          </label>
+          <button class="primary-button" type="submit" data-bulk-submit disabled>선택한 사용자 변경</button>
+          <small>현재 조회된 사용자만 선택합니다. 유형 변경 시 해당 사용자의 기존 인증 세션이 폐기됩니다.</small>
+        </form>
+
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th><input type="checkbox" data-select-all aria-label="현재 표시된 사용자 전체 선택" disabled></th>
                 <th>사용자</th>
                 <th>상태</th>
+                <th>사용자 유형</th>
                 <th>역할</th>
                 <th>가입일</th>
                 <th>관리</th>
@@ -79,7 +120,7 @@
             </thead>
             <tbody data-users>
               <tr>
-                <td colspan="5" class="empty-cell">조회 결과가 없습니다.</td>
+                <td colspan="7" class="empty-cell">조회 결과가 없습니다.</td>
               </tr>
             </tbody>
           </table>

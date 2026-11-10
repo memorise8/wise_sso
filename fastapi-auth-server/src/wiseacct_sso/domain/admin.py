@@ -75,7 +75,7 @@ class AdminUserListInput:
     user_type: str | None = None
 
     def __post_init__(self) -> None:
-        if self.user_type not in {None, "EMPLOYEE", "CUSTOMER", "UNCLASSIFIED"}:
+        if self.user_type not in {None, "EMPLOYEE", "CUSTOMER", "EXTERNAL", "UNCLASSIFIED"}:
             raise DomainError(400, "INVALID_REQUEST", "Invalid user type")
         _assert_page(self.page, self.page_size)
         if self.email is not None and not self.email.strip():

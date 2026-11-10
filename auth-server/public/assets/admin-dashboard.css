@@ -454,3 +454,63 @@ input[type="checkbox"] {
   width: auto;
   min-width: 8rem;
 }
+
+.overview {
+  margin-top: var(--space-6);
+  padding: var(--space-6);
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-panel);
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0;
+}
+
+.overview-grid > div {
+  padding: var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--surface-muted);
+}
+
+.overview-grid dt {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.overview-grid dd {
+  margin: var(--space-2) 0 0;
+  font-size: 1.6rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.overview-grid > div[data-tone="warn"][data-alert="true"] dd {
+  color: var(--status-error);
+}
+
+.overview-grid small,
+.overview-note {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.role-assign {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.role-assign select {
+  width: auto;
+  min-width: 9rem;
+}
+
+.type-fixed {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
