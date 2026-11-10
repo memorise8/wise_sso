@@ -16,6 +16,7 @@ from wiseacct_sso.api.middleware import SecurityHeadersMiddleware
 from wiseacct_sso.api.oidc.admin_overview import role_catalogue, summary_numbers
 from wiseacct_sso.api.oidc.app import build_oidc_app
 from wiseacct_sso.domain.admin import AdminUserListInput
+from wiseacct_sso.infrastructure.security import DUMMY_PASSWORD_HASH
 
 NOW = datetime(2026, 11, 11, 0, 0)
 
@@ -130,3 +131,65 @@ def test_user_filters_are_read_before_controls_are_disabled() -> None:
     ).read_text()
     body = source.split("const loadUsers = async () => {", 1)[1].split("\n};", 1)[0]
     assert body.index("userQueryString()") < body.index("setBusy(true)")
+
+
+def _client(**policy: object) -> Any:
+    from wiseacct_sso.oidc_config import OidcClientPolicy
+
+    base: dict[str, object] = {
+        "clientId": "gitlab-temis",
+        "clientSecretHash": DUMMY_PASSWORD_HASH,
+        "redirectUris": ["https://gitlab.example.test/callback"],
+        "requiredRoles": [{"serviceKey": "gitlab", "name": "user"}],
+        "groupsServiceKeys": ["gitlab"],
+    }
+    return OidcClientPolicy.model_validate({**base, **policy})
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, (True, "역할 있음")),
+        ({"status": "SUSPENDED"}, (False, "계정 정지·비활성")),
+        ({"expires_at": datetime(2026, 11, 10)}, (False, "기한 만료")),
+        ({"email_verified": False}, (False, "이메일 미인증")),
+        ({"roles": set()}, (False, "gitlab:user 필요")),
+    ],
+)
+def test_client_access_follows_the_login_gate_order(
+    overrides: dict[str, object], expected: tuple[bool, str]
+) -> None:
+    from wiseacct_sso.api.oidc.admin_overview import client_access
+
+    values: dict[str, Any] = {
+        "status": "ACTIVE",
+        "email_verified": True,
+        "user_type": "EXTERNAL",
+        "expires_at": datetime(2027, 1, 1),
+        "roles": {("gitlab", "user")},
+        "now": NOW,
+    }
+    values.update(overrides)
+    assert client_access(_client(), **values) == expected
+
+
+def test_client_access_respects_user_types_and_role_free_clients() -> None:
+    from wiseacct_sso.api.oidc.admin_overview import client_access
+
+    values: dict[str, Any] = {
+        "status": "ACTIVE",
+        "email_verified": True,
+        "user_type": None,
+        "expires_at": None,
+        "roles": set(),
+        "now": NOW,
+    }
+    typed = _client(allowedUserTypes=["EMPLOYEE"])
+    assert client_access(typed, **values) == (False, "허용되지 않은 유형")
+    hub = _client(
+        clientId="agent-hub-dash",
+        requiredRoles=[{"serviceKey": "agent-hub", "name": "user"}],
+        groupsServiceKeys=["agent-hub"],
+        allowWithoutRequiredRole=True,
+    )
+    assert client_access(hub, **values) == (True, "역할 없이 허용")

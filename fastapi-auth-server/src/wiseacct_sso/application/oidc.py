@@ -234,6 +234,10 @@ class OidcService:
         self._identities = OidcIdentityStore()
         self._audit = AuditStore()
 
+    @property
+    def clients(self) -> OidcClientRegistry:
+        return self._clients
+
     async def begin_authorization(
         self, request: AuthorizationRequest, context: OidcRequestContext
     ) -> AuthorizationStart | AuthorizationResult:

@@ -174,7 +174,9 @@ def register_admin_portal(
         register_invitation_routes(app, api, invitation_service, origin, static_root)
         from .admin_overview import register_overview_routes
 
-        register_overview_routes(api, invitation_service.admin, invitation_service.database)
+        register_overview_routes(
+            api, invitation_service.admin, invitation_service.database, service.clients
+        )
     app.mount(ADMIN_API, AdminBrowserMiddleware(api, service=service, origin=origin))
 
     @app.get(ADMIN_LOGIN, include_in_schema=False)

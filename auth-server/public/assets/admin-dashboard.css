@@ -542,3 +542,39 @@ input[type="checkbox"] {
 .admin-shell > section:not([class]) p {
   color: var(--text-secondary);
 }
+
+.access-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1, 4px);
+}
+
+.access-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgb(52 211 153 / 0.45);
+  color: var(--status-success);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.access-chip[data-weak="true"] {
+  border-style: dashed;
+  color: var(--text-secondary);
+  border-color: var(--border-strong);
+}
+
+.access-none {
+  color: var(--status-error);
+  font-size: 0.8rem;
+}
+
+.access-denied {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.access-denied p {
+  margin: 2px 0;
+}

@@ -130,7 +130,7 @@ const renderEmptyUsers = (message) => {
   if (userTable) {
     const row = element("tr");
     const cell = element("td", { className: "empty-cell", text: message });
-    cell.colSpan = 7;
+    cell.colSpan = 8;
     row.append(cell);
     userTable.replaceChildren(row);
   }
@@ -269,6 +269,10 @@ const renderUsers = (page) => {
     }
     roleCell.append(roles);
 
+    const accessCell = element("td");
+    accessCell.dataset.accessFor = String(user.id);
+    accessCell.append(element("span", { className: "type-fixed", text: sessionAuth ? "확인 중…" : "-" }));
+
     const createdCell = element("td", { text: formatDate(user.createdAt) });
     const actionCell = element("td");
     const actions = element("div", { className: "action-list" });
@@ -281,11 +285,12 @@ const renderUsers = (page) => {
 
     const typeCell = element("td");
     typeCell.append(typeCellContent(user));
-    row.append(selectionCell, identityCell, statusCell, typeCell, roleCell, createdCell, actionCell);
+    row.append(selectionCell, identityCell, statusCell, typeCell, roleCell, accessCell, createdCell, actionCell);
     return row;
   });
   userTable.replaceChildren(...rows);
   syncSelection();
+  void loadServiceAccess(page.items.map((user) => String(user.id)));
   setSummary(`총 ${page.total}명 중 ${page.items.length}명 표시`);
 };
 
@@ -341,6 +346,42 @@ const loadOverview = async () => {
     overview.hidden = false;
   } catch {
     overview.hidden = true;
+  }
+};
+
+const renderAccess = (cell, entries) => {
+  const allowed = entries.filter((entry) => entry.allowed);
+  const denied = entries.filter((entry) => !entry.allowed);
+  const list = element("div", { className: "access-list" });
+  if (!allowed.length) list.append(element("span", { className: "access-none", text: "사용 가능한 서비스 없음" }));
+  for (const entry of allowed) {
+    const chip = element("span", { className: "access-chip", text: entry.service });
+    chip.title = entry.reason;
+    if (entry.reason === "역할 없이 허용") chip.dataset.weak = "true";
+    list.append(chip);
+  }
+  cell.replaceChildren(list);
+  if (denied.length) {
+    const detail = element("details", { className: "access-denied" });
+    detail.append(element("summary", { text: `불가 ${denied.length}개` }));
+    for (const entry of denied) detail.append(element("p", { text: `${entry.service}: ${entry.reason}` }));
+    cell.append(detail);
+  }
+};
+
+const loadServiceAccess = async (ids) => {
+  if (!sessionAuth || !ids.length || !userTable) return;
+  try {
+    const params = new URLSearchParams(ids.map((id) => ["id", id]));
+    const data = await apiFetch(`/service-access?${params.toString()}`);
+    for (const cell of userTable.querySelectorAll("td[data-access-for]")) {
+      const entries = data.users[cell.dataset.accessFor];
+      if (entries) renderAccess(cell, entries);
+    }
+  } catch {
+    for (const cell of userTable.querySelectorAll("td[data-access-for]")) {
+      cell.replaceChildren(element("span", { className: "type-fixed", text: "확인 실패" }));
+    }
   }
 };
 
