@@ -116,3 +116,17 @@ def test_overview_routes_need_an_admin_session() -> None:
         assert client.get(path).status_code == 401
     dashboard = client.get("/oauth2/admin/dashboard")
     assert dashboard.status_code in {302, 303}
+
+
+def test_user_filters_are_read_before_controls_are_disabled() -> None:
+    # Disabled form controls are dropped from FormData, so reading the filters
+    # after setBusy(true) silently sent an unfiltered user query.
+    from pathlib import Path
+
+    import wiseacct_sso
+
+    source = (
+        Path(wiseacct_sso.__file__).parent / "static" / "assets" / "admin-dashboard.js"
+    ).read_text()
+    body = source.split("const loadUsers = async () => {", 1)[1].split("\n};", 1)[0]
+    assert body.index("userQueryString()") < body.index("setBusy(true)")

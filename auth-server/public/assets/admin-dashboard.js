@@ -290,9 +290,11 @@ const renderUsers = (page) => {
 };
 
 const loadUsers = async () => {
+  // Read the filters before setBusy: disabled controls are left out of FormData.
+  const query = userQueryString();
   setBusy(true);
   try {
-    const page = await apiFetch(`/users?${userQueryString()}`);
+    const page = await apiFetch(`/users?${query}`);
     renderUsers(page);
   } catch (error) {
     renderEmptyUsers(error instanceof Error ? error.message : "조회 실패");
