@@ -28,6 +28,58 @@ _DEFAULT_SCOPES = ("openid", "email", "profile")
 _SUPPORTED_SCOPES = frozenset(_DEFAULT_SCOPES)
 
 
+def validate_argon2id_hash(value: str) -> str:
+    try:
+        parameters = extract_parameters(value)
+    except Exception as error:
+        raise ValueError("OIDC clientSecretHash must be an Argon2id PHC hash") from error
+    if (
+        parameters.type is not Type.ID
+        or parameters.version != 19
+        or not 8_192 <= parameters.memory_cost <= 65_536
+        or not 1 <= parameters.time_cost <= 4
+        or not 1 <= parameters.parallelism <= 4
+        or parameters.hash_len < 32
+        or parameters.salt_len < 16
+    ):
+        raise ValueError("OIDC clientSecretHash must be an Argon2id PHC hash")
+    return value
+
+
+ServiceScope = Literal["external-invite"]
+
+
+class ServiceClientPolicy(BaseModel):
+    """A machine client that calls SSO service APIs with the client_credentials grant."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, hide_input_in_errors=True, populate_by_name=True
+    )
+
+    client_id: NonEmptyString = Field(alias="clientId", max_length=128)
+    client_secret_hash: NonEmptyString = Field(alias="clientSecretHash", repr=False)
+    scopes: tuple[ServiceScope, ...] = Field(min_length=1, max_length=8)
+
+    @field_validator("client_id")
+    @classmethod
+    def validate_client_id(cls, value: str) -> str:
+        if _CLIENT_ID.fullmatch(value) is None:
+            raise ValueError("Service clientId contains unsupported characters")
+        return value
+
+    @field_validator("client_secret_hash")
+    @classmethod
+    def validate_secret_hash(cls, value: str) -> str:
+        return validate_argon2id_hash(value)
+
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(values)) != len(values):
+            raise ValueError("Service client scopes must be unique")
+        return values
+
+
 class OidcRoleRequirement(BaseModel):
     model_config = ConfigDict(
         extra="forbid", frozen=True, hide_input_in_errors=True, populate_by_name=True
@@ -91,21 +143,7 @@ class OidcClientPolicy(BaseModel):
     @field_validator("client_secret_hash")
     @classmethod
     def validate_secret_hash(cls, value: str) -> str:
-        try:
-            parameters = extract_parameters(value)
-        except Exception as error:
-            raise ValueError("OIDC clientSecretHash must be an Argon2id PHC hash") from error
-        if (
-            parameters.type is not Type.ID
-            or parameters.version != 19
-            or not 8_192 <= parameters.memory_cost <= 65_536
-            or not 1 <= parameters.time_cost <= 4
-            or not 1 <= parameters.parallelism <= 4
-            or parameters.hash_len < 32
-            or parameters.salt_len < 16
-        ):
-            raise ValueError("OIDC clientSecretHash must be an Argon2id PHC hash")
-        return value
+        return validate_argon2id_hash(value)
 
     @field_validator("groups_service_keys")
     @classmethod

@@ -87,3 +87,62 @@ def test_oidc_invalid_secret_is_not_echoed_in_settings_error(synthetic_settings:
             oidc_clients=[oidc_policy(clientSecretHash=accidental_plaintext)],
         )
     assert accidental_plaintext not in str(caught.value)
+
+
+def _service_client(**overrides: object) -> dict[str, object]:
+    return {
+        "clientId": "agent-hub-service",
+        "clientSecretHash": DUMMY_PASSWORD_HASH,
+        "scopes": ["external-invite"],
+        **overrides,
+    }
+
+
+def _oidc_enabled(settings: Settings, **updates: object) -> Settings:
+    return settings_with(
+        settings,
+        oidc_enabled=True,
+        oidc_clients=[oidc_policy()],
+        oidc_public_origin="https://auth.example.test",
+        **updates,
+    )
+
+
+def test_service_clients_and_return_to_prefixes(synthetic_settings: Settings) -> None:
+    assert synthetic_settings.service_clients == ()
+    assert synthetic_settings.service_invite_return_to_prefixes == (
+        "https://dash.temis.me/invite/",
+    )
+    settings = _oidc_enabled(
+        synthetic_settings,
+        service_clients=[_service_client()],
+        service_invite_return_to_prefixes="https://a.example.test/x/, https://b.example.test/",
+    )
+    assert settings.service_clients[0].scopes == ("external-invite",)
+    assert settings.service_invite_return_to_prefixes == (
+        "https://a.example.test/x/",
+        "https://b.example.test/",
+    )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"service_clients": [_service_client(clientId="cloudflare-access-dash")]},
+        {"service_clients": [_service_client(clientId="temis")]},
+        {"service_clients": [_service_client(), _service_client()]},
+        {"service_invite_return_to_prefixes": "http://dash.temis.me/invite/"},
+        {"service_invite_return_to_prefixes": "https://dash.temis.me/invite"},
+        {"service_invite_return_to_prefixes": "https://dash.temis.me/invite/?a=1"},
+    ],
+)
+def test_service_client_settings_are_strict(
+    synthetic_settings: Settings, updates: dict[str, object]
+) -> None:
+    with pytest.raises(ValidationError):
+        _oidc_enabled(synthetic_settings, **updates)
+
+
+def test_service_clients_need_oidc(synthetic_settings: Settings) -> None:
+    with pytest.raises(ValidationError):
+        settings_with(synthetic_settings, service_clients=[_service_client()])

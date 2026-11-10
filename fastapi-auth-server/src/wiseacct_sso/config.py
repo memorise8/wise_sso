@@ -19,7 +19,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from wiseacct_sso.oidc_config import OidcClientPolicy, OidcClientRegistry
+from wiseacct_sso.oidc_config import OidcClientPolicy, OidcClientRegistry, ServiceClientPolicy
 
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
 OAuthProvider = Literal["google", "naver", "kakao"]
@@ -494,6 +494,13 @@ class Settings(BaseSettings):
         default=(), validation_alias="OIDC_CLIENTS_JSON", repr=False
     )
     oidc_public_origin: str | None = Field(default=None, validation_alias="OIDC_PUBLIC_ORIGIN")
+    service_clients: tuple[ServiceClientPolicy, ...] = Field(
+        default=(), validation_alias="SERVICE_CLIENTS_JSON", repr=False
+    )
+    service_invite_return_to_prefixes: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=("https://dash.temis.me/invite/",),
+        validation_alias="SERVICE_INVITE_RETURN_TO_PREFIXES",
+    )
     oidc_google_redirect_uri: str | None = Field(
         default=None, validation_alias="OIDC_GOOGLE_REDIRECT_URI"
     )
@@ -538,7 +545,9 @@ class Settings(BaseSettings):
         _rsa_numbers_from_pkcs8(normalized)
         return normalized
 
-    @field_validator("jwt_access_public_jwk", "auth_clients", "oidc_clients", mode="before")
+    @field_validator(
+        "jwt_access_public_jwk", "auth_clients", "oidc_clients", "service_clients", mode="before"
+    )
     @classmethod
     def parse_json_fields(cls, value: object) -> object:
         if not isinstance(value, str):
@@ -563,6 +572,13 @@ class Settings(BaseSettings):
         else:
             return value
         return tuple(_origin(str(origin), "CORS origins") for origin in origins)
+
+    @field_validator("service_invite_return_to_prefixes", mode="before")
+    @classmethod
+    def parse_return_to_prefixes(cls, value: object) -> object:
+        if isinstance(value, str):
+            return tuple(entry.strip() for entry in value.split(",") if entry.strip())
+        return value
 
     @field_validator("trusted_proxy_ips", mode="before")
     @classmethod
@@ -682,6 +698,28 @@ class Settings(BaseSettings):
             for uri in client.redirect_uris
         ):
             raise ValueError("OIDC HTTP loopback redirects are allowed only in test mode")
+        service_ids = [client.client_id for client in self.service_clients]
+        oidc_ids = {client.client_id for client in self.oidc_clients}
+        if len(set(service_ids)) != len(service_ids) or any(
+            identifier in oidc_ids | client_ids | legacy_audiences for identifier in service_ids
+        ):
+            raise ValueError("SERVICE_CLIENTS_JSON client IDs must be unique across all clients")
+        if self.service_clients and not self.oidc_enabled:
+            raise ValueError("SERVICE_CLIENTS_JSON requires OIDC to be enabled")
+        for prefix in self.service_invite_return_to_prefixes:
+            parsed_prefix = urlsplit(prefix)
+            if (
+                parsed_prefix.scheme != "https"
+                or not parsed_prefix.hostname
+                or parsed_prefix.username is not None
+                or not parsed_prefix.path.endswith("/")
+                or parsed_prefix.query
+                or parsed_prefix.fragment
+                or any(ord(char) <= 32 or ord(char) >= 127 for char in prefix)
+            ):
+                raise ValueError(
+                    "SERVICE_INVITE_RETURN_TO_PREFIXES entries must be https URLs ending in /"
+                )
         if self.oidc_enabled and (not self.oidc_clients or not self.oidc_public_origin):
             raise ValueError("OIDC requires clients and an explicit OIDC_PUBLIC_ORIGIN")
         if self.oidc_public_origin is not None:

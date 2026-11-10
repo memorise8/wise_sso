@@ -39,6 +39,7 @@ from wiseacct_sso.application.admin import Phase6AdminService
 from wiseacct_sso.application.auth import Phase5AuthService
 from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import OidcService
+from wiseacct_sso.application.service_clients import ServiceClientAuth
 from wiseacct_sso.config import Settings, get_settings
 from wiseacct_sso.domain.auth import PasswordPolicy
 from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS
@@ -284,6 +285,7 @@ def create_runtime_app() -> FastAPI:
                 ),
             ),
             public_origin=settings.oidc_public_origin,
+            service_auth=ServiceClientAuth(settings.service_clients, oidc_redis),
             providers=tuple(
                 provider
                 for provider in OAUTH_PROVIDERS
