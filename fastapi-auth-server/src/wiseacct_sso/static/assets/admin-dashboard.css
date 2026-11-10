@@ -633,3 +633,26 @@ input[type="checkbox"] {
 [data-service-count][data-tone="success"] {
   color: var(--status-success);
 }
+
+.role-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+}
+
+.role-choices legend {
+  padding: 0 var(--space-2);
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+}
+
+.role-choices label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
