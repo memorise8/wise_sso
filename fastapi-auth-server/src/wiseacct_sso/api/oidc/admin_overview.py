@@ -152,9 +152,13 @@ def client_access(
         return False, "허용되지 않은 유형"
     if any((r.service_key, r.name) in roles for r in client.required_roles):
         return True, "역할 있음"
-    if client.allow_without_required_role:
-        return True, "역할 없이 허용"
     needed = ", ".join(f"{r.service_key}:{r.name}" for r in client.required_roles)
+    if client.allow_without_required_role:
+        # SSO lets these sign-ins through, but the service itself admits only people it
+        # invited, so the dashboard must not count them as able to use it.
+        if user_type == "EXTERNAL":
+            return False, "초대받은 손님만 입장 (서비스에서 초대)"
+        return False, f"{needed} 없음 (서비스 초대로만 입장)"
     return False, f"{needed} 필요"
 
 

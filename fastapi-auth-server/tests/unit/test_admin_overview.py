@@ -192,7 +192,16 @@ def test_client_access_respects_user_types_and_role_free_clients() -> None:
         groupsServiceKeys=["agent-hub"],
         allowWithoutRequiredRole=True,
     )
-    assert client_access(hub, **values) == (True, "역할 없이 허용")
+    assert client_access(hub, **values) == (
+        False,
+        "agent-hub:user 없음 (서비스 초대로만 입장)",
+    )
+    guest = {**values, "user_type": "EXTERNAL"}
+    assert client_access(hub, **guest) == (False, "초대받은 손님만 입장 (서비스에서 초대)")
+    assert client_access(hub, **{**values, "roles": {("agent-hub", "user")}}) == (
+        True,
+        "역할 있음",
+    )
 
 
 def test_managed_services_leave_open_sign_up_services_out() -> None:

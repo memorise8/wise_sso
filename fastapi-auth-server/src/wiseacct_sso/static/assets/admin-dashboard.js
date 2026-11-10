@@ -357,7 +357,6 @@ const renderAccess = (cell, entries) => {
   for (const entry of allowed) {
     const chip = element("span", { className: "access-chip", text: entry.service });
     chip.title = entry.reason;
-    if (entry.reason === "역할 없이 허용") chip.dataset.weak = "true";
     list.append(chip);
   }
   cell.replaceChildren(list);
