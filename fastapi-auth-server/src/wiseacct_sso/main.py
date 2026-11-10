@@ -40,6 +40,7 @@ from wiseacct_sso.application.auth import Phase5AuthService
 from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import OidcService
 from wiseacct_sso.application.service_clients import ServiceClientAuth
+from wiseacct_sso.application.service_invitations import ServiceInvitationService
 from wiseacct_sso.config import Settings, get_settings
 from wiseacct_sso.domain.auth import PasswordPolicy
 from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS
@@ -271,22 +272,26 @@ def create_runtime_app() -> FastAPI:
             oauth_client=runtime_oauth_client,
             redis=runtime_redis,
         )
+        invitation_service = EmployeeInvitationService(
+            database=runtime_database,
+            admin=phase6_services,
+            mail=mail_service,
+            origin=settings.oidc_public_origin,
+            policy=PasswordPolicy(
+                min_length=settings.password_min_length, allowed_email_domain=None
+            ),
+            return_to_prefixes=settings.service_invite_return_to_prefixes,
+        )
         oidc_app = build_oidc_app(
             service=oidc_service,
             portal_service=oidc_service,
             admin_services=phase6_services,
-            invitation_service=EmployeeInvitationService(
-                database=runtime_database,
-                admin=phase6_services,
-                mail=mail_service,
-                origin=settings.oidc_public_origin,
-                policy=PasswordPolicy(
-                    min_length=settings.password_min_length, allowed_email_domain=None
-                ),
-                return_to_prefixes=settings.service_invite_return_to_prefixes,
-            ),
+            invitation_service=invitation_service,
             public_origin=settings.oidc_public_origin,
             service_auth=ServiceClientAuth(settings.service_clients, oidc_redis),
+            service_invitations=ServiceInvitationService(
+                invitation_service, mail_service, settings.service_invite_return_to_prefixes
+            ),
             providers=tuple(
                 provider
                 for provider in OAUTH_PROVIDERS

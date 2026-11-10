@@ -29,6 +29,7 @@ from wiseacct_sso.application.oidc import (
     UserInfo,
 )
 from wiseacct_sso.application.service_clients import ServiceAuthError, ServiceClientAuth
+from wiseacct_sso.application.service_invitations import ServiceInvitationService
 from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS, OAuthProvider
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.infrastructure.oidc_state import provider_state_transaction_id
@@ -145,6 +146,7 @@ def build_oidc_app(
     portal_service: OidcService | None = None,
     admin_services: Phase6Services | None = None,
     service_auth: ServiceClientAuth | None = None,
+    service_invitations: ServiceInvitationService | None = None,
 ) -> FastAPI:
     """Build the full-path OIDC application used by the outer dispatch middleware."""
 
@@ -514,6 +516,10 @@ def build_oidc_app(
             static_root=assets.parent,
             login_template=login_template,
         )
+    if service_auth is not None and service_auth.enabled and service_invitations is not None:
+        from .service_api import register_service_routes
+
+        register_service_routes(app, service_auth, service_invitations)
 
     return app
 

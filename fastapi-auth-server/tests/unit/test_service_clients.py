@@ -136,3 +136,100 @@ def test_token_endpoint_issues_client_credentials_tokens() -> None:
         "/oauth2/token", data=form
     )
     assert unsupported.json()["error"] == "unsupported_grant_type"
+
+
+class StubInvitations:
+    def __init__(self, result: object = None, error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, object]] = []
+        self.result, self.error = result, error
+
+    async def invite(self, client_id: str, request: object) -> object:
+        self.calls.append((client_id, request))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def service_client(invitations: StubInvitations) -> tuple[TestClient, str]:
+    import asyncio
+    from typing import cast
+
+    from wiseacct_sso.application.service_invitations import ServiceInvitationService
+
+    rig = admin_rig()
+    service, _ = auth()
+    token = asyncio.run(service.issue("agent-hub-service", SECRET, None)).access_token
+    app = build_oidc_app(
+        service=rig.service,
+        public_origin=ORIGIN,
+        service_auth=service,
+        service_invitations=cast(ServiceInvitationService, invitations),
+    )
+    return TestClient(SecurityHeadersMiddleware(app), base_url=ORIGIN), token
+
+
+BODY = {
+    "email": "dev@partner.test",
+    "days": 30,
+    "gitlab": True,
+    "return_to": "https://dash.temis.me/invite/abc",
+    "invited_by": "ruci",
+}
+
+
+def test_external_invitation_endpoint_contract() -> None:
+    from datetime import datetime
+
+    from wiseacct_sso.application.service_invitations import ServiceInvitationResult
+
+    stub = StubInvitations(
+        ServiceInvitationResult(
+            "invited", invitation_id="inv-1", expires_at=datetime(2026, 12, 11, 14, 59, 59, 999000)
+        )
+    )
+    client, token = service_client(stub)
+    path = "/oauth2/service/external-invitations"
+    assert client.post(path, json=BODY).status_code == 401
+    bad = client.post(path, json=BODY, headers={"authorization": "Bearer nope"})
+    assert bad.status_code == 401 and bad.json()["error"]["code"] == "invalid_token"
+    headers = {"authorization": f"Bearer {token}"}
+    ok = client.post(path, json=BODY, headers=headers)
+    assert ok.status_code == 200, ok.text
+    assert ok.json() == {
+        "status": "invited",
+        "invitation_id": "inv-1",
+        "expires_at": "2026-12-11T14:59:59.999Z",
+    }
+    client_id, request = stub.calls[0]
+    assert client_id == "agent-hub-service" and request.gitlab is True
+    for invalid in (
+        {**BODY, "days": "30"},
+        {**BODY, "extra": 1},
+        {k: v for k, v in BODY.items() if k != "invited_by"},
+    ):
+        response = client.post(path, json=invalid, headers=headers)
+        assert response.json()["error"]["code"] == "INVALID_REQUEST"
+    form = client.post(path, data={"email": "x"}, headers=headers)
+    assert form.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (("INVALID_RETURN_TO", 400), 400, "INVALID_RETURN_TO"),
+        (("INVALID_ACCOUNT_TERM", 400), 400, "INVALID_REQUEST"),
+        (("INVITATION_DELIVERY_FAILED", 503), 503, "INVITATION_DELIVERY_FAILED"),
+    ],
+)
+def test_external_invitation_errors_use_the_agreed_codes(
+    error: tuple[str, int], status: int, code: str
+) -> None:
+    from wiseacct_sso.domain.users import DomainError
+
+    client, token = service_client(StubInvitations(error=DomainError(error[1], error[0], "m")))
+    response = client.post(
+        "/oauth2/service/external-invitations",
+        json=BODY,
+        headers={"authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == status and response.json()["error"]["code"] == code
