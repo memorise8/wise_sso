@@ -200,6 +200,7 @@ model EmployeeInvitation {
   status      String   @default("PENDING")
   kind        String   @default("EMPLOYEE")
   accountExpiresAt DateTime?
+  returnTo    String?
   expiresAt   DateTime
   deliveredAt DateTime?
   createdAt   DateTime @default(now())

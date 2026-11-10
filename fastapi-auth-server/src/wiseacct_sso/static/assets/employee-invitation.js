@@ -16,13 +16,20 @@
     form.querySelector("button").disabled = true;
     try {
       const response = await fetch("/oauth2/invitations/accept", {
-        method: "POST", credentials: "same-origin",
+        method: "POST", credentials: "same-origin", headers: { accept: "application/json" },
         body: new URLSearchParams({ token, password: data.get("password"), csrf_token: data.get("csrf_token") })
       });
       if (!response.ok) throw new Error("초대가 만료·취소·사용되었거나 비밀번호 정책에 맞지 않습니다.");
       token = null;
       form.reset(); form.hidden = true;
       notice.textContent = "계정이 활성화되었습니다. 초대받은 서비스에서 로그인하세요.";
+      if ((response.headers.get("content-type") ?? "").includes("application/json")) {
+        const { returnTo } = await response.json();
+        if (typeof returnTo === "string" && returnTo.startsWith("https://")) {
+          notice.textContent = "계정이 활성화되었습니다. 초대받은 서비스로 이동합니다…";
+          window.location.assign(returnTo);
+        }
+      }
     } catch (error) { notice.textContent = error.message || "잠시 후 다시 시도하세요."; }
     finally { busy = false; form.querySelector("button").disabled = false; }
   });

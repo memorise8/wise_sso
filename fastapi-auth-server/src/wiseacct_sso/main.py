@@ -283,6 +283,7 @@ def create_runtime_app() -> FastAPI:
                 policy=PasswordPolicy(
                     min_length=settings.password_min_length, allowed_email_domain=None
                 ),
+                return_to_prefixes=settings.service_invite_return_to_prefixes,
             ),
             public_origin=settings.oidc_public_origin,
             service_auth=ServiceClientAuth(settings.service_clients, oidc_redis),

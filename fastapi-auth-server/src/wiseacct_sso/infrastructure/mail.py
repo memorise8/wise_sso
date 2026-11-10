@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import smtplib
 import ssl
 from dataclasses import dataclass
@@ -19,7 +20,9 @@ SMTP_TIMEOUT_SECONDS = 10.0
 
 @dataclass(frozen=True, slots=True)
 class MailLinkMessage:
-    kind: Literal["email-verification", "password-reset", "employee-invitation"]
+    kind: Literal[
+        "email-verification", "password-reset", "employee-invitation", "service-access-notice"
+    ]
     to: str
     link: str
 
@@ -30,6 +33,8 @@ class MailService(Protocol):
     async def send_email_verification(self, *, to: str, verification_url: str) -> None: ...
 
     async def send_password_reset(self, *, to: str, reset_url: str) -> None: ...
+
+    async def send_service_access_notice(self, *, to: str, service_url: str) -> None: ...
 
 
 class DevMailLogger(Protocol):
@@ -74,10 +79,16 @@ class FakeMailService:
     async def send_password_reset(self, *, to: str, reset_url: str) -> None:
         self.messages.append(MailLinkMessage("password-reset", to, reset_url))
 
+    async def send_service_access_notice(self, *, to: str, service_url: str) -> None:
+        self.messages.append(MailLinkMessage("service-access-notice", to, service_url))
+
 
 class DevMailService:
     async def send_employee_invitation(self, *, to: str, invitation_url: str) -> None:
         raise RuntimeError("Employee invitations require an SMTP mail provider")
+
+    async def send_service_access_notice(self, *, to: str, service_url: str) -> None:
+        raise RuntimeError("Service access notices require an SMTP mail provider")
 
     def __init__(self, logger: DevMailLogger | None = None) -> None:
         self._logger = logger or structlog.get_logger()
@@ -119,7 +130,24 @@ class SmtpMailService:
             to,
             "Wise SSO 계정 초대",
             "아래 링크에서 비밀번호를 정하면 계정이 활성화됩니다 (72시간 유효): " + invitation_url,
-            _verification_html(invitation_url),
+            _link_html(
+                "아래 버튼을 눌러 비밀번호를 정하면 계정이 활성화됩니다 (72시간 유효).",
+                invitation_url,
+                "계정 활성화하기",
+            ),
+        )
+
+    async def send_service_access_notice(self, *, to: str, service_url: str) -> None:
+        await asyncio.to_thread(
+            self._send,
+            to,
+            "Wise SSO 서비스 초대",
+            "새 서비스에 초대되었습니다. 지금 쓰는 Wise SSO 계정으로 로그인하세요: " + service_url,
+            _link_html(
+                "새 서비스에 초대되었습니다. 지금 쓰는 Wise SSO 계정으로 로그인하세요.",
+                service_url,
+                "서비스로 이동하기",
+            ),
         )
 
     def _send(self, to: str, subject: str, text: str, html: str) -> None:
@@ -162,6 +190,16 @@ def _verification_html(url: str) -> str:
         f'<p><a href="{url}">이메일 인증하기</a></p>\n'
         "<p>버튼이 동작하지 않으면 아래 링크를 브라우저에 붙여넣어 주세요.</p>\n"
         f"<p>{url}</p>"
+    )
+
+
+def _link_html(message: str, url: str, label: str) -> str:
+    safe = html.escape(url, quote=True)
+    return (
+        f"\n<p>{html.escape(message)}</p>\n"
+        f'<p><a href="{safe}">{html.escape(label)}</a></p>\n'
+        "<p>버튼이 동작하지 않으면 아래 링크를 브라우저에 붙여넣어 주세요.</p>\n"
+        f"<p>{safe}</p>"
     )
 
 
