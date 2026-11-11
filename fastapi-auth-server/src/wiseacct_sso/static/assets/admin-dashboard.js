@@ -1,5 +1,7 @@
 const tokenStorageKey = "wise_sso_admin_access_token";
 const userStatuses = ["ACTIVE", "PENDING_EMAIL_VERIFICATION", "SUSPENDED", "DELETED"];
+const statusLabels = { ACTIVE: "활성", PENDING_EMAIL_VERIFICATION: "인증 대기", SUSPENDED: "정지", DELETED: "삭제" };
+const serviceLabels = { "gitlab-temis": "GitLab", "agent-hub-dash": "에이전트 허브", "fantra-oidc": "Fantra" };
 
 const tokenForm = document.querySelector("[data-token-form]");
 const filterForm = document.querySelector("[data-filter-form]");
@@ -127,6 +129,8 @@ const formatDate = (value) => new Intl.DateTimeFormat("ko-KR", {
   timeStyle: "short"
 }).format(new Date(value));
 
+const formatDay = (value) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium" }).format(new Date(value));
+
 const roleLabel = (role) => `${role.serviceKey}:${role.name}`;
 
 const element = (tagName, { className, text } = {}) => {
@@ -179,7 +183,7 @@ const statusSelect = (user) => {
   const select = element("select");
   select.dataset.statusSelect = String(user.id);
   for (const status of userStatuses) {
-    const option = element("option", { text: status });
+    const option = element("option", { text: statusLabels[status] ?? status });
     option.value = status;
     option.selected = status === user.status;
     select.append(option);
@@ -204,9 +208,12 @@ const userTypeSelect = (user) => {
   return select;
 };
 
-const typeCellContent = (user) => user.userType === "EXTERNAL"
-  ? element("span", { className: "type-fixed", text: "외부 (기한·정지는 외부 계정 패널)" })
-  : userTypeSelect(user);
+const typeCellContent = (user) => {
+  if (user.userType !== "EXTERNAL") return userTypeSelect(user);
+  const tag = element("span", { className: "type-tag", text: "외부" });
+  tag.title = "기한·정지는 '외부 계정' 메뉴에서 관리합니다.";
+  return tag;
+};
 
 const roleAssign = (user) => {
   const wrap = element("div", { className: "role-assign" });
@@ -269,14 +276,18 @@ const renderUsers = (page) => {
     const identityCell = element("td");
     const identity = element("div", { className: "user-main" });
     identity.append(
+      element("span", { className: "user-name", text: user.name ?? "이름 없음" }),
       element("span", { className: "user-email", text: user.email ?? "(email 없음)" }),
-      element("span", { text: user.name ?? "이름 없음" }),
       element("span", { className: "user-id", text: user.id })
     );
-    identityCell.append(identity);
+    const avatar = element("span", { className: "avatar", text: (user.name ?? user.email ?? "?").trim().charAt(0).toUpperCase() || "?" });
+    avatar.setAttribute("aria-hidden", "true");
+    const who = element("div", { className: "user-cell" });
+    who.append(avatar, identity);
+    identityCell.append(who);
 
     const statusCell = element("td");
-    const status = element("span", { className: "badge", text: user.status });
+    const status = element("span", { className: "badge", text: statusLabels[user.status] ?? user.status });
     status.dataset.status = String(user.status);
     statusCell.append(status);
 
@@ -284,12 +295,14 @@ const renderUsers = (page) => {
     const roles = element("div", { className: "role-list" });
     if (user.roles.length) {
       for (const role of user.roles) {
-        const button = actionButton("role-chip", `${roleLabel(role)} 제거`, "removeRole", user.id);
+        const button = actionButton("role-chip", `${roleLabel(role)} ×`, "removeRole", user.id);
         button.dataset.roleId = String(role.id);
+        button.title = "누르면 이 역할을 뺍니다";
+        button.setAttribute("aria-label", `${roleLabel(role)} 역할 빼기`);
         roles.append(button);
       }
     } else {
-      roles.append(element("span", { className: "role-chip", text: "역할 없음" }));
+      roles.append(element("span", { className: "muted", text: "역할 없음" }));
     }
     roleCell.append(roles);
 
@@ -297,15 +310,21 @@ const renderUsers = (page) => {
     accessCell.dataset.accessFor = String(user.id);
     accessCell.append(element("span", { className: "type-fixed", text: sessionAuth ? "확인 중…" : "-" }));
 
-    const createdCell = element("td", { text: formatDate(user.createdAt) });
-    const actionCell = element("td");
+    const createdCell = element("td", { className: "nowrap muted", text: formatDay(user.createdAt) });
+    const actionCell = element("td", { className: "col-menu" });
+    const menu = element("details", { className: "row-menu" });
+    const trigger = element("summary", { text: "⋯" });
+    trigger.setAttribute("aria-label", `${user.email ?? user.id} 관리`);
     const actions = element("div", { className: "action-list" });
     actions.append(
+      element("span", { className: "menu-label", text: "상태" }),
       statusSelect(user),
+      element("span", { className: "menu-label", text: "역할 주기" }),
       roleAssign(user),
-      actionButton("danger-button", "세션 폐기", "revoke", user.id)
+      actionButton("danger-button", "로그인 세션 끊기", "revoke", user.id)
     );
-    actionCell.append(actions);
+    menu.append(trigger, actions);
+    actionCell.append(menu);
 
     const typeCell = element("td");
     typeCell.append(typeCellContent(user));
@@ -619,54 +638,48 @@ const loadAdminOverview = async () => {
   panel.hidden = false;
   try {
     const data = await apiFetch("/summary");
-    const groups = [
-      ["사용자 유형", [
-        ["직원", data.usersByType.EMPLOYEE],
-        ["고객", data.usersByType.CUSTOMER],
-        ["외부", data.usersByType.EXTERNAL],
-        ["미분류", data.usersByType.UNCLASSIFIED],
-      ]],
-      ["사용자 상태", [
-        ["활성", data.usersByStatus.ACTIVE],
-        ["이메일 인증 대기", data.usersByStatus.PENDING_EMAIL_VERIFICATION],
-        ["정지", data.usersByStatus.SUSPENDED],
-        ["삭제", data.usersByStatus.DELETED],
-      ]],
-      ["외부 계정 만료 예정", [
-        ["7일 이내", data.externalExpiring.within7Days],
-        ["30일 이내", data.externalExpiring.within30Days],
-      ]],
-      ["초대", [
-        ["대기 중", data.invitations.pending],
-        ["만료", data.invitations.expired],
-      ]],
-      ["로그인", [
-        ["최근 24시간 성공", data.logins24h.success],
-        ["최근 24시간 실패", data.logins24h.failure],
-        ["현재 잠긴 계정", data.lockedAccounts],
-      ]],
-      ["최근 7일 서비스별 로그인 사용자", Object.entries(data.serviceLoginUsers7d)],
-    ];
-
     const number = new Intl.NumberFormat("ko-KR");
-    content.replaceChildren(...groups.map(([title, rows]) => {
-      const group = element("div", { className: "admin-overview-group" });
-      group.append(element("h3", { text: title }));
-      if (!rows.length) {
-        group.append(element("p", { text: "집계 기간에 로그인 기록이 없습니다." }));
-        return group;
-      }
-      const list = element("dl");
-      for (const [label, value] of rows) {
-        list.append(
-          element("dt", { text: label }),
-          element("dd", { text: number.format(value) }),
-        );
-      }
-      group.append(list);
-      return group;
-    }));
+    const types = data.usersByType;
+    const total = Object.values(types).reduce((sum, value) => sum + value, 0);
+    const expiring = data.externalExpiring;
+    const cards = [
+      ["전체 사용자", total, `활성 ${number.format(data.usersByStatus.ACTIVE)} · 정지 ${number.format(data.usersByStatus.SUSPENDED)}`],
+      ["직원", types.EMPLOYEE, `고객 ${number.format(types.CUSTOMER)} · 미분류 ${number.format(types.UNCLASSIFIED)}`],
+      ["외부 계정", types.EXTERNAL, `7일 안 만료 ${number.format(expiring.within7Days)} · 30일 ${number.format(expiring.within30Days)}`, expiring.within7Days > 0],
+      ["대기 중인 초대", data.invitations.pending, `링크 만료 ${number.format(data.invitations.expired)}`],
+      ["24시간 로그인", data.logins24h.success, `실패 ${number.format(data.logins24h.failure)} · 잠긴 계정 ${number.format(data.lockedAccounts)}`, data.lockedAccounts > 0]
+    ];
+    const grid = element("dl", { className: "stat-strip" });
+    for (const [label, value, detail, warn] of cards) {
+      const card = element("div", { className: "stat" });
+      if (warn) card.dataset.tone = "warn";
+      card.append(
+        element("dt", { text: label }),
+        element("dd", { text: number.format(value) }),
+        element("p", { text: detail })
+      );
+      grid.append(card);
+    }
+    const services = Object.entries(data.serviceLoginUsers7d)
+      .map(([id, count]) => `${serviceLabels[id] ?? id} ${number.format(count)}명`);
+    const line = element("p", {
+      className: "stat-foot",
+      text: services.length
+        ? `최근 7일 서비스별 로그인 사용자 · ${services.join(" · ")}`
+        : "최근 7일 서비스 로그인 기록이 없습니다."
+    });
+    content.replaceChildren(grid, line);
     status.hidden = true;
+
+    const attention = document.querySelector("[data-attention]");
+    const notes = [];
+    if (expiring.within7Days > 0) notes.push(`7일 안에 기한이 끝나는 외부 계정 ${expiring.within7Days}개`);
+    if (data.lockedAccounts > 0) notes.push(`잠긴 계정 ${data.lockedAccounts}개`);
+    if (data.invitations.expired > 0) notes.push(`링크가 만료된 초대 ${data.invitations.expired}건`);
+    if (attention instanceof HTMLElement) {
+      attention.textContent = notes.length ? `확인이 필요합니다 · ${notes.join(", ")}` : "";
+      attention.hidden = notes.length === 0;
+    }
   } catch {
     status.textContent = "요약을 불러오지 못했습니다. 페이지를 새로고침해 주세요.";
   }

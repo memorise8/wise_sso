@@ -270,7 +270,7 @@ def register_admin_portal(
             return _page("이 계정은 관리자 권한이 없습니다.", error.status_code)
         escaped_csrf = html.escape(identity.csrf_token, quote=True)
         panel = (
-            '<section class="token-panel"><div><h2>관리자 로그인</h2>'
+            '<section class="token-panel" data-session-panel><div><h2>관리자 로그인</h2>'
             f"<p>{html.escape(identity.email)}</p>"
             "<p>최근 인증 후 15분 동안 사용할 수 있습니다.</p></div>"
             f'<form method="post" action="{ADMIN_ROOT}/logout">'
@@ -283,7 +283,8 @@ def register_admin_portal(
         invitations = ""
         if invitation_service is not None:
             invitations = (
-                "<section><h2>직원 초대</h2><form data-employee-invite>"
+                '<section class="panel" data-view="invites"><h2>직원 초대</h2>'
+                '<form class="form-grid" data-employee-invite>'
                 '<label>이메일 <input name="email" type="email" maxlength="320" required></label>'
                 '<label>이름 <input name="name" maxlength="200" required></label>'
                 '<fieldset class="role-choices" data-invite-roles>'
@@ -292,16 +293,17 @@ def register_admin_portal(
                 '<label>전달 방법 <select name="delivery">'
                 '<option value="mail">초대 메일 보내기</option>'
                 '<option value="link">링크 복사해서 직접 전달</option></select></label>'
-                '<button type="submit">초대 만들기</button></form>'
+                '<button class="primary-button" type="submit">초대 만들기</button></form>'
                 '<button type="button" data-invitation-refresh>초대 목록 조회</button>'
                 '<p data-invitation-status role="status"></p>'
                 "<div data-invitation-list></div></section>"
-                '<script src="/assets/admin-invitations.js?v=20261111-roles" defer></script>'
-                "<section><h2>외부 계정 (기한 있음)</h2>"
-                "<p>외주 개발자 등 회사 밖 사람용입니다. 기한이 지나면 로그인할 수 없습니다. "
+                '<script src="/assets/admin-invitations.js?v=20261111-shell" defer></script>'
+                '<section class="panel" data-view="external"><h2>외부 계정 (기한 있음)</h2>'
+                '<p class="panel-lead">외주 개발자 등 회사 밖 사람용입니다. '
+                "기한이 지나면 로그인할 수 없습니다. "
                 "직원 서비스 권한은 받을 수 없고, "
                 "GitLab이 필요하면 gitlab:user만 줄 수 있습니다.</p>"
-                "<form data-external-create>"
+                '<form class="form-grid" data-external-create>'
                 '<label>이메일 <input name="email" type="email" maxlength="320" required></label>'
                 '<label>이름 <input name="name" maxlength="200" required></label>'
                 '<label>기한 <select name="preset">'
@@ -315,7 +317,7 @@ def register_admin_portal(
                 '<option value="link">링크 복사해서 직접 전달</option>'
                 '<option value="mail">초대 메일 보내기</option></select></label>'
                 "<p data-external-preview></p>"
-                '<button type="submit">외부 계정 만들기</button></form>'
+                '<button class="primary-button" type="submit">외부 계정 만들기</button></form>'
                 "<div data-external-link hidden><input data-external-link-value readonly "
                 'aria-label="초대 링크"><button type="button" data-external-copy>링크 복사</button>'
                 "<p>링크는 72시간 동안 한 번만 쓸 수 있습니다. "
@@ -323,7 +325,7 @@ def register_admin_portal(
                 '<button type="button" data-external-refresh>외부 계정 목록 조회</button>'
                 '<p data-external-status role="status"></p>'
                 "<div data-external-list></div></section>"
-                '<script src="/assets/admin-external.js" defer></script>'
+                '<script src="/assets/admin-external.js?v=20261111-shell" defer></script>'
             )
         page = (before + panel + invitations + after).replace(
             '<meta name="admin-api-base" content="/manage-api">',
