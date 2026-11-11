@@ -1224,3 +1224,20 @@ def test_bulk_type_change_requires_reason_code(client: TestClient) -> None:
         json={"userIds": ["user"], "userType": "EMPLOYEE"},
     )
     assert response.status_code == 400
+
+
+@pytest.mark.parametrize("prefix", ["/admin", "/manage-api"])
+def test_external_user_filter_reaches_directory(
+    client: TestClient, services: FakePhase6Services, prefix: str
+) -> None:
+    response = client.get(
+        f"{prefix}/users",
+        params={"userType": "EXTERNAL"},
+        headers={"authorization": "Bearer access-token"},
+    )
+
+    assert response.status_code == 200
+    assert services.calls[-1] == (
+        "list_users",
+        AdminUserListInput(user_type="EXTERNAL"),
+    )

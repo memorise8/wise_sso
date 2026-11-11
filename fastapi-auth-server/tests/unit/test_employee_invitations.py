@@ -5,7 +5,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -311,7 +311,7 @@ async def test_external_invitation_cannot_be_accepted_after_its_term_ends() -> N
     ],
 )
 async def test_invitation_kind_term_and_role_rules(
-    roles: list[dict[str, str]], kind: str, days: int | None, code: str
+    roles: list[dict[str, str]], kind: Literal["EMPLOYEE", "EXTERNAL"], days: int | None, code: str
 ) -> None:
     service, db, _, _ = fixture()
     with pytest.raises(DomainError) as caught:
@@ -321,7 +321,7 @@ async def test_invitation_kind_term_and_role_rules(
             "Guest",
             roles,
             kind=kind,
-            days=days,  # type: ignore[arg-type]
+            days=days,
         )
     assert caught.value.code == code
     assert not db.tables["EmployeeInvitation"]

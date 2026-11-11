@@ -7,7 +7,7 @@ import html
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from wiseacct_sso.api.dependencies import Phase6Services
@@ -172,6 +172,12 @@ def register_admin_portal(
         from .invitations import register_invitation_routes
 
         register_invitation_routes(app, api, invitation_service, origin, static_root)
+
+    @api.get("/summary", include_in_schema=False)
+    async def summary(request: Request) -> Response:
+        await browser_actor(request)
+        return JSONResponse(await admin_services.summary(), headers={"Cache-Control": "no-store"})
+
     app.mount(ADMIN_API, AdminBrowserMiddleware(api, service=service, origin=origin))
 
     @app.get(ADMIN_LOGIN, include_in_schema=False)
