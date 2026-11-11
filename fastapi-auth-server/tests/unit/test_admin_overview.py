@@ -224,3 +224,16 @@ def test_managed_services_leave_open_sign_up_services_out() -> None:
         ("GitLab", ["gitlab:user"]),
         ("에이전트 허브", ["agent-hub:user"]),
     ]
+
+
+def test_role_errors_are_explained_in_korean_on_both_admin_screens() -> None:
+    from pathlib import Path
+
+    import wiseacct_sso
+
+    assets = Path(wiseacct_sso.__file__).parent / "static" / "assets"
+    for name in ("admin-dashboard.js", "admin-service.js"):
+        source = (assets / name).read_text()
+        for code in ("EMPLOYEE_REQUIRED", "EXTERNAL_ROLE_NOT_ALLOWED", "LAST_SSO_ADMIN"):
+            assert f"{code}: " in source, (name, code)
+    assert "직원으로 분류된 사용자만" in (assets / "admin-dashboard.js").read_text()

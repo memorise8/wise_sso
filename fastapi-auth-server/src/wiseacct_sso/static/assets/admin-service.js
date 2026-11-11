@@ -32,8 +32,18 @@
     if (!response.ok) {
       const code = payload?.error?.code ?? payload?.code ?? response.status;
       const messages = {
+        EMPLOYEE_REQUIRED: "직원으로 분류된 사용자만 받을 수 있는 권한입니다. 먼저 사용자 유형을 '직원'으로 바꾸세요.",
         EXTERNAL_ROLE_NOT_ALLOWED: "외부 계정에는 이 권한을 줄 수 없습니다 (외부 계정은 gitlab:user만 가능).",
-        ROLE_ALREADY_ASSIGNED: "이미 권한이 있습니다."
+        EXTERNAL_ACCOUNT_MANAGED: "외부 계정의 유형은 바꿀 수 없습니다. 기한·정지는 '외부 계정' 패널에서 관리하세요.",
+        NOT_EXTERNAL_ACCOUNT: "외부 계정에서만 할 수 있는 작업입니다.",
+        LEGACY_ADMIN_ROLE_DISABLED: "temis:admin은 더 이상 줄 수 없습니다. 관리자는 sso:admin을 쓰세요.",
+        LAST_SSO_ADMIN: "마지막 SSO 관리자의 권한은 뺄 수 없습니다. 다른 관리자를 먼저 지정하세요.",
+        USER_CHANGED: "그사이 사용자 정보가 바뀌었습니다. 새로고침 후 다시 시도하세요.",
+        INVALID_USER_TYPE: "지원하지 않는 사용자 유형입니다.",
+        INVALID_USER_STATUS: "지원하지 않는 상태입니다.",
+        INVALID_ROLE: "역할 형식이 올바르지 않습니다.",
+        INVALID_ACCOUNT_TERM: "기한은 1~365일 사이 정수로 입력하세요.",
+        FORBIDDEN: "이 작업을 할 권한이 없습니다. 자기 자신의 관리자 권한·세션·상태는 바꿀 수 없습니다."
       };
       throw new Error(messages[code] ?? `처리하지 못했습니다 (${code}).`);
     }
