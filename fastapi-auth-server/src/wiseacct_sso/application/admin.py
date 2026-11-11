@@ -32,6 +32,7 @@ from wiseacct_sso.domain.external_accounts import assert_external_roles
 from wiseacct_sso.domain.tokens import TokenValidationError
 from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
 from wiseacct_sso.infrastructure.security import JwtTokenCodec
+from wiseacct_sso.persistence.admin_summary import read_admin_summary
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import application_uuid, utc_now_ms
 from wiseacct_sso.persistence.stores import (
@@ -140,6 +141,10 @@ class Phase6AdminService:
             raise DomainError(
                 409, "LAST_SSO_ADMIN", "Cannot remove the last active SSO administrator"
             )
+
+    async def summary(self) -> dict[str, object]:
+        async with self._database().connection() as connection:
+            return await read_admin_summary(connection)
 
     async def set_user_type(
         self, *, actor_user_id: str, target_user_id: str, user_type: str | None, reason_code: str

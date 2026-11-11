@@ -905,3 +905,28 @@ async def test_external_account_type_cannot_be_reclassified() -> None:
         )
     assert caught.value.code == "EXTERNAL_ACCOUNT_MANAGED"
     assert "type-change" not in events
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("user_type", ["EMPLOYEE", "CUSTOMER", None])
+async def test_bulk_external_account_rejects_entire_batch(user_type: str | None) -> None:
+    events: list[str] = []
+    subject, store = bulk_subject(events)
+    store.types["b"] = "EXTERNAL"
+    original = store.types.copy()
+    original_versions = store.versions.copy()
+
+    with pytest.raises(DomainError) as caught:
+        await subject.set_user_types(
+            actor_user_id="admin",
+            target_user_ids=("a", "b"),
+            user_type=user_type,
+            reason_code="TEST",
+        )
+
+    assert caught.value.code == "EXTERNAL_ACCOUNT_MANAGED"
+    assert store.types == original
+    assert store.versions == original_versions
+    assert not store.audits
+    assert not any(event.startswith(("type:", "revoke:")) for event in events)
+    assert events[-1] == "rollback"

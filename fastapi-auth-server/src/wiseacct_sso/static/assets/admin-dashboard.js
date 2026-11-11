@@ -63,7 +63,7 @@ const setBusy = (busy) => {
   adminBusy = busy;
   for (const control of document.querySelectorAll("button, input, select")) {
     if (control instanceof HTMLButtonElement || control instanceof HTMLInputElement || control instanceof HTMLSelectElement) {
-      control.disabled = busy;
+      control.disabled = busy || control.dataset.typeChangeBlocked === "true";
     }
   }
   syncSelection();
@@ -166,6 +166,9 @@ const statusSelect = (user) => {
 };
 
 const userTypeSelect = (user) => {
+  if (user.userType === "EXTERNAL") {
+    return element("span", { text: "외부" });
+  }
   const select = element("select");
   select.dataset.userTypeSelect = String(user.id);
   select.setAttribute("aria-label", "사용자 유형 변경");
@@ -195,7 +198,9 @@ const renderUsers = (page) => {
     return;
   }
 
-  visibleUserIds = new Set(page.items.map((user) => String(user.id)));
+  visibleUserIds = new Set(
+    page.items.filter((user) => user.userType !== "EXTERNAL").map((user) => String(user.id))
+  );
   selectedUserIds.clear();
   const rows = page.items.map((user) => {
     const row = element("tr");
@@ -203,6 +208,11 @@ const renderUsers = (page) => {
     const checkbox = element("input");
     checkbox.type = "checkbox";
     checkbox.dataset.selectUser = String(user.id);
+    if (user.userType === "EXTERNAL") {
+      checkbox.dataset.typeChangeBlocked = "true";
+      checkbox.disabled = true;
+      checkbox.title = "외부 계정은 유형을 변경할 수 없습니다.";
+    }
     checkbox.setAttribute("aria-label", `${user.email ?? user.id} 선택`);
     selectionCell.append(checkbox);
 
@@ -255,9 +265,11 @@ const renderUsers = (page) => {
 };
 
 const loadUsers = async () => {
+  if (adminBusy) return;
+  const query = userQueryString();
   setBusy(true);
   try {
-    const page = await apiFetch(`/users?${userQueryString()}`);
+    const page = await apiFetch(`/users?${query}`);
     renderUsers(page);
   } catch (error) {
     renderEmptyUsers(error instanceof Error ? error.message : "조회 실패");
@@ -398,12 +410,13 @@ bulkForm?.addEventListener("submit", (event) => {
       });
       clearSelection();
       setNotice("success", `${result.changedCount}명 변경, ${result.unchangedCount}명은 기존 유형과 같습니다.`);
-      await loadUsers();
     } catch (error) {
       setNotice("error", error instanceof Error ? error.message : "일괄 변경 실패");
+      return;
     } finally {
       setBusy(false);
     }
+    await loadUsers();
   })();
 });
 
@@ -493,3 +506,67 @@ void fetch("/healthz")
 if (sessionAuth || authToken()) {
   void loadUsers();
 }
+
+const loadAdminOverview = async () => {
+  const panel = document.querySelector("[data-admin-overview]");
+  const status = panel?.querySelector("[data-admin-overview-status]");
+  const content = panel?.querySelector("[data-admin-overview-content]");
+  if (!sessionAuth || !(panel instanceof HTMLElement) || !status || !content) return;
+
+  panel.hidden = false;
+  try {
+    const data = await apiFetch("/summary");
+    const groups = [
+      ["사용자 유형", [
+        ["직원", data.usersByType.EMPLOYEE],
+        ["고객", data.usersByType.CUSTOMER],
+        ["외부", data.usersByType.EXTERNAL],
+        ["미분류", data.usersByType.UNCLASSIFIED],
+      ]],
+      ["사용자 상태", [
+        ["활성", data.usersByStatus.ACTIVE],
+        ["이메일 인증 대기", data.usersByStatus.PENDING_EMAIL_VERIFICATION],
+        ["정지", data.usersByStatus.SUSPENDED],
+        ["삭제", data.usersByStatus.DELETED],
+      ]],
+      ["외부 계정 만료 예정", [
+        ["7일 이내", data.externalExpiring.within7Days],
+        ["30일 이내", data.externalExpiring.within30Days],
+      ]],
+      ["초대", [
+        ["대기 중", data.invitations.pending],
+        ["만료", data.invitations.expired],
+      ]],
+      ["로그인", [
+        ["최근 24시간 성공", data.logins24h.success],
+        ["최근 24시간 실패", data.logins24h.failure],
+        ["현재 잠긴 계정", data.lockedAccounts],
+      ]],
+      ["최근 7일 서비스별 로그인 사용자", Object.entries(data.serviceLoginUsers7d)],
+    ];
+
+    const number = new Intl.NumberFormat("ko-KR");
+    content.replaceChildren(...groups.map(([title, rows]) => {
+      const group = element("div", { className: "admin-overview-group" });
+      group.append(element("h3", { text: title }));
+      if (!rows.length) {
+        group.append(element("p", { text: "집계 기간에 로그인 기록이 없습니다." }));
+        return group;
+      }
+      const list = element("dl");
+      for (const [label, value] of rows) {
+        list.append(
+          element("dt", { text: label }),
+          element("dd", { text: number.format(value) }),
+        );
+      }
+      group.append(list);
+      return group;
+    }));
+    status.hidden = true;
+  } catch {
+    status.textContent = "요약을 불러오지 못했습니다. 페이지를 새로고침해 주세요.";
+  }
+};
+
+void loadAdminOverview();

@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.sql import ClauseElement
 from sqlalchemy.sql.dml import Insert, Update
 
 from wiseacct_sso.application.admin import Phase6AdminService
@@ -45,7 +46,9 @@ class Connection:
         return self.results.pop(0)
 
     def params(self, kind: type) -> list[dict[str, Any]]:
-        return [s.compile().params for s in self.statements if isinstance(s, kind)]
+        return [
+            cast(ClauseElement, s).compile().params for s in self.statements if isinstance(s, kind)
+        ]
 
 
 class FakeDatabase:

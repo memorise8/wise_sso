@@ -183,6 +183,23 @@ class PortalApi:
     async def authenticate_admin(self, *args: object, **kwargs: object) -> str:
         raise AssertionError("Browser endpoint must not accept a Bearer-token shortcut")
 
+    async def summary(self) -> dict[str, object]:
+        self.calls.append(("summary", None))
+        return {
+            "usersByType": {"EMPLOYEE": 1, "CUSTOMER": 0, "EXTERNAL": 0, "UNCLASSIFIED": 0},
+            "usersByStatus": {
+                "ACTIVE": 1,
+                "PENDING_EMAIL_VERIFICATION": 0,
+                "SUSPENDED": 0,
+                "DELETED": 0,
+            },
+            "externalExpiring": {"within7Days": 0, "within30Days": 0},
+            "invitations": {"pending": 0, "expired": 0},
+            "logins24h": {"success": 1, "failure": 0},
+            "lockedAccounts": 0,
+            "serviceLoginUsers7d": {"staff": 1},
+        }
+
     async def list_users(self, input: AdminUserListInput) -> AdminUserPage:
         from datetime import UTC, datetime
 
@@ -632,6 +649,38 @@ def test_admin_password_login_enters_dashboard_without_browser_bearer_token() ->
     assert (
         "?code=" in rig.authorize("staff").headers["location"]
     )  # Admin login also creates central SSO.
+
+
+def test_admin_summary_requires_live_admin_session() -> None:
+    rig = admin_rig()
+    url = "/oauth2/admin/api/summary"
+
+    assert rig.client.get(url).status_code == 401
+    assert not rig.portal.calls
+
+    assert admin_login(rig).status_code == 303
+    response = rig.client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "usersByType": {"EMPLOYEE": 1, "CUSTOMER": 0, "EXTERNAL": 0, "UNCLASSIFIED": 0},
+        "usersByStatus": {
+            "ACTIVE": 1,
+            "PENDING_EMAIL_VERIFICATION": 0,
+            "SUSPENDED": 0,
+            "DELETED": 0,
+        },
+        "externalExpiring": {"within7Days": 0, "within30Days": 0},
+        "invitations": {"pending": 0, "expired": 0},
+        "logins24h": {"success": 1, "failure": 0},
+        "lockedAccounts": 0,
+        "serviceLoginUsers7d": {"staff": 1},
+    }
+    assert rig.portal.calls == [("summary", None)]
+
+    rig.identities.user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    assert rig.client.get(url).status_code == 403
+    assert rig.portal.calls == [("summary", None)]
 
 
 def test_admin_reuses_recent_central_session_without_password_prompt() -> None:

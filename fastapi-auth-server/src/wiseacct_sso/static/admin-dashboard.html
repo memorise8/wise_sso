@@ -10,8 +10,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261103-bulk">
-    <script defer src="/assets/admin-dashboard.js?v=20261103-session"></script>
+    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=admin-summary">
+    <script defer src="/assets/admin-dashboard.js?v=admin-summary"></script>
   </head>
   <body>
     <main class="admin-shell">
@@ -41,6 +41,13 @@
 
       <!-- ADMIN_AUTH_PANEL_END -->
 
+      <section class="workspace admin-overview" data-admin-overview
+               aria-labelledby="admin-overview-title" hidden>
+        <h2 id="admin-overview-title">요약</h2>
+        <p data-admin-overview-status role="status">요약을 불러오는 중입니다.</p>
+        <div class="admin-overview-grid" data-admin-overview-content></div>
+      </section>
+
       <section class="workspace" aria-label="사용자 목록">
         <form class="filters" data-filter-form>
           <label>
@@ -59,7 +66,7 @@
           </label>
           <label>
             <span>사용자 유형</span>
-            <select name="userType"><option value="">전체</option><option value="EMPLOYEE">직원</option><option value="CUSTOMER">고객</option><option value="UNCLASSIFIED">미분류</option></select>
+            <select name="userType"><option value="">전체</option><option value="EMPLOYEE">직원</option><option value="CUSTOMER">고객</option><option value="UNCLASSIFIED">미분류</option><option value="EXTERNAL">외부</option></select>
           </label>
           <label>
             <span>역할</span>
@@ -85,7 +92,7 @@
             </select>
           </label>
           <button class="primary-button" type="submit" data-bulk-submit disabled>선택한 사용자 변경</button>
-          <small>현재 조회된 사용자만 선택합니다. 유형 변경 시 해당 사용자의 기존 인증 세션이 폐기됩니다.</small>
+          <small>현재 조회된 사용자 중 외부 계정을 제외하고 선택합니다. 외부 계정은 유형을 변경할 수 없습니다. 유형 변경 시 해당 사용자의 기존 인증 세션이 폐기됩니다.</small>
         </form>
 
         <div class="table-wrap">
