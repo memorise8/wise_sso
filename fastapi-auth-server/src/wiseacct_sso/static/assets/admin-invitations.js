@@ -59,11 +59,11 @@
     event.preventDefault();
     void run(async () => {
       const data = new FormData(form);
-      const roles = String(data.get("roles")).split(",").map((part) => {
-        const pair = part.trim().split(":");
-        if (pair.length !== 2 || !pair.every(Boolean)) throw new Error("역할은 service:user 형식으로 입력하세요.");
-        return { serviceKey: pair[0], name: pair[1] };
+      const roles = data.getAll("role").map((value) => {
+        const [serviceKey, name] = String(value).split(":");
+        return { serviceKey, name };
       });
+      if (!roles.length) throw new Error("줄 서비스 권한을 하나 이상 고르세요.");
       const created = await request("", "POST", {
         email: data.get("email"), name: data.get("name"), roles, delivery: data.get("delivery")
       });
@@ -72,4 +72,30 @@
     });
   });
   document.querySelector("[data-invitation-refresh]").addEventListener("click", () => run(refresh));
+
+  // Employee invitations pick roles from the catalogue; sso:admin is granted deliberately later.
+  const SERVICE_NAMES = { gitlab: "GitLab", "agent-hub": "에이전트 허브", temis: "TEMIS", fantra: "Fantra" };
+  const choices = form.querySelector("[data-invite-roles]");
+  void (async () => {
+    try {
+      const response = await fetch("/oauth2/admin/api/roles", { credentials: "same-origin" });
+      if (!response.ok) throw new Error();
+      const items = (await response.json()).items
+        .filter((role) => !(role.serviceKey === "sso" && role.name === "admin"))
+        .filter((role) => !(role.serviceKey === "temis" && role.name === "admin"));
+      const legend = choices.querySelector("legend");
+      choices.replaceChildren(legend);
+      for (const role of items) {
+        const label = document.createElement("label");
+        const box = document.createElement("input");
+        box.type = "checkbox"; box.name = "role"; box.value = `${role.serviceKey}:${role.name}`;
+        const service = SERVICE_NAMES[role.serviceKey] ?? role.serviceKey;
+        label.append(box, ` ${service} (${role.serviceKey}:${role.name})`);
+        choices.append(label);
+      }
+    } catch {
+      const note = choices.querySelector("p");
+      if (note) note.textContent = "역할 목록을 불러오지 못했습니다. 새로고침해 주세요.";
+    }
+  })();
 })();

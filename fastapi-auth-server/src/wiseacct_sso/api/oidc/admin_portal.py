@@ -172,6 +172,11 @@ def register_admin_portal(
         from .invitations import register_invitation_routes
 
         register_invitation_routes(app, api, invitation_service, origin, static_root)
+        from .admin_overview import register_overview_routes
+
+        register_overview_routes(
+            api, invitation_service.admin, invitation_service.database, service.clients
+        )
 
     @api.get("/summary", include_in_schema=False)
     async def summary(request: Request) -> Response:
@@ -281,8 +286,9 @@ def register_admin_portal(
                 "<section><h2>직원 초대</h2><form data-employee-invite>"
                 '<label>이메일 <input name="email" type="email" maxlength="320" required></label>'
                 '<label>이름 <input name="name" maxlength="200" required></label>'
-                '<label>서비스 역할 (쉼표 구분) <input name="roles" '
-                'placeholder="gitlab:user,agent-hub:user" maxlength="2048" required></label>'
+                '<fieldset class="role-choices" data-invite-roles>'
+                "<legend>줄 서비스 권한 (하나 이상)</legend>"
+                '<p class="type-fixed">역할 목록을 불러오는 중…</p></fieldset>'
                 '<label>전달 방법 <select name="delivery">'
                 '<option value="mail">초대 메일 보내기</option>'
                 '<option value="link">링크 복사해서 직접 전달</option></select></label>'
@@ -290,7 +296,7 @@ def register_admin_portal(
                 '<button type="button" data-invitation-refresh>초대 목록 조회</button>'
                 '<p data-invitation-status role="status"></p>'
                 "<div data-invitation-list></div></section>"
-                '<script src="/assets/admin-invitations.js" defer></script>'
+                '<script src="/assets/admin-invitations.js?v=20261111-roles" defer></script>'
                 "<section><h2>외부 계정 (기한 있음)</h2>"
                 "<p>외주 개발자 등 회사 밖 사람용입니다. 기한이 지나면 로그인할 수 없습니다. "
                 "직원 서비스 권한은 받을 수 없고, "

@@ -28,6 +28,8 @@ from wiseacct_sso.application.oidc import (
     TokenResponse,
     UserInfo,
 )
+from wiseacct_sso.application.service_clients import ServiceAuthError, ServiceClientAuth
+from wiseacct_sso.application.service_invitations import ServiceInvitationService
 from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS, OAuthProvider
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.infrastructure.oidc_state import provider_state_transaction_id
@@ -38,6 +40,7 @@ from .parsing import (
     MAX_FORM_BYTES,
     MAX_QUERY_BYTES,
     ClientAuthenticationError,
+    ClientCredentials,
     ParseError,
     extract_client_credentials,
     parse_urlencoded,
@@ -69,6 +72,7 @@ _TOKEN_FIELDS = frozenset(
         "code_verifier",
         "client_id",
         "client_secret",
+        "scope",
     }
 )
 _PROVIDER_CALLBACK_FIELDS = frozenset({"code", "state", "error", "error_description"})
@@ -141,6 +145,8 @@ def build_oidc_app(
     invitation_service: EmployeeInvitationService | None = None,
     portal_service: OidcService | None = None,
     admin_services: Phase6Services | None = None,
+    service_auth: ServiceClientAuth | None = None,
+    service_invitations: ServiceInvitationService | None = None,
 ) -> FastAPI:
     """Build the full-path OIDC application used by the outer dispatch middleware."""
 
@@ -434,6 +440,8 @@ def build_oidc_app(
         try:
             values = await _form(request, allowed=_TOKEN_FIELDS)
             credentials = extract_client_credentials(request.headers, values)
+            if values.get("grant_type") == "client_credentials":
+                return await _service_token(service_auth, credentials, values)
             required = _required_fields(values, ("grant_type", "code", "redirect_uri"))
             code_verifier = _optional_bounded(values, "code_verifier", 128)
             result = await service.exchange_code(
@@ -508,6 +516,10 @@ def build_oidc_app(
             static_root=assets.parent,
             login_template=login_template,
         )
+    if service_auth is not None and service_auth.enabled and service_invitations is not None:
+        from .service_api import register_service_routes
+
+        register_service_routes(app, service_auth, service_invitations)
 
     return app
 
@@ -741,6 +753,41 @@ def _service_error_response(error: OidcServiceError, *, bearer: bool = False) ->
         authenticate = f'Bearer error="{error.error}"' if bearer else 'Basic realm="oauth2/token"'
     return _oauth_error(
         error.error, error.description, error.status_code, authenticate=authenticate
+    )
+
+
+async def _service_token(
+    service_auth: ServiceClientAuth | None,
+    credentials: ClientCredentials,
+    values: dict[str, str],
+) -> Response:
+    if service_auth is None or not service_auth.enabled:
+        return _oauth_error("unsupported_grant_type", "Unsupported grant type", 400)
+    if set(values) - {"grant_type", "scope", "client_id", "client_secret"}:
+        return _oauth_error("invalid_request", "Invalid token request", 400)
+    try:
+        issued = await service_auth.issue(
+            credentials.client_id, credentials.client_secret, values.get("scope")
+        )
+    except ServiceAuthError as error:
+        if error.code == "invalid_client":
+            return _oauth_error(
+                "invalid_client",
+                "Client authentication failed",
+                401,
+                authenticate='Basic realm="oauth2/token"',
+            )
+        if error.code == "RATE_LIMITED":
+            return _oauth_error("slow_down", "Too many requests", 429)
+        return _oauth_error(error.code, "Requested scope is not allowed", error.status_code)
+    return JSONResponse(
+        {
+            "access_token": issued.access_token,
+            "token_type": "Bearer",
+            "expires_in": issued.expires_in,
+            "scope": issued.scope,
+        },
+        headers={"cache-control": "no-store"},
     )
 
 

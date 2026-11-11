@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
 from test_employee_invitations import fixture, mail_token
@@ -100,3 +100,41 @@ def test_admin_creates_external_account_link_with_day_term() -> None:
     assert payload["accountExpiresAt"].endswith("Z")
     assert not mail.messages
     assert db.tables["EmployeeInvitation"][0]["kind"] == "EXTERNAL"
+
+
+def test_accepting_a_service_invitation_sends_people_to_the_allowed_return_to() -> None:
+    import re
+
+    rig = admin_rig()
+    invitations, _, _, _ = fixture()
+    invitations.return_to_prefixes = ("https://dash.example.test/invite/",)
+    destination = ["https://dash.example.test/invite/abc"]
+
+    async def accept(token: str, password: str) -> str | None:
+        return destination[0]
+
+    invitations.accept = accept  # type: ignore[method-assign]
+    app = build_oidc_app(
+        service=rig.service,
+        public_origin=ORIGIN,
+        portal_service=rig.service,
+        admin_services=cast(Phase6Services, rig.portal),
+        invitation_service=invitations,
+    )
+    client = TestClient(SecurityHeadersMiddleware(app), base_url=ORIGIN, follow_redirects=False)
+
+    def post(accept_header: str | None) -> Any:
+        page = client.get("/oauth2/invitations/accept")
+        csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text)
+        assert csrf is not None
+        data = {"token": "t" * 43, "password": "private-new-password", "csrf_token": csrf[1]}
+        headers = {"origin": ORIGIN, **({"accept": accept_header} if accept_header else {})}
+        return client.post("/oauth2/invitations/accept", data=data, headers=headers)
+
+    assert post("application/json").json() == {"returnTo": destination[0]}
+    redirect = post(None)
+    assert redirect.status_code == 303 and redirect.headers["location"] == destination[0]
+    destination[0] = "https://elsewhere.example.test/invite/abc"  # prefix no longer configured
+    plain = post("application/json")
+    assert plain.status_code == 200 and "location" not in plain.headers
+    assert "returnTo" not in plain.text

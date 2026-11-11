@@ -323,6 +323,7 @@ EmployeeInvitation = Table(
     Column("status", Text, nullable=False, server_default=text("'PENDING'")),
     Column("kind", Text, nullable=False, server_default=text("'EMPLOYEE'")),
     Column("accountExpiresAt", timestamp_ms),
+    Column("returnTo", Text),
     Column("expiresAt", timestamp_ms, nullable=False),
     Column("deliveredAt", timestamp_ms),
     Column("createdAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),

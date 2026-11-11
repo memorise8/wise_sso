@@ -141,7 +141,7 @@ render();
 assert.equal(count.textContent, "선택 0명");
 assert.equal(all.disabled, true);
 assert.equal(submit.disabled, true);
-assert.equal(users.children[0].children[0].colSpan, 7);
+assert.equal(users.children[0].children[0].colSpan, 8);
 if (sessionMode) {
   expired = true;
   await new vm.Script("apiFetch('/users').catch(() => {})").runInContext(context);

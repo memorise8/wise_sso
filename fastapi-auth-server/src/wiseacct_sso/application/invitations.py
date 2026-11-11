@@ -107,9 +107,12 @@ class EmployeeInvitationService:
         origin: str,
         policy: PasswordPolicy,
         clock: Callable[[], datetime] = utc_now_ms,
+        return_to_prefixes: tuple[str, ...] = (),
     ) -> None:
         self.database, self.admin, self.mail = database, admin, mail
         self.origin, self.policy, self.clock = origin, policy, clock
+        # Re-checked at acceptance so a prefix removed from configuration stops redirects.
+        self.return_to_prefixes = return_to_prefixes
         self.passwords = AsyncPasswordHasher()
 
     async def _audit(
@@ -342,7 +345,8 @@ class EmployeeInvitationService:
                 .values(deliveredAt=self.clock())
             )
 
-    async def accept(self, token: str, password: str) -> None:
+    async def accept(self, token: str, password: str) -> str | None:
+        """Activate the account; return where a service invitation asked to send the person."""
         digest = token_hash(token)
         # Validate the token before doing memory-hard password work.
         async with self.database().connection() as conn:
@@ -448,7 +452,9 @@ class EmployeeInvitationService:
                     kind=kind,
                     account_expires_at=account_expires_at,
                 )
+                return_to = cast(str | None, row.get("returnTo"))
         except IntegrityError:
             raise DomainError(
                 409, "ACCOUNT_EXISTS", "Use the existing account management flow"
             ) from None
+        return return_to

@@ -125,6 +125,7 @@ def test_metadata_has_exact_prisma_owned_table_set() -> None:
             "status",
             "kind",
             "accountExpiresAt",
+            "returnTo",
             "expiresAt",
             "deliveredAt",
             "createdAt",

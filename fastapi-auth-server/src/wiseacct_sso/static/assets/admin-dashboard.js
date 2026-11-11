@@ -23,6 +23,12 @@ const selectedUserIds = new Set();
 let visibleUserIds = new Set();
 let adminBusy = false;
 
+// Token mode (legacy /manage-api) has no role catalogue endpoint; keep its two original grants.
+let roleCatalogue = [
+  { serviceKey: "temis", name: "user", externalAllowed: false },
+  { serviceKey: "sso", name: "admin", externalAllowed: false }
+];
+
 const syncSelection = () => {
   if (selectedCount) selectedCount.textContent = `선택 ${selectedUserIds.size}명`;
   if (selectAll instanceof HTMLInputElement) {
@@ -55,6 +61,22 @@ const setNotice = (tone, message) => {
   window.setTimeout(() => {
     notice.hidden = true;
   }, 4200);
+};
+
+// Server error codes shown to administrators in Korean; other codes keep the server message.
+const adminErrorMessages = {
+  EMPLOYEE_REQUIRED: "직원으로 분류된 사용자만 받을 수 있는 권한입니다. 먼저 사용자 유형을 '직원'으로 바꾸세요.",
+  EXTERNAL_ROLE_NOT_ALLOWED: "외부 계정에는 이 권한을 줄 수 없습니다 (외부 계정은 gitlab:user만 가능).",
+  EXTERNAL_ACCOUNT_MANAGED: "외부 계정의 유형은 바꿀 수 없습니다. 기한·정지는 '외부 계정' 패널에서 관리하세요.",
+  NOT_EXTERNAL_ACCOUNT: "외부 계정에서만 할 수 있는 작업입니다.",
+  LEGACY_ADMIN_ROLE_DISABLED: "temis:admin은 더 이상 줄 수 없습니다. 관리자는 sso:admin을 쓰세요.",
+  LAST_SSO_ADMIN: "마지막 SSO 관리자의 권한은 뺄 수 없습니다. 다른 관리자를 먼저 지정하세요.",
+  USER_CHANGED: "그사이 사용자 정보가 바뀌었습니다. 새로고침 후 다시 시도하세요.",
+  INVALID_USER_TYPE: "지원하지 않는 사용자 유형입니다.",
+  INVALID_USER_STATUS: "지원하지 않는 상태입니다.",
+  INVALID_ROLE: "역할 형식이 올바르지 않습니다.",
+  INVALID_ACCOUNT_TERM: "기한은 1~365일 사이 정수로 입력하세요.",
+  FORBIDDEN: "이 작업을 할 권한이 없습니다. 자기 자신의 관리자 권한·세션·상태는 바꿀 수 없습니다."
 };
 
 const authToken = () => sessionAuth ? "" : window.sessionStorage.getItem(tokenStorageKey) ?? "";
@@ -94,7 +116,8 @@ const apiFetch = async (path, options = {}) => {
       window.location.assign("/oauth2/admin/login?reauth=1");
       throw new Error("관리자 로그인이 만료됐습니다. 다시 로그인하세요.");
     }
-    throw new Error(payload?.error?.message ?? "요청을 처리하지 못했습니다.");
+    const code = payload?.error?.code;
+    throw new Error(adminErrorMessages[code] ?? payload?.error?.message ?? "요청을 처리하지 못했습니다.");
   }
   return payload;
 };
@@ -123,7 +146,7 @@ const renderEmptyUsers = (message) => {
   if (userTable) {
     const row = element("tr");
     const cell = element("td", { className: "empty-cell", text: message });
-    cell.colSpan = 7;
+    cell.colSpan = 8;
     row.append(cell);
     userTable.replaceChildren(row);
   }
@@ -179,6 +202,33 @@ const userTypeSelect = (user) => {
     select.append(option);
   }
   return select;
+};
+
+const typeCellContent = (user) => user.userType === "EXTERNAL"
+  ? element("span", { className: "type-fixed", text: "외부 (기한·정지는 외부 계정 패널)" })
+  : userTypeSelect(user);
+
+const roleAssign = (user) => {
+  const wrap = element("div", { className: "role-assign" });
+  const select = element("select");
+  select.dataset.roleSelect = String(user.id);
+  select.setAttribute("aria-label", "부여할 역할");
+  const held = new Set(user.roles.map(roleLabel));
+  const assignable = roleCatalogue.filter((role) =>
+    (user.userType !== "EXTERNAL" || role.externalAllowed) && !held.has(roleLabel(role)));
+  for (const role of assignable) {
+    const option = element("option", { text: roleLabel(role) });
+    option.value = roleLabel(role);
+    select.append(option);
+  }
+  const button = actionButton("secondary-button", "역할 부여", "assignRole", user.id);
+  if (!assignable.length) {
+    select.append(element("option", { text: "부여할 역할 없음" }));
+    select.disabled = true;
+    button.disabled = true;
+  }
+  wrap.append(select, button);
+  return wrap;
 };
 
 const actionButton = (className, text, datasetName, datasetValue) => {
@@ -243,24 +293,28 @@ const renderUsers = (page) => {
     }
     roleCell.append(roles);
 
+    const accessCell = element("td");
+    accessCell.dataset.accessFor = String(user.id);
+    accessCell.append(element("span", { className: "type-fixed", text: sessionAuth ? "확인 중…" : "-" }));
+
     const createdCell = element("td", { text: formatDate(user.createdAt) });
     const actionCell = element("td");
     const actions = element("div", { className: "action-list" });
     actions.append(
       statusSelect(user),
-      actionButton("secondary-button", "user 부여", "addUserRole", user.id),
-      actionButton("secondary-button", "admin 부여", "addAdminRole", user.id),
+      roleAssign(user),
       actionButton("danger-button", "세션 폐기", "revoke", user.id)
     );
     actionCell.append(actions);
 
     const typeCell = element("td");
-    typeCell.append(userTypeSelect(user));
-    row.append(selectionCell, identityCell, statusCell, typeCell, roleCell, createdCell, actionCell);
+    typeCell.append(typeCellContent(user));
+    row.append(selectionCell, identityCell, statusCell, typeCell, roleCell, accessCell, createdCell, actionCell);
     return row;
   });
   userTable.replaceChildren(...rows);
   syncSelection();
+  void loadServiceAccess(page.items.map((user) => String(user.id)));
   setSummary(`총 ${page.total}명 중 ${page.items.length}명 표시`);
 };
 
@@ -286,11 +340,55 @@ const patchStatus = async (userId, status) => {
   });
 };
 
-const addRole = async (userId, name) => {
+const addRole = async (userId, serviceKey, name) => {
   await apiFetch(`/users/${encodeURIComponent(userId)}/roles`, {
     method: "POST",
-    body: JSON.stringify({ serviceKey: name === "admin" ? "sso" : "temis", name, reasonCode: "ADMIN_DASHBOARD_ROLE_ASSIGN" })
+    body: JSON.stringify({ serviceKey, name, reasonCode: "ADMIN_DASHBOARD_ROLE_ASSIGN" })
   });
+};
+
+const renderAccess = (cell, entries) => {
+  const allowed = entries.filter((entry) => entry.allowed);
+  const denied = entries.filter((entry) => !entry.allowed);
+  const list = element("div", { className: "access-list" });
+  if (!allowed.length) list.append(element("span", { className: "access-none", text: "사용 가능한 서비스 없음" }));
+  for (const entry of allowed) {
+    const chip = element("span", { className: "access-chip", text: entry.service });
+    chip.title = entry.reason;
+    list.append(chip);
+  }
+  cell.replaceChildren(list);
+  if (denied.length) {
+    const detail = element("details", { className: "access-denied" });
+    detail.append(element("summary", { text: `불가 ${denied.length}개` }));
+    for (const entry of denied) detail.append(element("p", { text: `${entry.service}: ${entry.reason}` }));
+    cell.append(detail);
+  }
+};
+
+const loadServiceAccess = async (ids) => {
+  if (!sessionAuth || !ids.length || !userTable) return;
+  try {
+    const params = new URLSearchParams(ids.map((id) => ["id", id]));
+    const data = await apiFetch(`/service-access?${params.toString()}`);
+    for (const cell of userTable.querySelectorAll("td[data-access-for]")) {
+      const entries = data.users[cell.dataset.accessFor];
+      if (entries) renderAccess(cell, entries);
+    }
+  } catch {
+    for (const cell of userTable.querySelectorAll("td[data-access-for]")) {
+      cell.replaceChildren(element("span", { className: "type-fixed", text: "확인 실패" }));
+    }
+  }
+};
+
+const loadRoles = async () => {
+  if (!sessionAuth) return;
+  try {
+    roleCatalogue = (await apiFetch("/roles")).items;
+  } catch {
+    // Keep the built-in grants when the catalogue is unavailable.
+  }
 };
 
 const removeRole = async (userId, roleId) => {
@@ -312,12 +410,15 @@ const runUserAction = async (task, successMessage) => {
   try {
     await task();
     setNotice("success", successMessage);
-    await loadUsers();
   } catch (error) {
     setNotice("error", error instanceof Error ? error.message : "요청 실패");
+    return;
   } finally {
     setBusy(false);
   }
+  // loadUsers skips while busy, so refresh only after the controls are released.
+  await loadUsers();
+  void loadAdminOverview();
 };
 
 const renderAudit = (page) => {
@@ -468,14 +569,14 @@ userTable?.addEventListener("click", (event) => {
   if (!(target instanceof HTMLElement)) {
     return;
   }
-  const userRoleTarget = target.dataset.addUserRole;
-  if (userRoleTarget) {
-    void runUserAction(() => addRole(userRoleTarget, "user"), "temis:user 역할을 부여했습니다.");
-    return;
-  }
-  const adminRoleTarget = target.dataset.addAdminRole;
-  if (adminRoleTarget) {
-    void runUserAction(() => addRole(adminRoleTarget, "admin"), "sso:admin 역할을 부여했습니다.");
+  const assignTarget = target.dataset.assignRole;
+  if (assignTarget) {
+    const select = userTable.querySelector(`select[data-role-select='${CSS.escape(assignTarget)}']`);
+    const value = select instanceof HTMLSelectElement ? select.value : "";
+    const [serviceKey, name] = value.split(":");
+    if (!serviceKey || !name) return;
+    if (serviceKey === "sso" && !window.confirm(`${value}는 관리자 권한입니다. 부여할까요?`)) return;
+    void runUserAction(() => addRole(assignTarget, serviceKey, name), `${value} 역할을 부여했습니다.`);
     return;
   }
   const revokeTarget = target.dataset.revoke;
@@ -503,7 +604,9 @@ void fetch("/healthz")
     }
   });
 
-if (sessionAuth || authToken()) {
+if (sessionAuth) {
+  void loadRoles().then(loadUsers);
+} else if (authToken()) {
   void loadUsers();
 }
 

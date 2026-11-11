@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from wiseacct_sso.api.errors import error_response
 from wiseacct_sso.api.routes.admin import AdminActor
 from wiseacct_sso.application.external_accounts import ExternalAccountService
 from wiseacct_sso.application.invitations import EmployeeInvitationService, IssuedInvitation
+from wiseacct_sso.application.service_invitations import allowed_return_to
 from wiseacct_sso.domain.external_accounts import MAX_EXTERNAL_ACCOUNT_DAYS
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.oidc_config import OidcRoleRequirement
@@ -179,11 +180,18 @@ def register_invitation_routes(
                 raise ParseError("Invalid CSRF")
             if len(data["password"]) > 1024:
                 raise ParseError("Invalid password")
-            await service.accept(data["token"], data["password"])
+            return_to = await service.accept(data["token"], data["password"])
         except ParseError:
             return Response("Invalid request", status_code=400)
         except DomainError as error:
             return Response(error.code, status_code=error.status_code)
-        response = Response("Account activated. Return to your approved service to log in.")
+        response: Response
+        if return_to is None or not allowed_return_to(return_to, service.return_to_prefixes):
+            response = Response("Account activated. Return to your approved service to log in.")
+        elif "application/json" in request.headers.get("accept", ""):
+            # The accept page posts with fetch, which cannot follow a cross-site redirect.
+            response = JSONResponse({"returnTo": return_to})
+        else:
+            response = RedirectResponse(return_to, status_code=303)
         response.delete_cookie(COOKIE, secure=True, httponly=True, samesite="lax", path="/")
         return response

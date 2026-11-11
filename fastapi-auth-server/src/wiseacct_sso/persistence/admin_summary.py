@@ -47,13 +47,21 @@ invitations AS (
     FROM "EmployeeInvitation" CROSS JOIN bounds
 ),
 logins AS (
+    -- Portal (OIDC) sign-ins count too; "sso" is a silent reuse of an existing session.
     SELECT
-        count(*) FILTER (WHERE "eventType" = 'login_success') AS succeeded,
-        count(*) FILTER (WHERE "eventType" IN ('login_failure', 'lockout')) AS failed
+        count(*) FILTER (
+            WHERE "eventType" = 'login_success'
+               OR ("eventType" = 'oidc_authorize' AND outcome = 'success'
+                   AND "detailsJson" ->> 'loginMethod' IN ('password', 'oauth'))
+        ) AS succeeded,
+        count(*) FILTER (
+            WHERE "eventType" IN ('login_failure', 'lockout')
+               OR ("eventType" = 'oidc_authorize' AND outcome = 'failure')
+        ) AS failed
     FROM "AuditLog" CROSS JOIN bounds
     WHERE "createdAt" >= now_utc - interval '24 hours'
       AND "createdAt" <= now_utc
-      AND "eventType" IN ('login_success', 'login_failure', 'lockout')
+      AND "eventType" IN ('login_success', 'login_failure', 'lockout', 'oidc_authorize')
 ),
 services AS (
     SELECT "detailsJson" ->> 'clientId' AS client_id, count(DISTINCT "userId") AS user_count
