@@ -97,6 +97,7 @@ select {
 
 .app {
   display: grid;
+  align-items: start;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 100dvh;
 }
@@ -128,15 +129,16 @@ select {
   border-radius: 8px;
   background: var(--accent);
   color: #fff;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 800;
 }
 
-.brand strong {
+.brand div strong {
   display: block;
   font-size: 14px;
 }
 
-.brand span {
+.brand div span {
   color: var(--text-3);
   font-size: 12px;
 }
@@ -472,21 +474,23 @@ button:disabled {
   border-bottom: 1px solid var(--border);
 }
 
-.type-tabs button {
+.panel .type-tabs button {
+  min-height: 0;
   margin-bottom: -1px;
   padding: 8px 12px;
   border: 0;
+  border-radius: 0;
   border-bottom: 2px solid transparent;
   background: none;
   color: var(--text-2);
   font-weight: 500;
 }
 
-.type-tabs button:hover {
+.panel .type-tabs button:hover {
   color: var(--text);
 }
 
-.type-tabs button[aria-selected="true"] {
+.panel .type-tabs button[aria-selected="true"] {
   border-bottom-color: var(--accent);
   color: var(--text);
   font-weight: 600;
@@ -1043,6 +1047,26 @@ button.role-chip:hover:not(:disabled) {
   color: #fff;
 }
 
+/* List refresh buttons sit under their form, not stretched across it. */
+.panel > button:not([class]) {
+  justify-self: start;
+}
+
+/* Wide screens fit the table, so let the row menu hang below it. */
+@media (min-width: 861px) {
+  .table-wrap {
+    overflow: visible;
+  }
+
+  thead th:first-child {
+    border-top-left-radius: var(--radius);
+  }
+
+  thead th:last-child {
+    border-top-right-radius: var(--radius);
+  }
+}
+
 /* ---------- small screens ---------- */
 
 @media (max-width: 1100px) {
@@ -1084,7 +1108,29 @@ button.role-chip:hover:not(:disabled) {
   }
 
   .sidebar-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-top: 0;
+  }
+
+  .account-slot .token-panel {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+
+  .account-slot .token-panel > div {
+    display: none;
+  }
+
+  .account-slot .secondary-button {
+    width: auto;
+    min-height: 30px;
+    font-size: 12.5px;
   }
 
   .admin-shell {
@@ -1106,6 +1152,10 @@ button.role-chip:hover:not(:disabled) {
 
   .stat:nth-child(even) {
     border-left: 1px solid var(--border);
+  }
+
+  .stat:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
   }
 
   .audit-item {
