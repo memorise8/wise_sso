@@ -10,10 +10,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261111-shell">
-    <script defer src="/assets/admin-dashboard.js?v=20261111-shell"></script>
-    <script defer src="/assets/admin-service.js?v=20261111-shell"></script>
-    <script defer src="/assets/admin-shell.js?v=20261111-shell"></script>
+    <script src="/assets/admin-theme.js?v=20261111-theme"></script>
+    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261111-theme">
+    <script defer src="/assets/admin-dashboard.js?v=20261111-theme"></script>
+    <script defer src="/assets/admin-service.js?v=20261111-theme"></script>
+    <script defer src="/assets/admin-shell.js?v=20261111-theme"></script>
   </head>
   <body>
     <div class="app">
@@ -33,6 +34,11 @@
           <button type="button" class="nav-item" data-nav="audit">감사 로그</button>
         </nav>
         <div class="sidebar-foot">
+          <div class="theme-switch" role="group" aria-label="화면 테마">
+            <button type="button" data-theme-choice="system" aria-pressed="true">자동</button>
+            <button type="button" data-theme-choice="light" aria-pressed="false">밝게</button>
+            <button type="button" data-theme-choice="dark" aria-pressed="false">어둡게</button>
+          </div>
           <div class="health" data-health>연결 확인 중</div>
           <div class="account-slot" data-account-slot></div>
         </div>

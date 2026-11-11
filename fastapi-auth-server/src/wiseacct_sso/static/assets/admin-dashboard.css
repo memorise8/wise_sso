@@ -27,8 +27,9 @@
   color-scheme: light;
 }
 
+/* Dark follows the system unless the viewer picked a theme (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0e1117;
     --surface: #161a22;
     --surface-sunken: #1c212b;
@@ -52,6 +53,31 @@
     --shadow-pop: 0 14px 36px rgb(0 0 0 / 0.5);
     color-scheme: dark;
   }
+}
+
+:root[data-theme="dark"] {
+  --bg: #0e1117;
+  --surface: #161a22;
+  --surface-sunken: #1c212b;
+  --surface-hover: #1b2029;
+  --text: #e8ebf0;
+  --text-2: #a9b1be;
+  --text-3: #6f7886;
+  --border: #262c37;
+  --border-strong: #353c49;
+  --accent: #5b8def;
+  --accent-hover: #6f9cf2;
+  --accent-soft: rgb(91 141 239 / 0.14);
+  --accent-text: #8fb1f5;
+  --ok: #3ccf91;
+  --ok-soft: rgb(60 207 145 / 0.12);
+  --warn: #f0a24a;
+  --warn-soft: rgb(240 162 74 / 0.13);
+  --danger: #f2707f;
+  --danger-soft: rgb(242 112 127 / 0.13);
+  --shadow: none;
+  --shadow-pop: 0 14px 36px rgb(0 0 0 / 0.5);
+  color-scheme: dark;
 }
 
 * {
@@ -175,6 +201,33 @@ select {
   display: grid;
   gap: 10px;
   margin-top: auto;
+}
+
+.theme-switch {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+}
+
+.theme-switch button {
+  flex: 1;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.theme-switch button[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-weight: 600;
 }
 
 .health {
