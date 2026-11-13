@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="admin-csrf" content="__ADMIN_CSRF__">
+  <title>사용자 상세 | Wise SSO</title>
+  <link rel="stylesheet" href="/assets/admin-dashboard.css?v=admin-client-access-cards">
+  <script src="/assets/admin-user-detail.js?v=3" defer></script>
+</head>
+<body>
+  <main class="admin-shell">
+    <header class="topbar">
+      <div><a href="/oauth2/admin/dashboard">사용자 목록으로</a><h1>사용자 상세</h1></div>
+    </header>
+    <p id="detail-status" role="status">사용자 정보를 불러오는 중입니다.</p>
+    <section class="workspace" id="detail-profile" aria-label="기본 정보"></section>
+    <section class="workspace" id="detail-roles" aria-label="역할"></section>
+    <section class="workspace" id="detail-access" aria-label="로그인 가능 서비스"></section>
+    <section class="workspace" id="detail-sessions" aria-label="살아 있는 세션"></section>
+    <section class="workspace" id="detail-last-login" aria-label="서비스별 마지막 로그인"></section>
+    <section class="workspace" id="detail-history" aria-label="최근 로그인 이력"></section>
+    <section class="workspace" id="detail-audit" aria-label="대상 사용자 감사 기록"></section>
+  </main>
+</body>
+</html>

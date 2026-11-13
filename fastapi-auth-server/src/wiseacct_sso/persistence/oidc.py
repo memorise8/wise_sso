@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.persistence.models import Role, SocialAccount, User, UserRole, UserStatus
@@ -35,6 +36,46 @@ class _OidcUserRow(Protocol):
     ssoSessionVersion: int
     userType: str | None
     accountExpiresAt: datetime | None
+
+
+_ADMIN_ACCESS_USERS = text("""
+SELECT u.id, u.email, u.name, u."userType", u."accountExpiresAt",
+       COALESCE((
+           SELECT jsonb_agg(jsonb_build_object(
+               'id', r.id, 'serviceKey', r."serviceKey", 'name', r.name
+           ) ORDER BY r."serviceKey", r.name, r.id)
+           FROM "UserRole" ur
+           JOIN "Role" r ON r.id = ur."roleId"
+           WHERE ur."userId" = u.id
+       ), '[]'::jsonb) AS roles
+FROM "User" u
+WHERE u.status = 'ACTIVE' AND u."emailVerified" AND u.email <> ''
+ORDER BY u.id
+""")
+
+
+async def iter_admin_access_users(
+    connection: AsyncConnection,
+) -> AsyncIterator[tuple[OidcUserRecord, list[dict[str, str]]]]:
+    async with connection.stream(_ADMIN_ACCESS_USERS) as result:
+        async for row in result:
+            roles = cast(list[dict[str, str]], row.roles)
+            yield (
+                OidcUserRecord(
+                    id=row.id,
+                    email=row.email,
+                    email_verified=True,
+                    name=row.name,
+                    status=UserStatus.ACTIVE,
+                    roles=tuple(
+                        RoleAssignment(service_key=role["serviceKey"], name=role["name"])
+                        for role in roles
+                    ),
+                    user_type=row.userType,
+                    account_expires_at=row.accountExpiresAt,
+                ),
+                roles,
+            )
 
 
 class OidcIdentityStore:

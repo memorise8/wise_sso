@@ -487,3 +487,58 @@ input[type="checkbox"] {
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+
+.client-access-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr));
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.client-access-card {
+  display: grid;
+  align-content: start;
+  gap: 0.9rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 0.75rem;
+}
+
+.client-access-card-header {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+}
+
+.client-access-card-header h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.client-access-card-header strong {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.client-access-policy {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.4rem 0.75rem;
+  margin: 0;
+}
+
+.client-access-policy dt {
+  font-weight: 600;
+}
+
+.client-access-policy dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.client-access-card > button {
+  justify-self: start;
+}
