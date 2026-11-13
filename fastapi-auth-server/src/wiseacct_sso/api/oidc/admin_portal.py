@@ -5,8 +5,9 @@ from __future__ import annotations
 import hmac
 import html
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -172,11 +173,82 @@ def register_admin_portal(
         from .invitations import register_invitation_routes
 
         register_invitation_routes(app, api, invitation_service, origin, static_root)
-        from .admin_overview import register_overview_routes
 
-        register_overview_routes(
-            api, invitation_service.admin, invitation_service.database, service.clients
+    @api.get("/users/{user_id}", include_in_schema=False)
+    async def user_detail(
+        request: Request,
+        user_id: str,
+        page: Annotated[int, Query(ge=1, le=2_147_483_647)] = 1,
+        page_size: Annotated[int, Query(alias="pageSize", ge=1, le=100)] = 50,
+        history_page: Annotated[int, Query(alias="historyPage", ge=1, le=2_147_483_647)] = 1,
+        service_page: Annotated[int, Query(alias="servicePage", ge=1, le=2_147_483_647)] = 1,
+        role_page: Annotated[int, Query(alias="rolePage", ge=1, le=2_147_483_647)] = 1,
+    ) -> Response:
+        await browser_actor(request)
+        detail = await service.admin_user_detail(
+            user_id,
+            page=page,
+            page_size=page_size,
+            history_page=history_page,
+            service_page=service_page,
+            role_page=role_page,
         )
+        if detail is None:
+            return error_response(404, "USER_NOT_FOUND", "User not found")
+        return JSONResponse(detail, headers={"Cache-Control": "no-store"})
+
+    @api.get("/users/{user_id}/sessions", include_in_schema=False)
+    async def user_sessions(
+        request: Request,
+        user_id: str,
+        page: Annotated[int, Query(ge=1, le=2_147_483_647)] = 1,
+        page_size: Annotated[int, Query(alias="pageSize", ge=1, le=100)] = 50,
+    ) -> Response:
+        await browser_actor(request)
+        sessions = await service.admin_user_sessions(user_id, page=page, page_size=page_size)
+        if sessions is None:
+            return error_response(404, "USER_NOT_FOUND", "User not found")
+        return JSONResponse(sessions, headers={"Cache-Control": "no-store"})
+
+    @api.get("/clients", include_in_schema=False)
+    async def list_clients(
+        request: Request,
+        page: Annotated[int, Query(ge=1, le=2_147_483_647)] = 1,
+        page_size: Annotated[int, Query(alias="pageSize", ge=1, le=100)] = 50,
+    ) -> Response:
+        await browser_actor(request)
+        clients = await service.admin_client_page(page=page, page_size=page_size)
+        return JSONResponse(clients, headers={"Cache-Control": "no-store"})
+
+    @api.get("/clients/{client_id}/members", include_in_schema=False)
+    async def list_client_members(
+        request: Request,
+        client_id: str,
+        page: Annotated[int, Query(ge=1, le=2_147_483_647)] = 1,
+        page_size: Annotated[int, Query(alias="pageSize", ge=1, le=100)] = 50,
+    ) -> Response:
+        await browser_actor(request)
+        members = await service.admin_client_member_page(client_id, page=page, page_size=page_size)
+        if members is None:
+            return error_response(404, "OIDC_CLIENT_NOT_FOUND", "Service not found")
+        return JSONResponse(members, headers={"Cache-Control": "no-store"})
+
+    @api.get("/service-access", include_in_schema=False)
+    async def service_access(request: Request) -> Response:
+        await browser_actor(request)
+        ids = [value for value in request.query_params.getlist("id") if value][:100]
+        access = await service.admin_service_access(ids)
+        return JSONResponse(access, headers={"Cache-Control": "no-store"})
+
+    @api.get("/roles", include_in_schema=False)
+    async def list_roles(
+        request: Request,
+        page: Annotated[int, Query(ge=1, le=2_147_483_647)] = 1,
+        page_size: Annotated[int, Query(alias="pageSize", ge=1, le=100)] = 50,
+    ) -> Response:
+        await browser_actor(request)
+        roles = await admin_services.list_roles(page=page, page_size=page_size)
+        return JSONResponse(roles, headers={"Cache-Control": "no-store"})
 
     @api.get("/summary", include_in_schema=False)
     async def summary(request: Request) -> Response:
@@ -257,6 +329,22 @@ def register_admin_portal(
         _clear_transaction_cookies(redirect, transaction)
         return redirect
 
+    @app.get(ADMIN_ROOT + "/users/{user_id}", include_in_schema=False)
+    async def user_detail_page(request: Request, user_id: str) -> Response:
+        try:
+            _query(request, allowed=frozenset())
+            identity = await service.admin_browser_identity(_context(request))
+        except ParseError:
+            return _page("올바르지 않은 요청입니다.", 400)
+        except OidcServiceError as error:
+            if error.status_code == 401:
+                return RedirectResponse(ADMIN_LOGIN, 303)
+            return _page("이 계정은 관리자 권한이 없습니다.", error.status_code)
+
+        template = (static_root / "admin-user-detail.html").read_text(encoding="utf-8")
+        document = template.replace("__ADMIN_CSRF__", html.escape(identity.csrf_token, quote=True))
+        return HTMLResponse(document, headers={"Cache-Control": "no-store"})
+
     @app.get(ADMIN_DASHBOARD, include_in_schema=False)
     async def dashboard(request: Request) -> Response:
         try:
@@ -297,7 +385,7 @@ def register_admin_portal(
                 '<button type="button" data-invitation-refresh>초대 목록 조회</button>'
                 '<p data-invitation-status role="status"></p>'
                 "<div data-invitation-list></div></section>"
-                '<script src="/assets/admin-invitations.js?v=20261111-shell" defer></script>'
+                '<script src="/assets/admin-invitations.js?v=20261113-detail" defer></script>'
                 '<section class="panel" data-view="external"><h2>외부 계정 (기한 있음)</h2>'
                 '<p class="panel-lead">외주 개발자 등 회사 밖 사람용입니다. '
                 "기한이 지나면 로그인할 수 없습니다. "

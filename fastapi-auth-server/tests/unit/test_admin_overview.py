@@ -1,72 +1,28 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import datetime
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncConnection
 from test_employee_invitations import fixture
-from test_sso_sessions import ORIGIN, admin_rig
+from test_sso_sessions import ORIGIN, admin_login, admin_rig
 
 from wiseacct_sso.api.dependencies import Phase6Services
 from wiseacct_sso.api.middleware import SecurityHeadersMiddleware
-from wiseacct_sso.api.oidc.admin_overview import role_catalogue
 from wiseacct_sso.api.oidc.app import build_oidc_app
 from wiseacct_sso.domain.admin import AdminUserListInput
 from wiseacct_sso.infrastructure.security import DUMMY_PASSWORD_HASH
+from wiseacct_sso.persistence.oidc import OidcUserRecord, RoleAssignment
 
 NOW = datetime(2026, 11, 11, 0, 0)
 
 
-class Result:
-    def __init__(self, scalar: object = None, rows: list[Any] | None = None) -> None:
-        self.scalar, self.rows = scalar, rows or []
-
-    def scalar_one(self) -> object:
-        return self.scalar
-
-    def all(self) -> list[Any]:
-        return self.rows
-
-
-class Connection:
-    def __init__(self, results: list[Result]) -> None:
-        self.results = results
-        self.statements: list[Any] = []
-
-    async def execute(self, statement: Any) -> Result:
-        self.statements.append(statement)
-        return self.results.pop(0)
-
-    def sql(self, index: int) -> str:
-        dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
-        return str(self.statements[index].compile(dialect=dialect))
-
-
 def test_user_list_filter_accepts_external_accounts() -> None:
     assert AdminUserListInput(user_type="EXTERNAL").user_type == "EXTERNAL"
-
-
-@pytest.mark.anyio
-async def test_role_catalogue_marks_roles_external_accounts_may_hold() -> None:
-    connection = Connection(
-        [
-            Result(
-                rows=[
-                    SimpleNamespace(id="r1", serviceKey="agent-hub", name="user"),
-                    SimpleNamespace(id="r2", serviceKey="gitlab", name="user"),
-                ]
-            )
-        ]
-    )
-    roles = await role_catalogue(cast(AsyncConnection, connection))
-    assert [(r["serviceKey"], r["externalAllowed"]) for r in roles] == [
-        ("agent-hub", False),
-        ("gitlab", True),
-    ]
 
 
 def test_overview_routes_need_an_admin_session() -> None:
@@ -126,83 +82,74 @@ def _client(**policy: object) -> Any:
     return OidcClientPolicy.model_validate({**base, **policy})
 
 
-@pytest.mark.parametrize(
-    ("overrides", "expected"),
-    [
-        ({}, (True, "역할 있음")),
-        ({"status": "SUSPENDED"}, (False, "계정 정지·비활성")),
-        ({"expires_at": datetime(2026, 11, 10)}, (False, "기한 만료")),
-        ({"email_verified": False}, (False, "이메일 미인증")),
-        ({"roles": set()}, (False, "gitlab:user 필요")),
-    ],
-)
-def test_client_access_follows_the_login_gate_order(
-    overrides: dict[str, object], expected: tuple[bool, str]
-) -> None:
-    from wiseacct_sso.api.oidc.admin_overview import client_access
+def _users(rig: Any) -> list[OidcUserRecord]:
+    user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    return [
+        user,
+        replace(user, id="no-role", roles=()),
+        replace(user, id="wrong-type", user_type="CUSTOMER"),
+    ]
 
-    values: dict[str, Any] = {
-        "status": "ACTIVE",
-        "email_verified": True,
-        "user_type": "EXTERNAL",
-        "expires_at": datetime(2027, 1, 1),
-        "roles": {("gitlab", "user")},
-        "now": NOW,
+
+def _serve(monkeypatch: pytest.MonkeyPatch, users: list[OidcUserRecord]) -> None:
+    async def candidates(
+        _connection: AsyncConnection,
+    ) -> AsyncIterator[tuple[OidcUserRecord, list[dict[str, str]]]]:
+        for user in users:
+            yield user, []
+
+    monkeypatch.setattr("wiseacct_sso.application.oidc.iter_admin_access_users", candidates)
+
+
+def test_service_access_uses_the_login_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = admin_rig()
+    users = _users(rig)
+    _serve(monkeypatch, users)
+    url = "/oauth2/admin/api/service-access"
+    assert rig.client.get(url).status_code == 401
+    assert admin_login(rig).status_code == 303
+
+    ids = [user.id for user in users] + ["gone"]
+    response = rig.client.get(url, params=[("id", value) for value in ids])
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    staff = {
+        user_id: next(entry for entry in entries if entry["clientId"] == "staff")
+        for user_id, entries in response.json()["users"].items()
     }
-    values.update(overrides)
-    assert client_access(_client(), **values) == expected
+    assert staff[users[0].id] == {"clientId": "staff", "allowed": True, "reason": None}
+    assert staff["no-role"]["reason"] == "OIDC_REQUIRED_ROLE_MISSING"
+    assert staff["wrong-type"]["reason"] == "OIDC_USER_TYPE_DENIED"
+    assert staff["gone"] == {"clientId": "staff", "allowed": False, "reason": "OIDC_USER_INACTIVE"}
 
 
-def test_client_access_respects_user_types_and_role_free_clients() -> None:
-    from wiseacct_sso.api.oidc.admin_overview import client_access
+def test_role_free_services_count_only_role_holders(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The hub lets every signed-in user through SSO and gates by its own invitations,
+    # so the dashboard must not list it as usable for people without agent-hub:user.
+    from wiseacct_sso.oidc_config import OidcClientPolicy, OidcClientRegistry
 
-    values: dict[str, Any] = {
-        "status": "ACTIVE",
-        "email_verified": True,
-        "user_type": None,
-        "expires_at": None,
-        "roles": set(),
-        "now": NOW,
-    }
-    typed = _client(allowedUserTypes=["EMPLOYEE"])
-    assert client_access(typed, **values) == (False, "허용되지 않은 유형")
-    hub = _client(
-        clientId="agent-hub-dash",
-        requiredRoles=[{"serviceKey": "agent-hub", "name": "user"}],
-        groupsServiceKeys=["agent-hub"],
-        allowWithoutRequiredRole=True,
+    rig = admin_rig()
+    member = replace(rig.identities.user, roles=(RoleAssignment("agent-hub", "user"),))
+    guest = replace(member, id="guest", roles=())
+    _serve(monkeypatch, [member, guest])
+    hub = OidcClientPolicy.model_validate(
+        {
+            "clientId": "agent-hub-dash",
+            "clientSecretHash": DUMMY_PASSWORD_HASH,
+            "redirectUris": ["https://hub.example.test/callback"],
+            "requiredRoles": [{"serviceKey": "agent-hub", "name": "user"}],
+            "groupsServiceKeys": ["agent-hub"],
+            "allowWithoutRequiredRole": True,
+        }
     )
-    assert client_access(hub, **values) == (
-        False,
-        "agent-hub:user 없음 (서비스 초대로만 입장)",
-    )
-    guest = {**values, "user_type": "EXTERNAL"}
-    assert client_access(hub, **guest) == (False, "초대받은 손님만 입장 (서비스에서 초대)")
-    assert client_access(hub, **{**values, "roles": {("agent-hub", "user")}}) == (
-        True,
-        "역할 있음",
-    )
-
-
-def test_managed_services_leave_open_sign_up_services_out() -> None:
-    from wiseacct_sso.api.oidc.admin_overview import managed_services
-    from wiseacct_sso.oidc_config import OidcClientRegistry
-
-    hub = _client(
-        clientId="agent-hub-dash",
-        requiredRoles=[{"serviceKey": "agent-hub", "name": "user"}],
-        groupsServiceKeys=["agent-hub"],
-        allowWithoutRequiredRole=True,
-    )
-    fantra = _client(
-        clientId="fantra-oidc",
-        requiredRoles=[{"serviceKey": "temis", "name": "user"}],
-        groupsServiceKeys=["temis"],
-    )
-    items = managed_services(OidcClientRegistry((_client(), hub, fantra)))
-    assert [(i["label"], i["roles"]) for i in items] == [
-        ("GitLab", ["gitlab:user"]),
-        ("에이전트 허브", ["agent-hub:user"]),
+    assert admin_login(rig).status_code == 303
+    rig.service._clients = OidcClientRegistry((hub,))
+    users = rig.client.get(
+        "/oauth2/admin/api/service-access", params=[("id", member.id), ("id", "guest")]
+    ).json()["users"]
+    assert users[member.id] == [{"clientId": "agent-hub-dash", "allowed": True, "reason": None}]
+    assert users["guest"] == [
+        {"clientId": "agent-hub-dash", "allowed": False, "reason": "OIDC_INVITATION_REQUIRED"}
     ]
 
 
@@ -217,3 +164,32 @@ def test_role_errors_are_explained_in_korean_on_both_admin_screens() -> None:
         for code in ("EMPLOYEE_REQUIRED", "EXTERNAL_ROLE_NOT_ALLOWED", "LAST_SSO_ADMIN"):
             assert f"{code}: " in source, (name, code)
     assert "직원으로 분류된 사용자만" in (assets / "admin-dashboard.js").read_text()
+
+
+@pytest.mark.anyio
+async def test_role_list_marks_roles_external_accounts_may_hold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import asynccontextmanager
+
+    from wiseacct_sso.application.admin import Phase6AdminService
+
+    async def page(_connection: object, *, page: int, page_size: int) -> dict[str, object]:
+        items = [
+            {"id": "r1", "serviceKey": "agent-hub", "name": "user"},
+            {"id": "r2", "serviceKey": "gitlab", "name": "user"},
+        ]
+        return {"items": items, "total": 2, "page": page, "pageSize": page_size}
+
+    class Database:
+        @asynccontextmanager
+        async def connection(self) -> AsyncIterator[object]:
+            yield object()
+
+    monkeypatch.setattr("wiseacct_sso.application.admin.read_role_page", page)
+    service = Phase6AdminService(database=Database, tokens=cast(Any, None))  # type: ignore[arg-type]
+    result = await service.list_roles(page=1, page_size=100)
+    assert [(r["serviceKey"], r["externalAllowed"]) for r in result["items"]] == [  # type: ignore[union-attr]
+        ("agent-hub", False),
+        ("gitlab", True),
+    ]

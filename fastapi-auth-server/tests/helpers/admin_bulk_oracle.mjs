@@ -69,7 +69,7 @@ const context = vm.createContext({
     if (expired) return { ok: false, status: 401, text: async () => JSON.stringify({ error: { message: "Expired" } }) };
     return { ok: true, status: 200, text: async () => JSON.stringify(context.payload) };
   },
-  window: { location: { assign: (path) => redirects.push(path) }, confirm: () => approved, setTimeout() {}, sessionStorage: {
+  window: { location: { assign: (path) => redirects.push(path) }, prompt: () => "  BULK_UI_TEST_REASON  ", confirm: () => approved, setTimeout() {}, sessionStorage: {
     getItem: (key) => { if (sessionMode) throw new Error("Session mode must never read a bearer token"); return storage.get(key) ?? null; },
     setItem: (key, value) => storage.set(key, value),
     removeItem: (key) => { removedToken = true; storage.delete(key); }
@@ -114,7 +114,7 @@ if (sessionMode) {
   assert.equal(request.options.headers["x-admin-csrf"], "synthetic-csrf");
   assert.equal(removedToken, true);
 }
-assert.deepEqual(JSON.parse(request.options.body), { userIds: ["a", "b"], userType: "EMPLOYEE", reasonCode: "ADMIN_DASHBOARD_BULK_USER_TYPE_CHANGE" });
+assert.deepEqual(JSON.parse(request.options.body), { userIds: ["a", "b"], userType: "EMPLOYEE", reasonCode: "BULK_UI_TEST_REASON" });
 boxes()[0].checked = false;
 users.listeners.change({ target: boxes()[0] });
 assert.equal(count.textContent, "선택 2명"); // In-flight input cannot change the target set.

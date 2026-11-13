@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -28,10 +29,11 @@ from wiseacct_sso.domain.admin import (
     sanitize_audit_details,
     should_revoke_for_status,
 )
-from wiseacct_sso.domain.external_accounts import assert_external_roles
+from wiseacct_sso.domain.external_accounts import EXTERNAL_ALLOWED_ROLES, assert_external_roles
 from wiseacct_sso.domain.tokens import TokenValidationError
 from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
 from wiseacct_sso.infrastructure.security import JwtTokenCodec
+from wiseacct_sso.persistence.admin_client_access import read_role_page
 from wiseacct_sso.persistence.admin_summary import read_admin_summary
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import application_uuid, utc_now_ms
@@ -141,6 +143,14 @@ class Phase6AdminService:
             raise DomainError(
                 409, "LAST_SSO_ADMIN", "Cannot remove the last active SSO administrator"
             )
+
+    async def list_roles(self, *, page: int, page_size: int) -> dict[str, object]:
+        async with self._database().connection() as connection:
+            result = await read_role_page(connection, page=page, page_size=page_size)
+        # Tells the dashboard which roles an external (time-limited) account may hold.
+        for role in cast(list[dict[str, object]], result["items"]):
+            role["externalAllowed"] = (role["serviceKey"], role["name"]) in EXTERNAL_ALLOWED_ROLES
+        return result
 
     async def summary(self) -> dict[str, object]:
         async with self._database().connection() as connection:

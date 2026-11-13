@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import secrets
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Literal, NoReturn, Protocol
@@ -62,10 +62,15 @@ from wiseacct_sso.infrastructure.sso_sessions import (
     SsoSessionStore,
 )
 from wiseacct_sso.oidc_config import OidcClientPolicy, OidcClientRegistry
+from wiseacct_sso.persistence.admin_user_detail import (
+    read_user_detail,
+    read_user_login_activity,
+    read_user_sessions,
+)
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import UserStatus as PersistenceUserStatus
 from wiseacct_sso.persistence.models import utc_now_ms
-from wiseacct_sso.persistence.oidc import OidcIdentityStore, OidcUserRecord
+from wiseacct_sso.persistence.oidc import OidcIdentityStore, OidcUserRecord, iter_admin_access_users
 from wiseacct_sso.persistence.stores import (
     AuditEventInsert,
     AuditStore,
@@ -233,10 +238,6 @@ class OidcService:
         self._failed_logins = FailedLoginStore()
         self._identities = OidcIdentityStore()
         self._audit = AuditStore()
-
-    @property
-    def clients(self) -> OidcClientRegistry:
-        return self._clients
 
     async def begin_authorization(
         self, request: AuthorizationRequest, context: OidcRequestContext
@@ -1004,6 +1005,162 @@ class OidcService:
             await self._transactions.discard(transaction_id)
             raise OidcServiceError("invalid_request", "Invalid login transaction")
         return transaction
+
+    async def admin_client_page(self, *, page: int, page_size: int) -> dict[str, object]:
+        clients = sorted(self._clients.clients, key=lambda client: client.client_id)
+        start = (page - 1) * page_size
+        selected = clients[start : start + page_size]
+        counts = dict.fromkeys((client.client_id for client in selected), 0)
+
+        if selected:
+            async with self._database().connection() as connection:
+                async for user, _ in iter_admin_access_users(connection):
+                    for client in selected:
+                        identity, _ = self._eligible_identity(user, client)
+                        if identity is not None:
+                            counts[client.client_id] += 1
+
+        items = [
+            {
+                "clientId": client.client_id,
+                "allowedUserTypes": client.allowed_user_types,
+                "requiredRoles": [
+                    {"serviceKey": role.service_key, "name": role.name}
+                    for role in client.required_roles
+                ],
+                "allowWithoutRequiredRole": client.allow_without_required_role,
+                "ssoAutoLogin": client.sso_auto_login,
+                "eligibleCount": counts[client.client_id],
+            }
+            for client in selected
+        ]
+        return {"items": items, "total": len(clients), "page": page, "pageSize": page_size}
+
+    async def admin_client_member_page(
+        self, client_id: str, *, page: int, page_size: int
+    ) -> dict[str, object] | None:
+        client = self._clients.get(client_id)
+        if client is None:
+            return None
+
+        start = (page - 1) * page_size
+        total = 0
+        items: list[dict[str, object]] = []
+        required_roles = {(role.service_key, role.name) for role in client.required_roles}
+        async with self._database().connection() as connection:
+            async for user, roles in iter_admin_access_users(connection):
+                identity, _ = self._eligible_identity(user, client)
+                if identity is None:
+                    continue
+                if start <= total < start + page_size:
+                    items.append(
+                        {
+                            "id": user.id,
+                            "email": identity.email,
+                            "name": user.name,
+                            "userType": user.user_type,
+                            "requiredRoleMatched": has_required_role(identity, client),
+                            "matchedRoles": [
+                                role
+                                for role in roles
+                                if (role["serviceKey"], role["name"]) in required_roles
+                            ],
+                        }
+                    )
+                total += 1
+
+        return {"items": items, "total": total, "page": page, "pageSize": page_size}
+
+    async def admin_user_detail(
+        self,
+        user_id: str,
+        *,
+        page: int,
+        page_size: int,
+        history_page: int = 1,
+        service_page: int = 1,
+        role_page: int = 1,
+    ) -> dict[str, object] | None:
+        async with self._database().connection() as connection:
+            record = await read_user_detail(
+                connection, user_id, role_page=role_page, page_size=page_size
+            )
+            if record is None:
+                return None
+            activity = await read_user_login_activity(
+                connection,
+                user_id,
+                history_page=history_page,
+                service_page=service_page,
+                page_size=page_size,
+            )
+
+        user, profile = record
+        profile.update(activity)
+        eligible = []
+        for client in sorted(self._clients.clients, key=lambda item: item.client_id):
+            identity, _ = self._eligible_identity(user, client)
+            if identity is not None:
+                eligible.append(
+                    {
+                        "clientId": client.client_id,
+                        "requiredRoleMatched": has_required_role(identity, client),
+                    }
+                )
+
+        start = (page - 1) * page_size
+        profile["eligibleServices"] = {
+            "items": eligible[start : start + page_size],
+            "total": len(eligible),
+            "page": page,
+            "pageSize": page_size,
+        }
+        return profile
+
+    async def admin_user_sessions(
+        self, user_id: str, *, page: int, page_size: int
+    ) -> dict[str, object] | None:
+        async with self._database().connection() as connection:
+            return await read_user_sessions(connection, user_id, page=page, page_size=page_size)
+
+    async def admin_service_access(self, user_ids: Sequence[str]) -> dict[str, object]:
+        """Per user, which OIDC services the login gate lets through right now.
+
+        A service that admits users without its role (the hub gates by its own
+        invitations) only counts as usable when the user holds that role.
+        """
+        wanted = set(user_ids)
+        found: dict[str, OidcUserRecord] = {}
+        async with self._database().connection() as connection:
+            async for record, _ in iter_admin_access_users(connection):
+                if record.id in wanted:
+                    found[record.id] = record
+        clients = sorted(self._clients.clients, key=lambda item: item.client_id)
+        result: dict[str, list[dict[str, object]]] = {}
+        for user_id in user_ids:
+            user = found.get(user_id)
+            entries: list[dict[str, object]] = []
+            for client in clients:
+                if user is None:
+                    entries.append(
+                        {
+                            "clientId": client.client_id,
+                            "allowed": False,
+                            "reason": "OIDC_USER_INACTIVE",
+                        }
+                    )
+                    continue
+                identity, denial = self._eligible_identity(user, client)
+                matched = identity is not None and has_required_role(identity, client)
+                allowed = identity is not None and (matched or not client.required_roles)
+                reason = (
+                    denial
+                    if identity is None
+                    else (None if allowed else "OIDC_INVITATION_REQUIRED")
+                )
+                entries.append({"clientId": client.client_id, "allowed": allowed, "reason": reason})
+            result[user_id] = entries
+        return {"users": result}
 
     def _eligible_identity(
         self, user: OidcUserRecord | None, client: OidcClientPolicy

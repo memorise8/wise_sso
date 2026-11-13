@@ -138,7 +138,7 @@ def test_static_copies_are_byte_identical_and_served_with_express_cache_contract
     dashboard = client.get("/manage/dashboard")
     assert dashboard.status_code == 200
     assert dashboard.content == (FASTAPI_STATIC / "admin-dashboard.html").read_bytes()
-    assert b"/assets/admin-dashboard.js?v=20261111-theme" in dashboard.content
+    assert b"/assets/admin-dashboard.js?v=20261113-detail" in dashboard.content
 
     for path, response in (("/manage/dashboard", dashboard),):
         assert response.headers["etag"]

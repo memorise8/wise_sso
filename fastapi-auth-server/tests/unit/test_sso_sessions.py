@@ -183,6 +183,15 @@ class PortalApi:
     async def authenticate_admin(self, *args: object, **kwargs: object) -> str:
         raise AssertionError("Browser endpoint must not accept a Bearer-token shortcut")
 
+    async def list_roles(self, *, page: int, page_size: int) -> dict[str, object]:
+        self.calls.append(("roles", (page, page_size)))
+        return {
+            "items": [{"id": "role-staff", "serviceKey": "staff", "name": "user"}],
+            "total": 1,
+            "page": page,
+            "pageSize": page_size,
+        }
+
     async def summary(self) -> dict[str, object]:
         self.calls.append(("summary", None))
         return {
@@ -683,6 +692,79 @@ def test_admin_summary_requires_live_admin_session() -> None:
     assert rig.portal.calls == [("summary", None)]
 
 
+def test_admin_client_access_uses_live_admin_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = admin_rig()
+    roles = [{"id": "role-staff", "serviceKey": "staff", "name": "user"}]
+    user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    without_role = replace(user, id="no-role", roles=())
+    wrong_type = replace(user, id="wrong-type", user_type="CUSTOMER")
+    invalid_group = replace(
+        user, id="invalid-group", roles=(*user.roles, RoleAssignment("staff", "bad:role"))
+    )
+
+    async def candidates(
+        _connection: AsyncConnection,
+    ) -> AsyncIterator[tuple[OidcUserRecord, list[dict[str, str]]]]:
+        yield user, roles
+        yield without_role, []
+        yield wrong_type, roles
+        yield invalid_group, roles
+
+    monkeypatch.setattr("wiseacct_sso.application.oidc.iter_admin_access_users", candidates)
+
+    clients_url = "/oauth2/admin/api/clients"
+    members_url = f"{clients_url}/staff/members"
+    roles_url = "/oauth2/admin/api/roles"
+    for url in (clients_url, members_url, roles_url):
+        assert rig.client.get(url).status_code == 401
+
+    assert admin_login(rig).status_code == 303
+
+    clients = rig.client.get(clients_url)
+    assert clients.status_code == 200
+    assert clients.headers["cache-control"] == "no-store"
+    staff = next(item for item in clients.json()["items"] if item["clientId"] == "staff")
+    assert staff == {
+        "clientId": "staff",
+        "allowedUserTypes": ["EMPLOYEE"],
+        "requiredRoles": [{"serviceKey": "staff", "name": "user"}],
+        "allowWithoutRequiredRole": False,
+        "ssoAutoLogin": True,
+        "eligibleCount": 1,
+    }
+
+    members = rig.client.get(members_url, params={"pageSize": 1})
+    assert members.status_code == 200
+    assert members.headers["cache-control"] == "no-store"
+    assert members.json()["total"] == 1
+    assert members.json()["items"] == [
+        {
+            "id": user.id,
+            "email": user.email,
+            "name": user.name,
+            "userType": "EMPLOYEE",
+            "requiredRoleMatched": True,
+            "matchedRoles": roles,
+        }
+    ]
+    assert rig.client.get(members_url, params={"page": 2}).json()["items"] == []
+    assert rig.client.get(f"{clients_url}/missing/members").status_code == 404
+
+    catalog = rig.client.get(roles_url, params={"pageSize": 100})
+    assert catalog.status_code == 200
+    assert catalog.json() == {"items": roles, "total": 1, "page": 1, "pageSize": 100}
+    assert rig.portal.calls == [("roles", (1, 100))]
+
+    for url in (clients_url, members_url, roles_url):
+        assert rig.client.get(url, params={"pageSize": 101}).status_code == 400
+
+    rig.identities.user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    for url in (clients_url, members_url, roles_url):
+        assert rig.client.get(url).status_code == 403
+
+
 def test_admin_reuses_recent_central_session_without_password_prompt() -> None:
     rig = admin_rig()
     rig.login()
@@ -1028,3 +1110,62 @@ def test_client_can_disable_central_session_auto_login() -> None:
     assert result.headers["location"].startswith("/oauth2/login?")
     # The other client still reuses the same session.
     assert "code=" in rig.authorize("customer", prompt="none").headers["location"]
+
+
+def test_admin_user_detail_requires_live_admin_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = admin_rig()
+    page_url = "/oauth2/admin/users/f3-customer"
+    api_url = "/oauth2/admin/api/users/f3-customer"
+    sessions_url = f"{api_url}/sessions"
+    calls: list[tuple[str, dict[str, int]]] = []
+
+    async def detail(_service: object, user_id: str, **query: int) -> dict[str, object] | None:
+        calls.append(("detail", query))
+        return {"id": user_id} if user_id == "f3-customer" else None
+
+    async def sessions(_service: object, user_id: str, **query: int) -> dict[str, object] | None:
+        calls.append(("sessions", query))
+        if user_id != "f3-customer":
+            return None
+        return {"activeSessionCount": 0, "items": []}
+
+    monkeypatch.setattr("wiseacct_sso.application.oidc.OidcService.admin_user_detail", detail)
+    monkeypatch.setattr("wiseacct_sso.application.oidc.OidcService.admin_user_sessions", sessions)
+
+    assert rig.client.get(page_url, follow_redirects=False).headers["location"] == (
+        "/oauth2/admin/login"
+    )
+    for url in (api_url, sessions_url):
+        assert rig.client.get(url).status_code == 401
+    assert not calls
+
+    assert admin_login(rig).status_code == 303
+    page = rig.client.get(page_url)
+    assert page.status_code == 200
+    assert page.headers["cache-control"] == "no-store"
+    assert "/assets/admin-user-detail.js" in page.text
+
+    profile = rig.client.get(api_url, params={"pageSize": 1, "rolePage": 2})
+    assert profile.status_code == 200
+    assert profile.headers["cache-control"] == "no-store"
+    assert profile.json()["id"] == "f3-customer"
+    assert calls[0][1]["role_page"] == 2
+    assert calls[0][1]["page_size"] == 1
+
+    live = rig.client.get(sessions_url)
+    assert live.status_code == 200
+    assert live.headers["cache-control"] == "no-store"
+    assert live.json()["activeSessionCount"] == 0
+
+    for url in (api_url, sessions_url):
+        assert rig.client.get(url, params={"pageSize": 101}).status_code == 400
+        assert rig.client.get(url.replace("f3-customer", "f3-missing")).status_code == 404
+    assert rig.client.get(api_url, params={"rolePage": 0}).status_code == 400
+
+    calls.clear()
+    rig.identities.user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    for url in (page_url, api_url, sessions_url):
+        assert rig.client.get(url).status_code == 403
+    assert not calls

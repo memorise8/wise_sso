@@ -125,11 +125,37 @@ const apiFetch = async (path, options = {}) => {
 };
 
 const formatDate = (value) => new Intl.DateTimeFormat("ko-KR", {
+  timeZone: "Asia/Seoul",
   dateStyle: "medium",
   timeStyle: "short"
 }).format(new Date(value));
 
-const formatDay = (value) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "medium" }).format(new Date(value));
+const formatDay = (value) => new Intl.DateTimeFormat("ko-KR", { timeZone: "Asia/Seoul", dateStyle: "medium" }).format(new Date(value));
+
+// Every change asks why; the answer is stored as the audit reason.
+const askReason = () => window.prompt("변경 사유를 입력하세요. (감사 기록에 남습니다)")?.trim();
+
+let userPage = 1;
+let auditPage = 1;
+
+const renderPager = (selector, result, onPage) => {
+  const pager = document.querySelector(selector);
+  if (!pager) return;
+  pager.replaceChildren();
+  if (!result || result.total <= result.pageSize) return;
+  const last = Math.ceil(result.total / result.pageSize);
+  const step = (text, page) => {
+    const button = element("button", { className: "secondary-button", text });
+    button.type = "button";
+    button.addEventListener("click", () => {
+      if (!adminBusy) onPage(page);
+    });
+    return button;
+  };
+  if (result.page > 1) pager.append(step("이전", result.page - 1));
+  pager.append(element("span", { text: `${result.page} / ${last}` }));
+  if (result.page < last) pager.append(step("다음", result.page + 1));
+};
 
 const roleLabel = (role) => `${role.serviceKey}:${role.name}`;
 
@@ -161,7 +187,7 @@ const userQueryString = () => {
     return "";
   }
   const values = new FormData(filterForm);
-  const params = new URLSearchParams({ page: "1", pageSize: "50" });
+  const params = new URLSearchParams({ page: String(userPage), pageSize: "50" });
   for (const name of ["email", "status", "role", "userType"]) {
     const value = values.get(name);
     if (typeof value === "string" && value.trim()) {
@@ -276,7 +302,11 @@ const renderUsers = (page) => {
     const identityCell = element("td");
     const identity = element("div", { className: "user-main" });
     identity.append(
-      element("span", { className: "user-name", text: user.name ?? "이름 없음" }),
+      (() => {
+        const name = element(sessionAuth ? "a" : "span", { className: "user-name", text: user.name ?? "이름 없음" });
+        if (sessionAuth) name.href = `/oauth2/admin/users/${encodeURIComponent(user.id)}`;
+        return name;
+      })(),
       element("span", { className: "user-email", text: user.email ?? "(email 없음)" }),
       element("span", { className: "user-id", text: user.id })
     );
@@ -333,7 +363,7 @@ const renderUsers = (page) => {
   });
   userTable.replaceChildren(...rows);
   syncSelection();
-  void loadServiceAccess(page.items.map((user) => String(user.id)));
+  void loadServiceAccess(page.items);
   setSummary(`총 ${page.total}명 중 ${page.items.length}명 표시`);
 };
 
@@ -342,9 +372,21 @@ const loadUsers = async () => {
   const query = userQueryString();
   setBusy(true);
   try {
-    const page = await apiFetch(`/users?${query}`);
+    let page = await apiFetch(`/users?${query}`);
+    const last = Math.max(1, Math.ceil(page.total / page.pageSize));
+    if (userPage > last) {
+      userPage = last;
+      const corrected = new URLSearchParams(query);
+      corrected.set("page", String(last));
+      page = await apiFetch(`/users?${corrected}`);
+    }
     renderUsers(page);
+    renderPager("[data-user-pager]", page, (next) => {
+      userPage = next;
+      void loadUsers();
+    });
   } catch (error) {
+    renderPager("[data-user-pager]", null);
     renderEmptyUsers(error instanceof Error ? error.message : "조회 실패");
     setNotice("error", error instanceof Error ? error.message : "조회 실패");
   } finally {
@@ -352,23 +394,49 @@ const loadUsers = async () => {
   }
 };
 
-const patchStatus = async (userId, status) => {
+const patchStatus = async (userId, status, reasonCode) => {
   await apiFetch(`/users/${encodeURIComponent(userId)}/status`, {
     method: "PATCH",
-    body: JSON.stringify({ status, reasonCode: "ADMIN_DASHBOARD_STATUS_CHANGE" })
+    body: JSON.stringify({ status, reasonCode })
   });
 };
 
-const addRole = async (userId, serviceKey, name) => {
+const addRole = async (userId, serviceKey, name, reasonCode) => {
   await apiFetch(`/users/${encodeURIComponent(userId)}/roles`, {
     method: "POST",
-    body: JSON.stringify({ serviceKey, name, reasonCode: "ADMIN_DASHBOARD_ROLE_ASSIGN" })
+    body: JSON.stringify({ serviceKey, name, reasonCode })
   });
 };
 
-const renderAccess = (cell, entries) => {
-  const allowed = entries.filter((entry) => entry.allowed);
-  const denied = entries.filter((entry) => !entry.allowed);
+const accessReasons = {
+  OIDC_USER_INACTIVE: "정지·삭제됐거나 이메일 인증 전",
+  OIDC_ACCOUNT_EXPIRED: "외부 계정 기한 지남",
+  OIDC_EMAIL_UNVERIFIED: "이메일 인증 전",
+  OIDC_USER_TYPE_DENIED: "이 서비스가 받지 않는 사용자 유형",
+  OIDC_REQUIRED_ROLE_MISSING: "필요한 역할 없음",
+  OIDC_GROUPS_INVALID: "역할 구성 오류",
+  OIDC_INVITATION_REQUIRED: "역할 없음 (서비스에서 초대받아야 입장)"
+};
+
+// Fantra·TEMIS and the SSO admin portal are not OIDC clients; their access follows the role alone.
+const roleServices = [
+  ["temis", "user", "Fantra·TEMIS"],
+  ["sso", "admin", "SSO 관리자"]
+];
+
+const renderAccess = (cell, entries, user) => {
+  const active = user?.status === "ACTIVE";
+  const named = entries.map((entry) => ({
+    service: serviceLabels[entry.clientId] ?? entry.clientId,
+    allowed: entry.allowed,
+    reason: entry.allowed ? "로그인 가능" : accessReasons[entry.reason] ?? entry.reason
+  }));
+  for (const [serviceKey, name, service] of roleServices) {
+    const held = user?.roles.some((role) => role.serviceKey === serviceKey && role.name === name);
+    named.push({ service, allowed: Boolean(active && held), reason: held ? (active ? "로그인 가능" : "계정 비활성") : `${serviceKey}:${name} 없음` });
+  }
+  const allowed = named.filter((entry) => entry.allowed);
+  const denied = named.filter((entry) => !entry.allowed);
   const list = element("div", { className: "access-list" });
   if (!allowed.length) list.append(element("span", { className: "access-none", text: "사용 가능한 서비스 없음" }));
   for (const entry of allowed) {
@@ -385,14 +453,15 @@ const renderAccess = (cell, entries) => {
   }
 };
 
-const loadServiceAccess = async (ids) => {
-  if (!sessionAuth || !ids.length || !userTable) return;
+const loadServiceAccess = async (users) => {
+  if (!sessionAuth || !users.length || !userTable) return;
   try {
-    const params = new URLSearchParams(ids.map((id) => ["id", id]));
+    const params = new URLSearchParams(users.map((user) => ["id", String(user.id)]));
     const data = await apiFetch(`/service-access?${params.toString()}`);
+    const byId = new Map(users.map((user) => [String(user.id), user]));
     for (const cell of userTable.querySelectorAll("td[data-access-for]")) {
       const entries = data.users[cell.dataset.accessFor];
-      if (entries) renderAccess(cell, entries);
+      if (entries) renderAccess(cell, entries, byId.get(cell.dataset.accessFor));
     }
   } catch {
     for (const cell of userTable.querySelectorAll("td[data-access-for]")) {
@@ -404,23 +473,29 @@ const loadServiceAccess = async (ids) => {
 const loadRoles = async () => {
   if (!sessionAuth) return;
   try {
-    roleCatalogue = (await apiFetch("/roles")).items;
+    const roles = [];
+    for (let page = 1; ; page += 1) {
+      const result = await apiFetch(`/roles?page=${page}&pageSize=100`);
+      roles.push(...result.items);
+      if (roles.length >= result.total || !result.items.length) break;
+    }
+    roleCatalogue = roles;
   } catch {
     // Keep the built-in grants when the catalogue is unavailable.
   }
 };
 
-const removeRole = async (userId, roleId) => {
+const removeRole = async (userId, roleId, reasonCode) => {
   await apiFetch(`/users/${encodeURIComponent(userId)}/roles/${encodeURIComponent(roleId)}`, {
     method: "DELETE",
-    body: JSON.stringify({ reasonCode: "ADMIN_DASHBOARD_ROLE_REMOVE" })
+    body: JSON.stringify({ reasonCode })
   });
 };
 
-const revokeSessions = async (userId) => {
+const revokeSessions = async (userId, reasonCode) => {
   await apiFetch(`/users/${encodeURIComponent(userId)}/revoke-sessions`, {
     method: "POST",
-    body: JSON.stringify({ reasonCode: "ADMIN_DASHBOARD_SESSION_REVOKE" })
+    body: JSON.stringify({ reasonCode })
   });
 };
 
@@ -463,11 +538,22 @@ const renderAudit = (page) => {
 };
 
 const loadAudit = async () => {
+  if (adminBusy) return;
   setBusy(true);
   try {
-    const page = await apiFetch("/audit-logs?page=1&pageSize=20");
+    let page = await apiFetch(`/audit-logs?page=${auditPage}&pageSize=20`);
+    const last = Math.max(1, Math.ceil(page.total / page.pageSize));
+    if (auditPage > last) {
+      auditPage = last;
+      page = await apiFetch(`/audit-logs?page=${auditPage}&pageSize=20`);
+    }
     renderAudit(page);
+    renderPager("[data-audit-pager]", page, (next) => {
+      auditPage = next;
+      void loadAudit();
+    });
   } catch (error) {
+    renderPager("[data-audit-pager]", null);
     if (auditList) {
       auditList.replaceChildren(element("p", {
         className: "empty-cell",
@@ -500,7 +586,11 @@ document.querySelector("[data-clear-token]")?.addEventListener("click", () => {
   setNotice("success", "관리자 토큰을 삭제했습니다.");
 });
 
-filterForm?.addEventListener("input", clearSelection);
+filterForm?.addEventListener("input", () => {
+  userPage = 1;
+  clearSelection();
+  renderPager("[data-user-pager]", null);
+});
 
 selectAll?.addEventListener("change", () => {
   if (!(selectAll instanceof HTMLInputElement) || adminBusy) return;
@@ -520,13 +610,15 @@ bulkForm?.addEventListener("submit", (event) => {
   }
   const label = { EMPLOYEE: "직원", CUSTOMER: "고객", UNCLASSIFIED: "미분류" }[selectedType];
   if (!window.confirm(`${ids.length}명의 사용자 유형을 ${label}(으)로 변경합니다. 변경된 사용자의 기존 인증 세션이 폐기됩니다. 계속하시겠습니까?`)) return;
+  const reasonCode = askReason();
+  if (!reasonCode) return;
   setBusy(true);
   void (async () => {
     try {
       const result = await apiFetch("/users/type", {
         method: "PATCH",
         body: JSON.stringify({ userIds: ids, userType: selectedType === "UNCLASSIFIED" ? null : selectedType,
-          reasonCode: "ADMIN_DASHBOARD_BULK_USER_TYPE_CHANGE" })
+          reasonCode })
       });
       clearSelection();
       setNotice("success", `${result.changedCount}명 변경, ${result.unchangedCount}명은 기존 유형과 같습니다.`);
@@ -542,6 +634,7 @@ bulkForm?.addEventListener("submit", (event) => {
 
 filterForm?.addEventListener("submit", (event) => {
   event.preventDefault();
+  userPage = 1;
   void loadUsers();
 });
 
@@ -568,19 +661,23 @@ userTable?.addEventListener("change", (event) => {
     return;
   }
   const typeUserId = target.dataset.userTypeSelect;
+  const userId = target.dataset.statusSelect;
+  if (!typeUserId && !userId) {
+    return;
+  }
+  const reasonCode = askReason();
+  if (!reasonCode) {
+    void loadUsers(); // put the select back
+    return;
+  }
   if (typeUserId) {
     void runUserAction(() => apiFetch(`/users/${encodeURIComponent(typeUserId)}/type`, {
       method: "PATCH",
-      body: JSON.stringify({ userType: target.value === "UNCLASSIFIED" ? null : target.value,
-                             reasonCode: "ADMIN_DASHBOARD_USER_TYPE_CHANGE" })
+      body: JSON.stringify({ userType: target.value === "UNCLASSIFIED" ? null : target.value, reasonCode })
     }), "사용자 유형을 변경했습니다.");
     return;
   }
-  const userId = target.dataset.statusSelect;
-  if (!userId) {
-    return;
-  }
-  void runUserAction(() => patchStatus(userId, target.value), "상태를 변경했습니다.");
+  void runUserAction(() => patchStatus(userId, target.value, reasonCode), "상태를 변경했습니다.");
 });
 
 userTable?.addEventListener("click", (event) => {
@@ -595,18 +692,24 @@ userTable?.addEventListener("click", (event) => {
     const [serviceKey, name] = value.split(":");
     if (!serviceKey || !name) return;
     if (serviceKey === "sso" && !window.confirm(`${value}는 관리자 권한입니다. 부여할까요?`)) return;
-    void runUserAction(() => addRole(assignTarget, serviceKey, name), `${value} 역할을 부여했습니다.`);
+    const reasonCode = askReason();
+    if (!reasonCode) return;
+    void runUserAction(() => addRole(assignTarget, serviceKey, name, reasonCode), `${value} 역할을 부여했습니다.`);
     return;
   }
   const revokeTarget = target.dataset.revoke;
   if (revokeTarget) {
-    void runUserAction(() => revokeSessions(revokeTarget), "세션을 폐기했습니다.");
+    const reasonCode = askReason();
+    if (!reasonCode) return;
+    void runUserAction(() => revokeSessions(revokeTarget, reasonCode), "로그인 세션을 끊었습니다.");
     return;
   }
   const removeRoleTarget = target.dataset.removeRole;
   const roleId = target.dataset.roleId;
   if (removeRoleTarget && roleId) {
-    void runUserAction(() => removeRole(removeRoleTarget, roleId), "역할을 제거했습니다.");
+    const reasonCode = askReason();
+    if (!reasonCode) return;
+    void runUserAction(() => removeRole(removeRoleTarget, roleId, reasonCode), "역할을 뺐습니다.");
   }
 });
 

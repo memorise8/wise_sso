@@ -10,11 +10,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="/assets/admin-theme.js?v=20261111-theme"></script>
-    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261111-theme">
-    <script defer src="/assets/admin-dashboard.js?v=20261111-theme"></script>
-    <script defer src="/assets/admin-service.js?v=20261111-theme"></script>
-    <script defer src="/assets/admin-shell.js?v=20261111-theme"></script>
+    <script src="/assets/admin-theme.js?v=20261113-detail"></script>
+    <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261113-detail">
+    <script defer src="/assets/admin-dashboard.js?v=20261113-detail"></script>
+    <script defer src="/assets/admin-service.js?v=20261113-detail"></script>
+    <script defer src="/assets/admin-shell.js?v=20261113-detail"></script>
   </head>
   <body>
     <div class="app">
@@ -69,16 +69,22 @@
             </div>
           </div>
           <div class="service-tabs" data-service-tabs role="tablist"></div>
+          <div data-service-policy></div>
           <p class="service-note" data-service-note></p>
           <form class="service-add" data-service-add>
             <label>
               <span>추가할 사용자 이메일</span>
               <input name="email" type="email" maxlength="320" required placeholder="name@example.com">
             </label>
+            <label class="service-role">
+              <span>줄 역할</span>
+              <select name="role" required></select>
+            </label>
             <button class="primary-button" type="submit">권한 주기</button>
           </form>
           <p class="type-fixed" data-service-count></p>
           <div class="service-members" data-service-members></div>
+          <div class="pager" data-service-pager></div>
         </section>
 
         <!-- ADMIN_AUTH_PANEL_START -->
@@ -136,7 +142,10 @@
 
           <div class="summary-row">
             <p data-summary>토큰을 저장한 뒤 조회하세요.</p>
-            <button class="secondary-button" type="button" data-refresh>새로고침</button>
+            <div class="summary-actions">
+              <div class="pager" data-user-pager aria-label="사용자 목록 페이지"></div>
+              <button class="secondary-button" type="button" data-refresh>새로고침</button>
+            </div>
           </div>
 
           <form class="bulk-actions" data-bulk-type-form aria-label="선택한 사용자 유형 일괄 변경">
@@ -188,6 +197,7 @@
           <div class="audit-list" data-audit>
             <p class="empty-cell">아직 불러오지 않았습니다.</p>
           </div>
+          <div class="pager" data-audit-pager aria-label="감사 기록 페이지"></div>
         </section>
 
         <p class="notice" data-notice hidden></p>

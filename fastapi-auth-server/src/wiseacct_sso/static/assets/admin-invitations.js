@@ -78,7 +78,7 @@
   const choices = form.querySelector("[data-invite-roles]");
   void (async () => {
     try {
-      const response = await fetch("/oauth2/admin/api/roles", { credentials: "same-origin" });
+      const response = await fetch("/oauth2/admin/api/roles?page=1&pageSize=100", { credentials: "same-origin" });
       if (!response.ok) throw new Error();
       const items = (await response.json()).items
         .filter((role) => !(role.serviceKey === "sso" && role.name === "admin"))
