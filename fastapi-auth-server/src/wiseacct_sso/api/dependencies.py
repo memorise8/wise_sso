@@ -146,6 +146,8 @@ InjectedPhase5Services = Annotated[Phase5Services, Depends(phase5_services)]
 
 
 class Phase6Services(Protocol):
+    async def list_roles(self, *, page: int, page_size: int) -> dict[str, object]: ...
+
     async def summary(self) -> dict[str, object]: ...
 
     """Administrator HTTP boundary backed by the Phase 6 application service."""
