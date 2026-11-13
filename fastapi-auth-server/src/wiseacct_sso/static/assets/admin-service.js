@@ -67,7 +67,7 @@
     const types = current.allowedUserTypes?.map((type) => typeLabels[type] ?? type).join(", ") || "전체";
     const list = element("dl", "client-access-policy");
     for (const [name, value] of [
-      ["이용 가능", `${current.eligibleCount}명`],
+      [current.allowWithoutRequiredRole ? "SSO 로그인 통과" : "이용 가능", `${current.eligibleCount}명`],
       ["필요 역할", current.requiredRoles.map(roleName).join(", ") || "없음"],
       ["허용 유형", types],
       ["역할 없이 로그인", current.allowWithoutRequiredRole ? "가능 (서비스가 초대로 거름)" : "불가"],
@@ -93,7 +93,9 @@
       page = Math.max(1, Math.ceil(result.total / result.pageSize));
       return load();
     }
-    status(`${label(current)}에 로그인할 수 있는 사람 ${result.total}명`);
+    status(current.allowWithoutRequiredRole
+      ? `SSO 로그인을 통과하는 사람 ${result.total}명 · 실제 입장은 '역할 있음'이거나 ${label(current)}에서 초대받은 사람만`
+      : `${label(current)}에 로그인할 수 있는 사람 ${result.total}명`);
     members.replaceChildren();
     if (!result.items.length) members.append(element("p", "type-fixed", "아직 이용할 수 있는 사람이 없습니다."));
     for (const member of result.items) {

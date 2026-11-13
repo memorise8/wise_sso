@@ -1382,3 +1382,7 @@ a.nav-item {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.detail-page .panel > .secondary-button {
+  justify-self: start;
+}
