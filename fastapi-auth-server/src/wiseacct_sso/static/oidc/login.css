@@ -39,6 +39,8 @@ body {
 .oidc-panel form { display: grid; gap: 10px; }
 .oidc-panel input { box-sizing: border-box; width: 100%; }
 .oidc-panel button { margin-top: 8px; }
+.oidc-help { margin: 14px 0 0; font-size: 14px; text-align: right; }
+.oidc-help a { color: #3159c5; }
 .oidc-divider { margin: 24px 0 16px; text-align: center; color: #72798a; }
 .oidc-providers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .oidc-providers a { padding: 10px 6px; border: 1px solid #dfe2e8; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; }

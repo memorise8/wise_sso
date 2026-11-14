@@ -979,3 +979,13 @@ def test_client_can_disable_central_session_auto_login() -> None:
     assert result.headers["location"].startswith("/oauth2/login?")
     # The other client still reuses the same session.
     assert "code=" in rig.authorize("customer", prompt="none").headers["location"]
+
+
+def test_login_page_offers_password_reset_in_a_new_tab() -> None:
+    # Services moving to /oauth2 lost the legacy portal's reset link; the reset page
+    # opens separately so the pending sign-in in this tab is kept.
+    rig = Rig()
+    started = rig.authorize(prompt="login")
+    page = rig.client.get(started.headers["location"])
+    assert page.status_code == 200
+    assert '<a href="/password-reset" target="_blank" rel="noopener">' in page.text
