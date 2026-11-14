@@ -501,6 +501,9 @@ class Settings(BaseSettings):
         default=("https://dash.temis.me/invite/",),
         validation_alias="SERVICE_INVITE_RETURN_TO_PREFIXES",
     )
+    # Where people land when they open the legacy portal (/, /login, /signup)
+    # directly instead of arriving from a relying service with handoff params.
+    portal_entry_url: str | None = Field(default=None, validation_alias="PORTAL_ENTRY_URL")
     oidc_google_redirect_uri: str | None = Field(
         default=None, validation_alias="OIDC_GOOGLE_REDIRECT_URI"
     )
@@ -720,6 +723,19 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "SERVICE_INVITE_RETURN_TO_PREFIXES entries must be https URLs ending in /"
                 )
+        if self.portal_entry_url is not None:
+            entry = self.portal_entry_url
+            parsed_entry = urlsplit(entry)
+            if (
+                any(ord(char) <= 32 or ord(char) >= 127 for char in entry)
+                or "\\" in entry
+                or parsed_entry.scheme != "https"
+                or not parsed_entry.hostname
+                or parsed_entry.username is not None
+                or parsed_entry.password is not None
+                or parsed_entry.fragment
+            ):
+                raise ValueError("PORTAL_ENTRY_URL must be an https URL")
         if self.oidc_enabled and (not self.oidc_clients or not self.oidc_public_origin):
             raise ValueError("OIDC requires clients and an explicit OIDC_PUBLIC_ORIGIN")
         if self.oidc_public_origin is not None:

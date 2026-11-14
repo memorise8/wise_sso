@@ -27,6 +27,7 @@ ACCESS_TOKEN_CLAIMS = (
     "type",
 )
 PORTAL_PATHS = ("/", "/login", "/signup", "/auth/callback", "/password-reset", "/verify-email")
+PORTAL_ENTRY_PATHS = ("/", "/login", "/signup")
 DASHBOARD_PATHS = ("/admin/dashboard", "/manage/dashboard")
 
 
@@ -101,10 +102,19 @@ def build_system_router(
 
         return endpoint
 
+    def portal_entry(request: Request) -> Response:
+        # Opened directly, the portal would silently sign people into TEMIS from the
+        # SSO domain. Send them to the service instead, which starts a proper handoff.
+        if settings.portal_entry_url and "client_id" not in request.query_params:
+            return RedirectResponse(
+                settings.portal_entry_url, 303, headers={"cache-control": "no-store"}
+            )
+        return html_response("auth-portal.html", request)
+
     for path in PORTAL_PATHS:
         router.add_api_route(
             path,
-            html_endpoint("auth-portal.html"),
+            portal_entry if path in PORTAL_ENTRY_PATHS else html_endpoint("auth-portal.html"),
             methods=["GET", "HEAD"],
             include_in_schema=False,
         )

@@ -72,3 +72,41 @@ def test_migration_is_additive_and_uses_system_actor() -> None:
     assert 'DELETE FROM "UserRole"' not in sql
     assert "'success',NULL,id" in sql
     assert "'success',NULL,\"userId\"" in sql
+
+
+def test_direct_portal_visits_go_to_the_service_instead(synthetic_settings: Settings) -> None:
+    # Opened without handoff params the legacy portal signed people into TEMIS from
+    # the SSO domain, so direct visits are sent to the service's own login.
+    settings = synthetic_settings.model_copy(
+        update={"portal_entry_url": "https://service.example.test/login"}
+    )
+    app = FastAPI()
+    app.include_router(
+        build_system_router(
+            settings=settings,
+            readiness_check=lambda: True,
+            static_root=ROOT / "src/wiseacct_sso/static",
+            on_readiness_error=lambda _: None,
+        )
+    )
+    handoff = "client_id=temis&redirect_uri=x&code_challenge=c&code_challenge_method=S256"
+    with TestClient(app, follow_redirects=False) as client:
+        for path in ("/", "/login", "/signup"):
+            response = client.get(path)
+            assert response.status_code == 303, path
+            assert response.headers["location"] == "https://service.example.test/login"
+            assert response.headers["cache-control"] == "no-store"
+            assert client.get(f"{path}?{handoff}").status_code == 200, path
+        # Mail links and the callback still open the page directly.
+        for path in ("/verify-email", "/password-reset", "/auth/callback"):
+            assert client.get(path).status_code == 200, path
+
+
+@pytest.mark.parametrize(
+    "value", ["http://service.example.test/login", "https://user@service.example.test/", "/login"]
+)
+def test_portal_entry_url_must_be_https(synthetic_settings: Settings, value: str) -> None:
+    with pytest.raises(ValueError, match="PORTAL_ENTRY_URL"):
+        Settings.model_validate(
+            {**synthetic_settings.model_dump(by_alias=True), "PORTAL_ENTRY_URL": value}
+        )
