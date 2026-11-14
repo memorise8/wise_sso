@@ -1169,3 +1169,13 @@ def test_admin_user_detail_requires_live_admin_session(
     for url in (page_url, api_url, sessions_url):
         assert rig.client.get(url).status_code == 403
     assert not calls
+
+
+def test_login_page_offers_password_reset_in_a_new_tab() -> None:
+    # Services moving to /oauth2 lost the legacy portal's reset link; the reset page
+    # opens separately so the pending sign-in in this tab is kept.
+    rig = Rig()
+    started = rig.authorize(prompt="login")
+    page = rig.client.get(started.headers["location"])
+    assert page.status_code == 200
+    assert '<a href="/password-reset" target="_blank" rel="noopener">' in page.text
