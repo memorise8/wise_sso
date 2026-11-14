@@ -143,7 +143,9 @@ async def test_invite_reuse_accept_then_extend(database: Database) -> None:
     assert shorter.status == "exists_external"
     assert shorter.expires_at == again.expires_at  # never shortened
     assert shorter.account_status == "ACTIVE"
-    assert mail.messages[-1].kind == "service-access-notice" and mail.messages[-1].link == RETURN
+    notice = mail.messages[-1]
+    assert str(notice.kind) == "service-access-notice"
+    assert notice.link == RETURN
     longer = await service.invite("agent-hub-service", request(days=200))
     assert longer.expires_at == initial_expiry(clock[0], 200)
 

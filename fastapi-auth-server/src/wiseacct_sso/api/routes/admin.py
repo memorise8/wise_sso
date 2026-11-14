@@ -10,6 +10,7 @@ from email.utils import parsedate_to_datetime
 from typing import Annotated, Literal, Never, cast
 
 from fastapi import APIRouter, Body, Depends, Header, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
 from wiseacct_sso.api.dependencies import InjectedPhase6Services
@@ -120,6 +121,25 @@ class AuditLogQuery(_QueryModel):
     actor_user_id: TrimmedNonEmpty | None = Field(default=None, alias="actorUserId")
     target_user_id: TrimmedNonEmpty | None = Field(default=None, alias="targetUserId")
     reason_code: TrimmedNonEmpty | None = Field(default=None, alias="reasonCode")
+
+
+class AuditExportBody(BaseModel):
+    reason_code: TrimmedNonEmpty = Field(alias="reasonCode", max_length=128)
+
+
+def _audit_input(query: AuditLogQuery) -> AuditLogListInput:
+    return AuditLogListInput(
+        page=query.page,
+        page_size=query.page_size,
+        created_at_from=_parse_date(query.created_at_from),
+        created_at_to=_parse_date(query.created_at_to),
+        event_type=query.event_type,
+        outcome=query.outcome,
+        user_id=query.user_id,
+        actor_user_id=query.actor_user_id,
+        target_user_id=query.target_user_id,
+        reason_code=query.reason_code,
+    )
 
 
 class StatusBody(BaseModel):
@@ -409,6 +429,32 @@ def build_admin_router(*, prefix: Literal["/admin", "/manage-api", ""] = "/admin
         except DomainError as error:
             _raise_public(error)
 
+    if prefix == "":
+
+        @router.post("/audit-logs/export")
+        async def export_audit_logs(
+            actor_id: AdminActor,
+            services: InjectedPhase6Services,
+            query: Annotated[AuditLogQuery, Query()],
+            body: Annotated[AuditExportBody, Body()],
+        ) -> Response:
+            try:
+                payload = await services.export_audit_csv(
+                    actor_user_id=actor_id,
+                    input=_audit_input(query),
+                    reason_code=body.reason_code,
+                )
+            except DomainError as error:
+                _raise_public(error)
+            return Response(
+                content=payload,
+                media_type="text/csv",
+                headers={
+                    "Content-Disposition": 'attachment; filename="audit-logs.csv"',
+                    "Cache-Control": "no-store",
+                },
+            )
+
     @router.get("/audit-logs")
     @router.head("/audit-logs")
     async def list_audit_logs(
@@ -433,18 +479,7 @@ def build_admin_router(*, prefix: Literal["/admin", "/manage-api", ""] = "/admin
             ),
         )
         try:
-            input = AuditLogListInput(
-                page=query.page,
-                page_size=query.page_size,
-                created_at_from=_parse_date(query.created_at_from),
-                created_at_to=_parse_date(query.created_at_to),
-                event_type=query.event_type,
-                outcome=query.outcome,
-                user_id=query.user_id,
-                actor_user_id=query.actor_user_id,
-                target_user_id=query.target_user_id,
-                reason_code=query.reason_code,
-            )
+            input = _audit_input(query)
             return _audit_page(await services.list_audit_logs(input))
         except DomainError as error:
             _raise_public(error)

@@ -1461,9 +1461,8 @@ class AdminMutationStore:
 
 
 class AdminAuditQueryStore:
-    async def query(
-        self, connection: AsyncConnection, *, input: AuditLogListInput
-    ) -> AdminAuditLogPage:
+    @staticmethod
+    def _conditions(input: AuditLogListInput) -> list[ColumnElement[bool]]:
         conditions: list[ColumnElement[bool]] = []
         if input.created_at_from is not None:
             conditions.append(AuditLog.c.createdAt >= _postgres_naive_utc(input.created_at_from))
@@ -1479,6 +1478,30 @@ class AdminAuditQueryStore:
         ):
             if value is not None:
                 conditions.append(column == value)
+        return conditions
+
+    async def export_rows(
+        self, connection: AsyncConnection, *, input: AuditLogListInput
+    ) -> list[tuple[object, ...]]:
+        result = await connection.execute(
+            select(
+                AuditLog.c.createdAt,
+                AuditLog.c.eventType,
+                AuditLog.c.outcome,
+                AuditLog.c.actorUserId,
+                AuditLog.c.targetUserId,
+                AuditLog.c.reasonCode,
+            )
+            .where(*self._conditions(input))
+            .order_by(AuditLog.c.createdAt.desc(), AuditLog.c.id.desc())
+            .limit(10_000)
+        )
+        return [tuple(row) for row in result]
+
+    async def query(
+        self, connection: AsyncConnection, *, input: AuditLogListInput
+    ) -> AdminAuditLogPage:
+        conditions = self._conditions(input)
 
         rows = (
             await connection.execute(

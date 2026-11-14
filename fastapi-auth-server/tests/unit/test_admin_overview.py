@@ -16,7 +16,8 @@ from wiseacct_sso.api.middleware import SecurityHeadersMiddleware
 from wiseacct_sso.api.oidc.app import build_oidc_app
 from wiseacct_sso.domain.admin import AdminUserListInput
 from wiseacct_sso.infrastructure.security import DUMMY_PASSWORD_HASH
-from wiseacct_sso.persistence.oidc import OidcUserRecord, RoleAssignment
+from wiseacct_sso.persistence.oidc import OidcUserRecord
+from wiseacct_sso.persistence.stores import RoleAssignment
 
 NOW = datetime(2026, 11, 11, 0, 0)
 
@@ -189,7 +190,8 @@ async def test_role_list_marks_roles_external_accounts_may_hold(
     monkeypatch.setattr("wiseacct_sso.application.admin.read_role_page", page)
     service = Phase6AdminService(database=Database, tokens=cast(Any, None))  # type: ignore[arg-type]
     result = await service.list_roles(page=1, page_size=100)
-    assert [(r["serviceKey"], r["externalAllowed"]) for r in result["items"]] == [  # type: ignore[union-attr]
+    items = cast(list[dict[str, object]], result["items"])
+    assert [(r["serviceKey"], r["externalAllowed"]) for r in items] == [
         ("agent-hub", False),
         ("gitlab", True),
     ]

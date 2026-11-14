@@ -413,7 +413,8 @@ def register_admin_portal(
                 '<button type="button" data-external-refresh>외부 계정 목록 조회</button>'
                 '<p data-external-status role="status"></p>'
                 "<div data-external-list></div></section>"
-                '<script src="/assets/admin-external.js?v=20261111-shell" defer></script>'
+                '<script src="/assets/admin-external.js?v=20261114-expiry-hashchange"'
+                " defer></script>"
             )
         page = (before + panel + invitations + after).replace(
             '<meta name="admin-api-base" content="/manage-api">',

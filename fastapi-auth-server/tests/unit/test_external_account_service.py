@@ -150,3 +150,61 @@ async def test_expiry_sweep_revokes_sessions_and_records_once() -> None:
     audit = connection.params(Insert)[0]
     assert audit["eventType"] == "external_account_expired"
     assert audit["actorUserId"] is None and audit["targetUserId"] == "guest"
+
+
+@pytest.mark.anyio
+async def test_bulk_extension_audits_each_account() -> None:
+    service, connection, _ = build(
+        "EXTERNAL", [Result(initial_expiry(NOW, 10)), Result(initial_expiry(NOW, 20))]
+    )
+
+    result = await service.extend_many("admin", ["guest-b", "guest-a"], 30, " 프로젝트 연장 ")
+
+    assert result == {
+        "guest-a": initial_expiry(NOW, 40),
+        "guest-b": initial_expiry(NOW, 50),
+    }
+    assert [update["accountExpiresAt"] for update in connection.params(Update)] == list(
+        result.values()
+    )
+    audits = connection.params(Insert)
+    assert [audit["targetUserId"] for audit in audits] == ["guest-a", "guest-b"]
+    assert all(audit["eventType"] == "external_account_extended" for audit in audits)
+    assert all(audit["actorUserId"] == "admin" for audit in audits)
+    assert all(audit["reasonCode"] == "프로젝트 연장" for audit in audits)
+
+
+@pytest.mark.anyio
+async def test_bulk_extension_propagates_limit_failure_through_transaction() -> None:
+    connection = Connection([Result(initial_expiry(NOW, 10)), Result(initial_expiry(NOW, 365))])
+
+    class RecordingDatabase(FakeDatabase):
+        exits: list[str]
+
+        def __init__(self, connection: Connection) -> None:
+            super().__init__(connection)
+            self.exits = []
+
+        @asynccontextmanager
+        async def begin(self) -> AsyncIterator[Connection]:
+            try:
+                yield self.connection
+            except Exception:
+                self.exits.append("rollback")
+                raise
+            else:
+                self.exits.append("commit")
+
+    database = RecordingDatabase(connection)
+    service = ExternalAccountService(
+        database=lambda: cast(Database, database),
+        admin=cast(Phase6AdminService, Admin("EXTERNAL")),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(DomainError):
+        await service.extend_many("admin", ["guest-a", "guest-b"], 1, "기한 연장")
+
+    assert database.exits == ["rollback"]
+    assert len(connection.params(Update)) == 1
+    assert [audit["targetUserId"] for audit in connection.params(Insert)] == ["guest-a"]

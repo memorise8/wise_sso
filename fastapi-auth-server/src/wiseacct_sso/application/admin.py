@@ -29,6 +29,7 @@ from wiseacct_sso.domain.admin import (
     sanitize_audit_details,
     should_revoke_for_status,
 )
+from wiseacct_sso.domain.audit_csv import write_audit_csv
 from wiseacct_sso.domain.external_accounts import EXTERNAL_ALLOWED_ROLES, assert_external_roles
 from wiseacct_sso.domain.tokens import TokenValidationError
 from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
@@ -291,6 +292,27 @@ class Phase6AdminService:
     async def list_users(self, input: AdminUserListInput) -> AdminUserPage:
         async with self._database().connection() as connection:
             return await self._directory.list_users(connection, input=input)
+
+    async def export_audit_csv(
+        self, *, actor_user_id: str, input: AuditLogListInput, reason_code: str
+    ) -> bytes:
+        async def export(connection: AsyncConnection) -> bytes:
+            rows = await self._audit_query.export_rows(connection, input=input)
+            payload = write_audit_csv(rows)
+            await self._mutations.create_admin_audit_log(
+                connection,
+                event=AdminAuditRecord(
+                    event_type="admin_audit_logs_exported",
+                    actor_user_id=actor_user_id,
+                    target_user_id=None,
+                    reason_code=reason_code,
+                    details_json={"rowCount": len(rows)},
+                ),
+                created_at=utc_now_ms(),
+            )
+            return payload
+
+        return await self._database().transaction(database_only_transaction(export))
 
     async def list_audit_logs(self, input: AuditLogListInput) -> AdminAuditLogPage:
         async with self._database().connection() as connection:
