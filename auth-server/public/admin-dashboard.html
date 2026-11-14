@@ -12,7 +12,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="/assets/admin-theme.js?v=20261113-detail"></script>
     <link rel="stylesheet" href="/assets/admin-dashboard.css?v=20261113-detail">
-    <script defer src="/assets/admin-dashboard.js?v=20261113-detail"></script>
+    <script defer src="/assets/admin-dashboard.js?v=20261114-expiry-link"></script>
     <script defer src="/assets/admin-service.js?v=20261113-detail"></script>
     <script defer src="/assets/admin-shell.js?v=20261113-detail"></script>
   </head>
@@ -194,6 +194,28 @@
             </div>
             <button class="secondary-button" type="button" data-load-audit>불러오기</button>
           </div>
+          <form class="filters" data-audit-filters aria-label="감사 로그 필터">
+            <label><span>시작일 (KST)</span><input type="date" name="from"></label>
+            <label><span>종료일 (KST)</span><input type="date" name="to"></label>
+            <label>
+              <span>이벤트 종류</span>
+              <input name="eventType" list="audit-event-types" placeholder="이벤트 선택 또는 코드 입력">
+              <datalist id="audit-event-types"></datalist>
+            </label>
+            <label>
+              <span>결과</span>
+              <select name="outcome">
+                <option value="">전체</option>
+                <option value="request">요청</option>
+                <option value="success">성공</option>
+                <option value="failure">실패</option>
+              </select>
+            </label>
+            <label><span>처리한 관리자 ID</span><input name="actorUserId"></label>
+            <label><span>대상 사용자 ID</span><input name="targetUserId"></label>
+            <button class="primary-button" type="submit">검색</button>
+            <button class="secondary-button" type="button" data-audit-export hidden>CSV 내보내기 (최대 10,000건)</button>
+          </form>
           <div class="audit-list" data-audit>
             <p class="empty-cell">아직 불러오지 않았습니다.</p>
           </div>
