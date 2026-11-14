@@ -13,6 +13,7 @@ from wiseacct_sso.application.service_clients import (
     ServiceAuthError,
     ServiceClientAuth,
 )
+from wiseacct_sso.application.service_invitations import ServiceInvitationRequest
 from wiseacct_sso.infrastructure.security import build_password_hasher
 from wiseacct_sso.oidc_config import ServiceClientPolicy
 
@@ -140,10 +141,10 @@ def test_token_endpoint_issues_client_credentials_tokens() -> None:
 
 class StubInvitations:
     def __init__(self, result: object = None, error: Exception | None = None) -> None:
-        self.calls: list[tuple[str, object]] = []
+        self.calls: list[tuple[str, ServiceInvitationRequest]] = []
         self.result, self.error = result, error
 
-    async def invite(self, client_id: str, request: object) -> object:
+    async def invite(self, client_id: str, request: ServiceInvitationRequest) -> object:
         self.calls.append((client_id, request))
         if self.error is not None:
             raise self.error

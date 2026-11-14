@@ -29,6 +29,7 @@ type AdminAuditEventType = Literal[
     "admin_user_role_assigned",
     "admin_user_role_removed",
     "admin_user_sessions_revoked",
+    "admin_audit_logs_exported",
 ]
 type AuditDetailValue = str | int | float | bool | None
 type AuditDetails = Mapping[str, AuditDetailValue]

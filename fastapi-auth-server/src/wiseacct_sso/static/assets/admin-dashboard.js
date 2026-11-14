@@ -515,6 +515,38 @@ const runUserAction = async (task, successMessage) => {
   void loadAdminOverview();
 };
 
+const auditEventLabels = new Map([
+  ["admin_user_status_changed", "사용자 상태 변경"],
+  ["admin_user_type_changed", "사용자 유형 변경"],
+  ["admin_user_role_assigned", "역할 부여"],
+  ["admin_user_role_removed", "역할 회수"],
+  ["admin_user_sessions_revoked", "사용자 세션 끊기"],
+  ["admin_browser_login", "관리자 로그인"],
+  ["admin_authorization_failure", "관리자 권한 확인 실패"],
+  ["admin_audit_logs_exported", "감사 로그 CSV 내보내기"],
+  ["external_account_extended", "외부 계정 연장"],
+  ["external_account_memo_updated", "외부 계정 메모 변경"],
+  ["external_account_expired", "외부 계정 만료"],
+  ["external_invitation_created", "외부 계정 초대 생성"],
+  ["external_invitation_resent", "외부 계정 초대 재발송"],
+  ["external_invitation_cancelled", "외부 계정 초대 취소"],
+  ["external_invitation_accepted", "외부 계정 초대 수락"],
+  ["external_invitation_delivery_failed", "외부 계정 초대 전달 실패"],
+  ["login_success", "로그인 성공"],
+  ["login_failure", "로그인 실패"],
+  ["lockout", "계정 잠금"],
+  ["oidc_token", "OIDC 토큰 요청"],
+]);
+
+let appliedAuditFilters = new URLSearchParams();
+
+const auditQuery = () => {
+  const query = new URLSearchParams(appliedAuditFilters);
+  query.set("page", String(auditPage));
+  query.set("pageSize", "20");
+  return query.toString();
+};
+
 const renderAudit = (page) => {
   if (!auditList) {
     return;
@@ -527,10 +559,14 @@ const renderAudit = (page) => {
   const items = page.items.map((item) => {
     const article = element("article", { className: "audit-item" });
     article.append(
-      element("strong", { text: item.eventType }),
+      element("strong", { text: (auditEventLabels.get(item.eventType) ?? item.eventType) }),
       element("span", { text: `${item.outcome}${item.reasonCode ? ` / ${item.reasonCode}` : ""}` }),
       element("span", { text: item.userId ?? item.targetUserId ?? "사용자 없음" }),
       element("time", { text: formatDate(item.createdAt) })
+    );
+    article.append(
+      element("p", { text: `처리 관리자 ID: ${item.actorUserId ?? "—"}` }),
+      element("p", { text: `대상 사용자 ID: ${item.targetUserId ?? "—"}` }),
     );
     return article;
   });
@@ -541,11 +577,11 @@ const loadAudit = async () => {
   if (adminBusy) return;
   setBusy(true);
   try {
-    let page = await apiFetch(`/audit-logs?page=${auditPage}&pageSize=20`);
+    let page = await apiFetch(`/audit-logs?${auditQuery()}`);
     const last = Math.max(1, Math.ceil(page.total / page.pageSize));
     if (auditPage > last) {
       auditPage = last;
-      page = await apiFetch(`/audit-logs?page=${auditPage}&pageSize=20`);
+      page = await apiFetch(`/audit-logs?${auditQuery()}`);
     }
     renderAudit(page);
     renderPager("[data-audit-pager]", page, (next) => {
@@ -771,7 +807,14 @@ const loadAdminOverview = async () => {
         ? `최근 7일 서비스별 로그인 사용자 · ${services.join(" · ")}`
         : "최근 7일 서비스 로그인 기록이 없습니다."
     });
-    content.replaceChildren(grid, line);
+    const expiryLinks = element("p", { className: "summary-row" });
+    expiryLinks.append(element("span", { text: "만료 예정 외부 계정" }));
+    for (const [days, count] of [[7, expiring.within7Days], [30, expiring.within30Days]]) {
+      const link = element("a", { text: `${days}일 이내 ${number.format(count)}명` });
+      link.href = `${window.location.pathname}#external-expiry-${days}`;
+      expiryLinks.append(link);
+    }
+    content.replaceChildren(grid, expiryLinks, line);
     status.hidden = true;
 
     const attention = document.querySelector("[data-attention]");
@@ -789,3 +832,74 @@ const loadAdminOverview = async () => {
 };
 
 void loadAdminOverview();
+
+
+const auditEventTypes = document.querySelector("#audit-event-types");
+if (auditEventTypes) {
+  for (const [code, label] of auditEventLabels) {
+    const option = element("option", { text: label });
+    option.value = code;
+    auditEventTypes.append(option);
+  }
+}
+
+const auditFilterForm = document.querySelector("[data-audit-filters]");
+auditFilterForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (adminBusy) return;
+
+  const values = new FormData(auditFilterForm);
+  const from = String(values.get("from") ?? "");
+  const to = String(values.get("to") ?? "");
+  if (from && to && from > to) {
+    setNotice("error", "종료일은 시작일 이후여야 합니다.");
+    return;
+  }
+
+  const filters = new URLSearchParams();
+  if (from) filters.set("createdAtFrom", new Date(`${from}T00:00:00+09:00`).toISOString());
+  if (to) filters.set("createdAtTo", new Date(`${to}T23:59:59.999+09:00`).toISOString());
+  for (const name of ["eventType", "outcome", "actorUserId", "targetUserId"]) {
+    const value = String(values.get(name) ?? "").trim();
+    if (value) filters.set(name, value);
+  }
+
+  appliedAuditFilters = filters;
+  auditPage = 1;
+  void loadAudit();
+});
+
+
+const auditExportButton = document.querySelector("[data-audit-export]");
+if (sessionAuth && auditExportButton) {
+  auditExportButton.hidden = false;
+  auditExportButton.addEventListener("click", async () => {
+    if (adminBusy) return;
+    const reasonCode = window.prompt("감사 로그를 내보내는 사유를 입력하세요.")?.trim();
+    if (!reasonCode) return;
+
+    const url = "/oauth2/admin/api/audit-logs/export";
+    const query = appliedAuditFilters.toString();
+    setBusy(true);
+    try {
+      const response = await fetch(query ? `${url}?${query}` : url, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "x-admin-csrf": adminCsrf },
+        body: JSON.stringify({ reasonCode }),
+      });
+      if (!response.ok) throw new Error(`CSV 내보내기 실패 (${response.status})`);
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const link = element("a");
+      link.href = objectUrl;
+      link.download = "audit-logs.csv";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      setNotice("success", "감사 로그 CSV 다운로드를 시작했습니다.");
+    } catch (error) {
+      setNotice("error", error instanceof Error ? error.message : "CSV 내보내기 실패");
+    } finally {
+      setBusy(false);
+    }
+  });
+}

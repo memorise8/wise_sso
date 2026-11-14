@@ -150,6 +150,15 @@ class SmtpMailService:
             ),
         )
 
+    async def send_external_expiry_notice(self, *, to: str, expires_kst: str) -> None:
+        message = (
+            f"초대한 외부 계정이 {expires_kst}에 만료됩니다. "
+            "Wise SSO 관리자 화면의 외부 계정 메뉴에서 확인해 주세요."
+        )
+        await asyncio.to_thread(
+            self._send, to, "Wise SSO 외부 계정 만료 예정", message, "<p>" + message + "</p>"
+        )
+
     def _send(self, to: str, subject: str, text: str, html: str) -> None:
         message = EmailMessage()
         message["From"] = self._config.from_address

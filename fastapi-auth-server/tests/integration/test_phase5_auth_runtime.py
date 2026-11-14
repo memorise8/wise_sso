@@ -155,6 +155,9 @@ def _client() -> RelyingClientPolicy:
 
 
 class TrackingMail:
+    async def send_service_access_notice(self, *, to: str, service_url: str) -> None:
+        self.messages.append(MailLinkMessage("service-access-notice", to, service_url))
+
     async def send_employee_invitation(self, *, to: str, invitation_url: str) -> None:
         self.messages.append(MailLinkMessage("employee-invitation", to, invitation_url))
 

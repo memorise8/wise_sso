@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -58,9 +58,21 @@ class ExtendBody(BaseModel):
     reason: Reason
 
 
+class BulkExtendBody(ExtendBody):
+    user_ids: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=128)]],
+        Field(min_length=1, max_length=100, alias="userIds"),
+    ]
+
+
 class ReasonBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     reason: Reason
+
+
+class ExternalMemoBody(ReasonBody):
+    company: Annotated[str, Field(max_length=200)]
+    project: Annotated[str, Field(max_length=200)]
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -113,8 +125,12 @@ def register_invitation_routes(
         return _issued(await service.resend(actor, identifier, delivery))
 
     @api.get("/external-accounts")
-    async def list_external(actor: AdminActor) -> dict[str, object]:
-        return {"items": await external.list_accounts(actor)}
+    async def list_external(
+        actor: AdminActor,
+        page: Annotated[int, Query(ge=1, le=2_147_483_647)] = 1,
+        expires_within: Annotated[int | None, Query(alias="expiresWithin")] = None,
+    ) -> dict[str, object]:
+        return await external.list_accounts(actor, page=page, expires_within=expires_within)
 
     @api.post("/external-accounts", status_code=201)
     async def create_external(
@@ -131,6 +147,23 @@ def register_invitation_routes(
                 delivery=body.delivery,
             )
         )
+
+    @api.post("/external-accounts/extend-bulk")
+    async def extend_bulk(body: BulkExtendBody, actor: AdminActor) -> dict[str, object]:
+        extended = await external.extend_many(actor, body.user_ids, body.days, body.reason)
+        return {
+            "items": [
+                {"id": user_id, "accountExpiresAt": _iso(expiry)}
+                for user_id, expiry in extended.items()
+            ]
+        }
+
+    @api.patch("/external-accounts/{user_id}/memo", status_code=204)
+    async def update_memo(user_id: str, body: ExternalMemoBody, actor: AdminActor) -> Response:
+        await external.update_memo(
+            actor, user_id, company=body.company, project=body.project, reason=body.reason
+        )
+        return Response(status_code=204)
 
     @api.post("/external-accounts/{user_id}/extend")
     async def extend(user_id: str, body: ExtendBody, actor: AdminActor) -> dict[str, str | None]:

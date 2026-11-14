@@ -158,6 +158,10 @@ class Phase6Services(Protocol):
 
     async def list_audit_logs(self, input: AuditLogListInput) -> AdminAuditLogPage: ...
 
+    async def export_audit_csv(
+        self, *, actor_user_id: str, input: AuditLogListInput, reason_code: str
+    ) -> bytes: ...
+
     async def find_role_by_id(self, role_id: str) -> AdminRoleProfile | None: ...
 
     async def set_user_type(
