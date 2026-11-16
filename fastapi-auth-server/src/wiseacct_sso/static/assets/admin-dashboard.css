@@ -1386,3 +1386,25 @@ a.nav-item {
 .detail-page .panel > .secondary-button {
   justify-self: start;
 }
+
+.admin-shell [data-view="security"] {
+  display: none;
+}
+
+.admin-shell[data-current-view="security"] [data-view="security"] {
+  display: block;
+}
+
+[data-security-rows] .security-failure-highlight {
+  border-inline-start: 3px solid #c26a15;
+  padding-inline-start: 0.65rem;
+}
+
+.security-failure-badge {
+  display: inline-block;
+  margin-inline-end: 0.5rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.3rem;
+  background: #ffdfac;
+  color: #572600;
+}

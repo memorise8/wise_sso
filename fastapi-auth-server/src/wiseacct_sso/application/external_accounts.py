@@ -286,6 +286,15 @@ async def expire_due_accounts(database: Database, now: datetime | None = None) -
                 )
             )
             expired += 1
+        await conn.execute(
+            insert(AuditLog).values(
+                id=application_uuid(),
+                eventType="external_account_cleanup_completed",
+                outcome="success",
+                detailsJson={"processedCount": expired},
+                createdAt=utc_now_ms(),
+            )
+        )
     return expired
 
 

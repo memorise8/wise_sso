@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.domain.admin import (
@@ -35,9 +36,11 @@ from wiseacct_sso.domain.tokens import TokenValidationError
 from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
 from wiseacct_sso.infrastructure.security import JwtTokenCodec
 from wiseacct_sso.persistence.admin_client_access import read_role_page
+from wiseacct_sso.persistence.admin_operations import read_last_expiry_cleanup
+from wiseacct_sso.persistence.admin_security import SecurityView, read_admin_security
 from wiseacct_sso.persistence.admin_summary import read_admin_summary
 from wiseacct_sso.persistence.database import Database, database_only_transaction
-from wiseacct_sso.persistence.models import application_uuid, utc_now_ms
+from wiseacct_sso.persistence.models import PasswordCredential, application_uuid, utc_now_ms
 from wiseacct_sso.persistence.stores import (
     AdminAuditQueryStore,
     AdminDirectoryStore,
@@ -323,6 +326,49 @@ class Phase6AdminService:
             raise DomainError(400, "INVALID_REQUEST", "Invalid request")
         async with self._database().connection() as connection:
             return await self._directory.find_role_by_id(connection, role_id=role_id)
+
+    async def last_expiry_cleanup(self) -> dict[str, object] | None:
+        async with self._database().connection() as connection:
+            return await read_last_expiry_cleanup(connection)
+
+    async def security_page(self, *, view: SecurityView, page: int) -> dict[str, object]:
+        async with self._database().connection() as connection:
+            return await read_admin_security(connection, view=view, page=page)
+
+    async def unlock_user(
+        self, *, actor_user_id: str, target_user_id: str, reason_code: str
+    ) -> bool:
+        assert_user_id(target_user_id)
+        reason_code = reason_code.strip()
+        if not 1 <= len(reason_code) <= 128:
+            raise DomainError(400, "INVALID_REQUEST", "An unlock reason is required")
+
+        async def mutate(connection: AsyncConnection) -> bool:
+            await self._authorize_mutation(connection, actor_user_id, target_user_id)
+            now = utc_now_ms()
+            result = await connection.execute(
+                update(PasswordCredential)
+                .where(
+                    PasswordCredential.c.userId == target_user_id,
+                    PasswordCredential.c.lockedUntil > now,
+                )
+                .values(failedLoginCount=0, lockedUntil=None, updatedAt=now)
+                .returning(PasswordCredential.c.userId)
+            )
+            if result.scalar_one_or_none() is None:
+                return False
+            await self._record_mutation_audit(
+                connection,
+                event_type="admin_user_unlocked",
+                actor_user_id=actor_user_id,
+                target_user_id=target_user_id,
+                reason_code=reason_code,
+                details=None,
+                created_at=now,
+            )
+            return True
+
+        return await self._database().transaction(database_only_transaction(mutate))
 
     async def set_user_status(
         self,
