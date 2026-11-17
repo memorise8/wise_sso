@@ -165,6 +165,7 @@ class AdminBrowserIdentity:
     email: str
     csrf_token: str = field(repr=False)
     auth_time: int
+    can_manage: bool = False
 
 
 class OidcServiceError(Exception):
@@ -463,6 +464,31 @@ class OidcService:
             and any(role.service_key == "sso" and role.name == "admin" for role in user.roles)
         )
 
+    @staticmethod
+    def _admin_reader_eligible(user: OidcUserRecord | None) -> bool:
+        return (
+            user is not None
+            and user.status is PersistenceUserStatus.ACTIVE
+            and bool(user.email)
+            and user.email_verified
+            and user.user_type == "EMPLOYEE"
+            and any(
+                role.service_key == "sso" and role.name in {"admin", "viewer"}
+                for role in user.roles
+            )
+        )
+
+    async def record_admin_browser_denial(
+        self, identity: AdminBrowserIdentity, context: OidcRequestContext
+    ) -> None:
+        await self._write_failure_audit(
+            event_type="admin_authorization_failure",
+            user_id=identity.user_id,
+            client_id=ADMIN_BROWSER_CLIENT,
+            reason_code="FORBIDDEN",
+            context=context,
+        )
+
     async def admin_browser_identity(self, context: OidcRequestContext) -> AdminBrowserIdentity:
         session = (
             await self._sessions.get(context.session_token) if self._sessions is not None else None
@@ -484,7 +510,7 @@ class OidcService:
                 raise OidcServiceError(
                     "login_required", "Administrator session is no longer valid", status_code=401
                 )
-            if not self._admin_eligible(user):
+            if not self._admin_reader_eligible(user):
                 await self._create_audit(
                     connection,
                     event_type="admin_authorization_failure",
@@ -496,7 +522,11 @@ class OidcService:
                 )
             else:
                 return AdminBrowserIdentity(
-                    user.id, user.email or "", session.csrf, session.auth_time
+                    user.id,
+                    user.email or "",
+                    session.csrf,
+                    session.auth_time,
+                    can_manage=self._admin_eligible(user),
                 )
         raise OidcServiceError(
             "access_denied", "Active employee SSO admin role is required", status_code=403
@@ -545,7 +575,7 @@ class OidcService:
                     raise OidcServiceError(
                         "login_required", "Credentials changed; authenticate again"
                     )
-                if not self._admin_eligible(user):
+                if not self._admin_reader_eligible(user):
                     denied = True
                     await self._create_audit(
                         connection,

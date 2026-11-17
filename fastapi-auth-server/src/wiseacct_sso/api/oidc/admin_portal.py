@@ -19,6 +19,7 @@ from wiseacct_sso.api.errors import error_response, install_error_handlers
 from wiseacct_sso.api.routes.admin import build_admin_router
 from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import AdminBrowserIdentity, OidcService, OidcServiceError
+from wiseacct_sso.domain.admin_permissions import viewer_read_allowed
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.persistence.admin_security import SecurityView
 
@@ -56,6 +57,32 @@ def _page(message: str, status: int) -> HTMLResponse:
     )
 
 
+def _admin_access_document(document: str, identity: AdminBrowserIdentity) -> str:
+    """서버에서 확인한 권한을 화면에 전달하고 금지 메뉴를 제거합니다."""
+    access = "admin" if identity.can_manage else "viewer"
+    document = document.replace(
+        "</head>",
+        f'<meta name="admin-access" content="{access}"></head>',
+        1,
+    )
+    if not identity.can_manage:
+        document = re.sub(
+            r'<button\b[^>]*data-nav="(?:invites|external|security)"[^>]*>'
+            r".*?</button>",
+            "",
+            document,
+            flags=re.DOTALL,
+        )
+        document = re.sub(
+            r'<a\b[^>]*href="/oauth2/admin/dashboard#'
+            r'(?:invites|external|security)"[^>]*>.*?</a>',
+            "",
+            document,
+            flags=re.DOTALL,
+        )
+    return document
+
+
 class AdminBrowserMiddleware:
     """Authenticate before JSON parsing and enforce same-origin, bounded mutations."""
 
@@ -72,6 +99,15 @@ class AdminBrowserMiddleware:
         except OidcServiceError as error:
             code = "ADMIN_LOGIN_REQUIRED" if error.status_code == 401 else "FORBIDDEN"
             await error_response(error.status_code, code, error.description)(scope, receive, send)
+            return
+        relative_path = scope["path"].removeprefix(ADMIN_API)
+        if not identity.can_manage and not viewer_read_allowed(
+            method=request.method, path=relative_path
+        ):
+            await self.service.record_admin_browser_denial(identity, _context(request))
+            await error_response(
+                403, "FORBIDDEN", "읽기 전용 계정으로는 이 기능을 사용할 수 없습니다."
+            )(scope, receive, send)
             return
         if len(scope.get("query_string", b"")) > 8192:
             await error_response(400, "INVALID_REQUEST", "Invalid query")(scope, receive, send)
@@ -383,7 +419,10 @@ def register_admin_portal(
 
         template = (static_root / "admin-user-detail.html").read_text(encoding="utf-8")
         document = template.replace("__ADMIN_CSRF__", html.escape(identity.csrf_token, quote=True))
-        return HTMLResponse(document, headers={"Cache-Control": "no-store"})
+        return HTMLResponse(
+            _admin_access_document(document, identity),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.get(ADMIN_DASHBOARD, include_in_schema=False)
     async def dashboard(request: Request) -> Response:
@@ -400,6 +439,7 @@ def register_admin_portal(
         panel = (
             '<section class="token-panel" data-session-panel><div><h2>관리자 로그인</h2>'
             f"<p>{html.escape(identity.email)}</p>"
+            f"<p>{'관리 권한' if identity.can_manage else '읽기 전용'}</p>"
             "<p>최근 인증 후 15분 동안 사용할 수 있습니다.</p></div>"
             f'<form method="post" action="{ADMIN_ROOT}/logout">'
             f'<input type="hidden" name="csrf_token" value="{escaped_csrf}">'
@@ -409,7 +449,7 @@ def register_admin_portal(
         before, _, rest = template.partition(_AUTH_MARKER)
         _, _, after = rest.partition(_AUTH_END)
         invitations = ""
-        if invitation_service is not None:
+        if invitation_service is not None and identity.can_manage:
             invitations = (
                 '<section class="panel" data-view="invites"><h2>직원 초대</h2>'
                 '<form class="form-grid" data-employee-invite>'
@@ -462,7 +502,10 @@ def register_admin_portal(
             '<meta name="admin-auth-mode" content="session">'
             f'<meta name="admin-session-csrf" content="{escaped_csrf}">',
         )
-        return HTMLResponse(page)
+        return HTMLResponse(
+            _admin_access_document(page, identity),
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post(ADMIN_ROOT + "/logout", include_in_schema=False)
     async def logout(request: Request) -> Response:
