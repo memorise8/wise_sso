@@ -23,7 +23,8 @@ LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
 
 ENV PATH="/app/.venv/bin:${PATH}" \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    WISE_SSO_SOURCE_REVISION="${SOURCE_REVISION}"
 
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv

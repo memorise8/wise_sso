@@ -521,6 +521,8 @@ const auditEventLabels = new Map([
   ["admin_user_role_assigned", "역할 부여"],
   ["admin_user_role_removed", "역할 회수"],
   ["admin_user_sessions_revoked", "사용자 세션 끊기"],
+  ["admin_user_unlocked", "사용자 잠금 해제"],
+  ["external_account_cleanup_completed", "외부 계정 만료 정리 완료"],
   ["admin_browser_login", "관리자 로그인"],
   ["admin_authorization_failure", "관리자 권한 확인 실패"],
   ["admin_audit_logs_exported", "감사 로그 CSV 내보내기"],
@@ -903,3 +905,146 @@ if (sessionAuth && auditExportButton) {
     }
   });
 }
+
+
+const initSecurityPanel = () => {
+  if (!sessionAuth) return;
+  const nav = document.querySelector('[data-nav="security"]');
+  const panel = document.querySelector('[data-view="security"]');
+  if (!nav || !panel) return;
+
+  const view = panel.querySelector("[data-security-view]");
+  const help = panel.querySelector("[data-security-help]");
+  const status = panel.querySelector("[data-security-status]");
+  const rows = panel.querySelector("[data-security-rows]");
+  const pager = panel.querySelector("[data-security-pager]");
+  const descriptions = {
+    "failure-ip": "최근 24시간 기준. 10분 이내 5건 이상 실패한 IP를 강조합니다.",
+    "failure-account": "최근 24시간 기준. 10분 이내 5건 이상 실패한 계정을 강조합니다.",
+    locked: "현재 비밀번호 로그인이 잠긴 계정입니다.",
+    inactive: "정지 후보입니다. 실제 정지는 사용자 상세에서 관리자가 결정합니다.",
+  };
+  let loadSequence = 0;
+
+  const showError = (error) => {
+    status.textContent = error instanceof Error ? error.message : "요청에 실패했습니다.";
+  };
+
+  const load = async (page = 1, message = "") => {
+    const kind = view.value;
+    const sequence = ++loadSequence;
+    help.textContent = descriptions[kind];
+    status.textContent = "조회 중입니다.";
+    rows.replaceChildren();
+    pager.replaceChildren();
+
+    try {
+      const result = await apiFetch(`/security/${kind}?page=${page}`);
+      if (sequence !== loadSequence) return;
+      if (!result.items.length && page > 1) {
+        await load(page - 1, message);
+        return;
+      }
+      status.textContent = message || (result.items.length ? "" : "표시할 기록이 없습니다.");
+
+      for (const item of result.items) {
+        const row = element("li");
+        const label = item.ipAddress ?? item.email ?? item.userId;
+        if (kind.startsWith("failure-")) {
+          if (item.concentrated) {
+            row.classList.add("security-failure-highlight");
+            row.append(element("strong", {
+              className: "security-failure-badge",
+              text: "10분 내 5회 이상 실패",
+            }));
+          }
+          row.append(element("span", {
+            text: `${label} · ${item.failureCount}건 · 마지막 실패 ${formatDate(item.lastFailedAt)}`,
+          }));
+        } else {
+          const link = element("a", { text: label });
+          link.href = `/oauth2/admin/users/${encodeURIComponent(item.userId)}`;
+          row.append(link);
+          if (kind === "locked") {
+            row.append(element("span", {
+              text: ` · 실패 ${item.failedLoginCount}회 · 잠금 만료 ${formatDate(item.lockedUntil)} `,
+            }));
+            const unlock = element("button", { text: "잠금 해제" });
+            unlock.type = "button";
+            unlock.addEventListener("click", async () => {
+              const reason = askReason();
+              if (!reason) return;
+              if (reason.length > 128) {
+                status.textContent = "변경 사유는 128자 이내로 입력하세요.";
+                return;
+              }
+              unlock.disabled = true;
+              try {
+                const change = await apiFetch(`/users/${encodeURIComponent(item.userId)}/unlock`, {
+                  method: "POST",
+                  body: JSON.stringify({ reasonCode: reason }),
+                });
+                if (sequence === loadSequence) {
+                  await load(page, change.unlocked ? "잠금을 해제했습니다." : "현재 잠금 상태가 아닙니다.");
+                }
+              } catch (error) {
+                if (sequence === loadSequence) showError(error);
+              } finally {
+                unlock.disabled = false;
+              }
+            });
+            row.append(unlock);
+          } else {
+            const activity = item.lastLoginAt
+              ? `마지막 로그인 ${formatDate(item.lastLoginAt)}`
+              : `로그인 기록 없음 · 가입일 ${formatDate(item.createdAt)}`;
+            row.append(element("span", { text: ` · ${activity}` }));
+          }
+        }
+        rows.append(row);
+      }
+
+      const pageButton = (label, nextPage) => {
+        const button = element("button", { text: label });
+        button.type = "button";
+        button.addEventListener("click", () => void load(nextPage));
+        pager.append(button);
+      };
+      if (page > 1) pageButton("이전", page - 1);
+      pager.append(element("span", { text: `${page} 페이지` }));
+      if (result.hasMore) pageButton("다음", page + 1);
+    } catch (error) {
+      if (sequence === loadSequence) showError(error);
+    }
+  };
+
+  nav.addEventListener("click", () => void load());
+  view.addEventListener("change", () => void load());
+  nav.hidden = false;
+};
+
+initSecurityPanel();
+
+
+const loadAdminOperations = async () => {
+  if (!sessionAuth) return;
+  const panel = document.querySelector("[data-admin-operations]");
+  if (!panel) return;
+  const version = panel.querySelector("[data-operations-version]");
+  const cleanup = panel.querySelector("[data-operations-cleanup]");
+  panel.hidden = false;
+
+  try {
+    const result = await apiFetch("/operations");
+    version.textContent = `배포 버전 ${result.sourceRevision ?? "확인 불가"}`;
+    const lastRun = result.lastExpiryCleanup;
+    cleanup.textContent = lastRun
+      ? `마지막 만료 정리 ${formatDate(lastRun.completedAt)} (KST) · ${lastRun.processedCount}건 처리`
+      : "성공한 만료 정리 기록이 없습니다.";
+  } catch {
+    version.textContent = "배포 버전 확인 불가";
+    cleanup.textContent = "만료 정리 기록을 불러오지 못했습니다.";
+  }
+};
+
+void loadAdminOperations();

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hmac
 import html
+import os
+import re
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from wiseacct_sso.api.dependencies import Phase6Services
@@ -17,6 +20,7 @@ from wiseacct_sso.api.routes.admin import build_admin_router
 from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import AdminBrowserIdentity, OidcService, OidcServiceError
 from wiseacct_sso.domain.users import DomainError
+from wiseacct_sso.persistence.admin_security import SecurityView
 
 from .app import (
     _bounded,
@@ -136,6 +140,12 @@ class AdminBrowserMiddleware:
         await self.app(scope, replay if body is not None else receive, send)
 
 
+class UnlockUserBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason_code: str = Field(alias="reasonCode", min_length=1, max_length=128)
+
+
 def register_admin_portal(
     app: FastAPI,
     *,
@@ -173,6 +183,36 @@ def register_admin_portal(
         from .invitations import register_invitation_routes
 
         register_invitation_routes(app, api, invitation_service, origin, static_root)
+
+    @api.get("/operations", include_in_schema=False)
+    async def operations(request: Request) -> Response:
+        await browser_actor(request)
+        revision = os.environ.get("WISE_SSO_SOURCE_REVISION", "")
+        return JSONResponse(
+            {
+                "sourceRevision": revision if re.fullmatch(r"[0-9a-f]{40}", revision) else None,
+                "lastExpiryCleanup": await admin_services.last_expiry_cleanup(),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @api.get("/security/{view}", include_in_schema=False)
+    async def security_page(
+        request: Request,
+        view: SecurityView,
+        page: Annotated[int, Query(ge=1, le=2_147_483_647)] = 1,
+    ) -> Response:
+        await browser_actor(request)
+        payload = await admin_services.security_page(view=view, page=page)
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+    @api.post("/users/{user_id}/unlock", include_in_schema=False)
+    async def unlock_user(request: Request, user_id: str, body: UnlockUserBody) -> Response:
+        actor = await browser_actor(request)
+        unlocked = await admin_services.unlock_user(
+            actor_user_id=actor, target_user_id=user_id, reason_code=body.reason_code
+        )
+        return JSONResponse({"unlocked": unlocked}, headers={"Cache-Control": "no-store"})
 
     @api.get("/users/{user_id}", include_in_schema=False)
     async def user_detail(

@@ -208,3 +208,16 @@ async def test_bulk_extension_propagates_limit_failure_through_transaction() -> 
     assert database.exits == ["rollback"]
     assert len(connection.params(Update)) == 1
     assert [audit["targetUserId"] for audit in connection.params(Insert)] == ["guest-a"]
+
+
+@pytest.mark.anyio
+async def test_expiry_sweep_records_a_zero_count_run() -> None:
+    connection = Connection([Result(rows=[])])
+    count = await expire_due_accounts(cast(Database, FakeDatabase(connection)), NOW)
+
+    assert count == 0
+    (audit,) = connection.params(Insert)
+    assert audit["eventType"] == "external_account_cleanup_completed"
+    assert audit["outcome"] == "success"
+    assert audit["detailsJson"] == {"processedCount": 0}
+    assert not connection.params(Update)

@@ -35,6 +35,7 @@ from wiseacct_sso.domain.oauth import ClientHandoff, OAuthProvider
 from wiseacct_sso.domain.password_reset import PasswordResetAccepted, PasswordResetConfirmed
 from wiseacct_sso.domain.users import CurrentUser, UserStatus
 from wiseacct_sso.domain.verification import VerificationAccepted
+from wiseacct_sso.persistence.admin_security import SecurityView
 
 MAX_AUDIT_IP_ADDRESS_LENGTH = 255
 MAX_AUDIT_USER_AGENT_LENGTH = 512
@@ -148,6 +149,10 @@ InjectedPhase5Services = Annotated[Phase5Services, Depends(phase5_services)]
 class Phase6Services(Protocol):
     """Administrator HTTP boundary backed by the Phase 6 application service."""
 
+    async def last_expiry_cleanup(self) -> dict[str, object] | None: ...
+
+    async def security_page(self, *, view: SecurityView, page: int) -> dict[str, object]: ...
+
     async def list_roles(self, *, page: int, page_size: int) -> dict[str, object]: ...
 
     async def summary(self) -> dict[str, object]: ...
@@ -176,6 +181,10 @@ class Phase6Services(Protocol):
         user_type: str | None,
         reason_code: str,
     ) -> tuple[int, int]: ...
+
+    async def unlock_user(
+        self, *, actor_user_id: str, target_user_id: str, reason_code: str
+    ) -> bool: ...
 
     async def set_user_status(
         self,

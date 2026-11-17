@@ -1179,3 +1179,120 @@ def test_login_page_offers_password_reset_in_a_new_tab() -> None:
     page = rig.client.get(started.headers["location"])
     assert page.status_code == 200
     assert '<a href="/password-reset" target="_blank" rel="noopener">' in page.text
+
+
+@pytest.mark.parametrize("view", ["failure-ip", "failure-account", "locked", "inactive"])
+def test_admin_security_page_requires_live_admin_session(
+    monkeypatch: pytest.MonkeyPatch, view: str
+) -> None:
+    rig = admin_rig()
+    url = f"/oauth2/admin/api/security/{view}"
+    calls: list[tuple[str, int]] = []
+    ip_address = "192.0.2.10"
+    items = [{"ipAddress": ip_address}] if view == "failure-ip" else []
+
+    async def security_page(_service: object, *, view: str, page: int) -> dict[str, object]:
+        calls.append((view, page))
+        return {"items": items, "page": page, "pageSize": 25, "hasMore": False}
+
+    monkeypatch.setattr(type(rig.portal), "security_page", security_page, raising=False)
+
+    response = rig.client.get(url)
+    assert response.status_code == 401
+    assert ip_address not in response.text and "items" not in response.json()
+    assert not calls
+
+    assert admin_login(rig).status_code == 303
+    response = rig.client.get(url, params={"page": 2})
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"items": items, "page": 2, "pageSize": 25, "hasMore": False}
+    assert calls == [(view, 2)]
+
+    rig.identities.user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    response = rig.client.get(url)
+    assert response.status_code == 403
+    assert ip_address not in response.text and "items" not in response.json()
+    assert calls == [(view, 2)]
+
+
+def test_admin_unlock_requires_origin_csrf_and_reason(monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = admin_rig()
+    url = "/oauth2/admin/api/users/f5-customer/unlock"
+    calls: list[dict[str, str]] = []
+
+    async def unlock_user(_service: object, **values: str) -> bool:
+        calls.append(values)
+        return True
+
+    monkeypatch.setattr(type(rig.portal), "unlock_user", unlock_user, raising=False)
+    body = {"reasonCode": "테스트 계정 잠금 해제"}
+
+    assert rig.client.post(url, json=body).status_code == 401
+    assert admin_login(rig).status_code == 303
+    csrf = admin_csrf(rig)
+    headers = {"origin": ORIGIN, "x-admin-csrf": csrf}
+
+    for denied_headers in (
+        {"origin": ORIGIN},
+        headers | {"x-admin-csrf": "wrong"},
+        headers | {"origin": "https://evil.example.test"},
+    ):
+        assert rig.client.post(url, headers=denied_headers, json=body).status_code == 403
+
+    for invalid_body in ({}, {"reasonCode": ""}, {"reasonCode": "a" * 129}):
+        response = rig.client.post(url, headers=headers, json=invalid_body)
+        assert response.status_code == 400
+    assert not calls
+
+    response = rig.client.post(url, headers=headers, json=body)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"unlocked": True}
+    assert calls == [
+        {
+            "actor_user_id": rig.identities.user.id,
+            "target_user_id": "f5-customer",
+            "reason_code": body["reasonCode"],
+        }
+    ]
+
+    rig.identities.user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    assert rig.client.post(url, headers=headers, json=body).status_code == 403
+    assert len(calls) == 1
+
+
+def test_admin_operations_requires_live_admin_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = admin_rig()
+    url = "/oauth2/admin/api/operations"
+    revision = "a" * 40
+    runs = [{"completedAt": "2026-11-15T12:00:00+00:00", "processedCount": 0}]
+    calls: list[None] = []
+
+    async def last_expiry_cleanup(_service: object) -> dict[str, object] | None:
+        calls.append(None)
+        return runs[0] if runs else None
+
+    monkeypatch.setattr(type(rig.portal), "last_expiry_cleanup", last_expiry_cleanup, raising=False)
+    monkeypatch.setenv("WISE_SSO_SOURCE_REVISION", revision)
+
+    response = rig.client.get(url)
+    assert response.status_code == 401
+    assert revision not in response.text
+    assert not calls
+
+    assert admin_login(rig).status_code == 303
+    response = rig.client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {"sourceRevision": revision, "lastExpiryCleanup": runs[0]}
+
+    runs.clear()
+    monkeypatch.setenv("WISE_SSO_SOURCE_REVISION", "unavailable")
+    response = rig.client.get(url)
+    assert response.status_code == 200
+    assert response.json() == {"sourceRevision": None, "lastExpiryCleanup": None}
+
+    rig.identities.user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
+    assert rig.client.get(url).status_code == 403
+    assert len(calls) == 2
