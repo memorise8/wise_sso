@@ -21,22 +21,45 @@ WITH recent AS (
                RANGE BETWEEN INTERVAL '10 minutes' PRECEDING AND CURRENT ROW
            ) AS window_count
     FROM "AuditLog"
-    WHERE outcome = 'failure' AND "eventType" IN ('login_failure', 'lockout')
+    WHERE outcome = 'failure'
+      AND (
+          "eventType" IN ('login_failure', 'lockout')
+          OR (
+              "eventType" = 'oidc_authorize'
+              AND "reasonCode" IN ('INVALID_CREDENTIALS', 'ACCOUNT_LOCKED')
+          )
+      )
       AND "createdAt" >= :recent_since AND "createdAt" <= :now
       AND {group_column} IS NOT NULL
 )
-SELECT recent.group_key AS "{key_name}", count(*) AS "failureCount",
+SELECT recent.group_key AS "{key_name}"{email_select},
+       count(*) AS "failureCount",
        max(recent."createdAt") AS "lastFailedAt",
        max(recent.window_count) >= 5 AS "concentrated"
 FROM recent
+{email_join}
 GROUP BY recent.group_key
 ORDER BY "concentrated" DESC, "failureCount" DESC, "lastFailedAt" DESC, recent.group_key
 LIMIT :limit OFFSET :offset
 """
 
 _QUERIES = {
-    "failure-ip": text(_FAILURES.format(group_column='"ipAddress"', key_name="ipAddress")),
-    "failure-account": text(_FAILURES.format(group_column='"userId"', key_name="userId")),
+    "failure-ip": text(
+        _FAILURES.format(
+            group_column='"ipAddress"',
+            key_name="ipAddress",
+            email_select="",
+            email_join="",
+        )
+    ),
+    "failure-account": text(
+        _FAILURES.format(
+            group_column='"userId"',
+            key_name="userId",
+            email_select=', max(u.email) AS "email"',
+            email_join='LEFT JOIN "User" u ON u.id = recent.group_key',
+        )
+    ),
     "locked": text("""
         SELECT u.id AS "userId", u.email, p."lockedUntil", p."failedLoginCount"
         FROM "PasswordCredential" p

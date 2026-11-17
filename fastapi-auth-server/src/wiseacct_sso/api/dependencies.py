@@ -147,11 +147,11 @@ InjectedPhase5Services = Annotated[Phase5Services, Depends(phase5_services)]
 
 
 class Phase6Services(Protocol):
+    """Administrator HTTP boundary backed by the Phase 6 application service."""
+
     async def last_expiry_cleanup(self) -> dict[str, object] | None: ...
 
     async def security_page(self, *, view: SecurityView, page: int) -> dict[str, object]: ...
-
-    """Administrator HTTP boundary backed by the Phase 6 application service."""
 
     async def list_roles(self, *, page: int, page_size: int) -> dict[str, object]: ...
 

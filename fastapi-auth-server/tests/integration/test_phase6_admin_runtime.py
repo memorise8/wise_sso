@@ -883,3 +883,110 @@ async def test_black_box_admin_and_manage_api_alias(runtime: Runtime) -> None:
             process.kill()
             stdout, stderr = await process.communicate()
     assert process.returncode == 0, (stdout + stderr).decode(errors="replace")
+
+
+@pytest.mark.parametrize("view", ["failure-ip", "failure-account"])
+async def test_admin_security_counts_password_failures_only(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, view: str
+) -> None:
+    from datetime import UTC
+
+    from wiseacct_sso.persistence import admin_security
+
+    now = utc_now_ms()
+    monkeypatch.setattr(admin_security, "utc_now_ms", lambda: now)
+    events = [
+        ("login_failure", "failure", "INVALID_CREDENTIALS", 1),
+        ("lockout", "failure", "ACCOUNT_LOCKED", 2),
+        ("oidc_authorize", "failure", "INVALID_CREDENTIALS", 3),
+        ("oidc_authorize", "failure", "INVALID_CREDENTIALS", 4),
+        ("oidc_authorize", "failure", "ACCOUNT_LOCKED", 5),
+        ("oidc_authorize", "failure", "OIDC_PROVIDER_DENIED", 6),
+        ("oidc_authorize", "failure", "USER_INACTIVE", 7),
+        ("oidc_authorize", "failure", None, 8),
+        ("oidc_authorize", "success", "INVALID_CREDENTIALS", 9),
+        ("oidc_authorize", "failure", "INVALID_CREDENTIALS", 1500),
+    ]
+    async with runtime.database.engine.begin() as connection:
+        # 임시 테이블은 현재 연결에서만 사용되며 트랜잭션 종료 시 삭제됩니다.
+        await connection.execute(
+            text("""
+            CREATE TEMP TABLE "User" (
+                id TEXT PRIMARY KEY,
+                email TEXT
+            ) ON COMMIT DROP
+        """)
+        )
+        await connection.execute(
+            text("""
+            CREATE TEMP TABLE "AuditLog" (
+                "userId" TEXT,
+                "ipAddress" TEXT,
+                "eventType" TEXT,
+                outcome TEXT,
+                "reasonCode" TEXT,
+                "createdAt" TIMESTAMP
+            ) ON COMMIT DROP
+        """)
+        )
+        await connection.execute(
+            text('INSERT INTO "User" (id, email) VALUES (:id, :email)'),
+            {"id": "security-test-user", "email": "security@example.invalid"},
+        )
+        for event_type, outcome, reason, minutes in events:
+            await connection.execute(
+                text("""
+                    INSERT INTO "AuditLog"
+                        ("userId", "ipAddress", "eventType", outcome,
+                         "reasonCode", "createdAt")
+                    VALUES (:user_id, :ip, :event, :outcome, :reason, :created)
+                """),
+                {
+                    "user_id": "security-test-user",
+                    "ip": "192.0.2.10",
+                    "event": event_type,
+                    "outcome": outcome,
+                    "reason": reason,
+                    "created": now - timedelta(minutes=minutes),
+                },
+            )
+        page = await admin_security.read_admin_security(
+            connection, view=cast(admin_security.SecurityView, view), page=1
+        )
+        expected: dict[str, object] = {
+            "failureCount": 5,
+            "lastFailedAt": (now - timedelta(minutes=1)).replace(tzinfo=UTC).isoformat(),
+            "concentrated": True,
+        }
+        if view == "failure-account":
+            expected.update(userId="security-test-user", email="security@example.invalid")
+        else:
+            expected["ipAddress"] = "192.0.2.10"
+        assert page == {
+            "items": [expected],
+            "page": 1,
+            "pageSize": 25,
+            "hasMore": False,
+        }
+
+        # 실패가 10분보다 넓게 분산되면 집중 실패 표시가 없어야 합니다.
+        await connection.execute(
+            text("""
+                UPDATE "AuditLog"
+                SET "createdAt" = :created
+                WHERE "eventType" = 'login_failure'
+            """),
+            {"created": now - timedelta(minutes=20)},
+        )
+        spread = await admin_security.read_admin_security(
+            connection, view=cast(admin_security.SecurityView, view), page=1
+        )
+        spread_items = cast(list[dict[str, object]], spread["items"])
+        assert spread_items[0]["failureCount"] == 5
+        assert spread_items[0]["concentrated"] is False
+
+        empty = await admin_security.read_admin_security(
+            connection, view=cast(admin_security.SecurityView, view), page=2
+        )
+        assert empty["items"] == []
+        assert empty["hasMore"] is False
