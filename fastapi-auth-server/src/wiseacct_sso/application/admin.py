@@ -131,12 +131,16 @@ class Phase6AdminService:
         await self._database().transaction(database_only_transaction(record_denial))
         raise DomainError(403, "FORBIDDEN", "Admin role is required")
 
-    async def _authorize_mutation(
-        self, connection: AsyncConnection, actor_user_id: str, target_user_id: str
-    ) -> tuple[str | None, UserStatus]:
+    async def _require_active_admin(self, connection: AsyncConnection, actor_user_id: str) -> None:
+        """변경과 내보내기 트랜잭션에서 현재 admin 권한을 재확인합니다."""
         await self._mutations.lock_policy(connection)
         if not await self._directory.is_active_sso_admin(connection, user_id=actor_user_id):
             raise DomainError(403, "FORBIDDEN", "Active employee SSO admin role is required")
+
+    async def _authorize_mutation(
+        self, connection: AsyncConnection, actor_user_id: str, target_user_id: str
+    ) -> tuple[str | None, UserStatus]:
+        await self._require_active_admin(connection, actor_user_id)
         return await self._mutations.user_policy(connection, user_id=target_user_id)
 
     async def _protect_last_admin(self, connection: AsyncConnection, target_user_id: str) -> None:
@@ -300,6 +304,7 @@ class Phase6AdminService:
         self, *, actor_user_id: str, input: AuditLogListInput, reason_code: str
     ) -> bytes:
         async def export(connection: AsyncConnection) -> bytes:
+            await self._require_active_admin(connection, actor_user_id)
             rows = await self._audit_query.export_rows(connection, input=input)
             payload = write_audit_csv(rows)
             await self._mutations.create_admin_audit_log(

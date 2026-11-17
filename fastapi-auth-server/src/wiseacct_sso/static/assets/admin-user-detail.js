@@ -1,5 +1,7 @@
 "use strict";
 
+const detailReadOnly = document.querySelector("meta[name='admin-access']")?.getAttribute("content") === "viewer";
+
 const userId = decodeURIComponent(location.pathname.split("/").at(-1));
 const userPath = `/users/${encodeURIComponent(userId)}`;
 const csrf = document.querySelector('meta[name="admin-csrf"]').content;
@@ -40,6 +42,9 @@ function roleName(role) {
 }
 
 async function api(path, method = "GET", body) {
+  if (detailReadOnly && !["GET", "HEAD"].includes(method.toUpperCase())) {
+    throw new Error("읽기 전용 계정으로는 변경할 수 없습니다.");
+  }
   const response = await fetch(`/oauth2/admin/api${path}`, {
     method,
     credentials: "same-origin",
@@ -111,6 +116,7 @@ function pager(key, result) {
 }
 
 async function mutate(path, method, payload, reasonField = "reasonCode") {
+  if (detailReadOnly) return;
   const reason = window.prompt("변경 사유를 입력하세요. (감사 기록에 남습니다)")?.trim();
   if (!reason) return;
   busy = true;
@@ -146,6 +152,7 @@ function renderProfile(profile) {
 
   const actions = node("div");
   actions.className = "row-actions";
+  if (!detailReadOnly) {
   if (profile.status === "ACTIVE" || profile.status === "SUSPENDED") {
     const next = profile.status === "ACTIVE" ? "SUSPENDED" : "ACTIVE";
     actions.append(button(next === "ACTIVE" ? "활성화" : "정지", () =>
@@ -165,6 +172,7 @@ function renderProfile(profile) {
       return mutate(`/external-accounts/${encodeURIComponent(userId)}/extend`, "POST", { days }, "reason");
     }));
   }
+  }
   document.querySelector("#detail-title").textContent = profile.name ?? profile.email ?? "사용자 상세";
   section("profile", "기본 정보", fields, actions);
 }
@@ -174,10 +182,21 @@ function renderRoles(profile) {
   for (const role of profile.roles.items) {
     const item = node("li");
     item.append(node("span", roleName(role)));
-    item.append(button("빼기", () =>
-      mutate(`${userPath}/roles/${encodeURIComponent(role.id)}`, "DELETE", {})
-    ));
+    if (!detailReadOnly) {
+      item.append(button("빼기", () =>
+        mutate(`${userPath}/roles/${encodeURIComponent(role.id)}`, "DELETE", {})
+      ));
+    }
     list.append(item);
+  }
+
+  if (detailReadOnly) {
+    section(
+      "roles", "역할",
+      profile.roles.items.length ? list : node("p", "부여된 역할이 없습니다."),
+      pager("roles", profile.roles)
+    );
+    return;
   }
 
   const select = node("select");

@@ -1296,3 +1296,157 @@ def test_admin_operations_requires_live_admin_session(monkeypatch: pytest.Monkey
     rig.identities.user = replace(rig.identities.user, roles=(RoleAssignment("staff", "user"),))
     assert rig.client.get(url).status_code == 403
     assert len(calls) == 2
+
+
+def viewer_rig() -> Rig:
+    rig = admin_rig()
+    rig.identities.user = replace(
+        rig.identities.user,
+        roles=(RoleAssignment("staff", "user"), RoleAssignment("sso", "viewer")),
+    )
+    return rig
+
+
+def test_viewer_browser_can_read_users_and_summary() -> None:
+    rig = viewer_rig()
+    assert admin_login(rig).status_code == 303
+    assert rig.client.get("/oauth2/admin/dashboard").status_code == 200
+    assert rig.client.get("/oauth2/admin/api/users").status_code == 200
+    assert rig.client.get("/oauth2/admin/api/summary").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/operations",
+        "/security/failure-ip",
+        "/security/failure-account",
+        "/security/locked",
+        "/security/inactive",
+        "/external-accounts",
+        "/invitations",
+        "/audit-logs/export",
+    ],
+)
+def test_viewer_browser_denies_unapproved_reads(path: str) -> None:
+    rig = viewer_rig()
+    assert admin_login(rig).status_code == 303
+    response = rig.client.get("/oauth2/admin/api" + path)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+    assert not rig.portal.calls
+    assert rig.audit.events[-1].event_type == "admin_authorization_failure"
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("PATCH", "/users/customer/status"),
+        ("PATCH", "/users/customer/type"),
+        ("PATCH", "/users/type"),
+        ("POST", "/users/customer/roles"),
+        ("DELETE", "/users/customer/roles/role-id"),
+        ("POST", "/users/customer/revoke-sessions"),
+        ("POST", "/users/customer/unlock"),
+        ("POST", "/audit-logs/export"),
+        ("POST", "/external-accounts/customer/extend"),
+        ("POST", "/invitations"),
+    ],
+)
+def test_viewer_browser_denies_mutations_before_parsing(method: str, path: str) -> None:
+    rig = viewer_rig()
+    assert admin_login(rig).status_code == 303
+    csrf = admin_csrf(rig)
+    before = len(rig.audit.events)
+    response = rig.client.request(
+        method,
+        "/oauth2/admin/api" + path,
+        headers={
+            "origin": ORIGIN,
+            "x-admin-csrf": csrf,
+            "content-type": "application/json",
+        },
+        content="invalid-json",
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+    assert not rig.portal.calls
+    assert len(rig.audit.events) == before + 1
+    assert rig.audit.events[-1].event_type == "admin_authorization_failure"
+    assert rig.audit.events[-1].outcome == "failure"
+
+
+@pytest.mark.parametrize("change", ["role", "suspend", "type", "email", "version"])
+def test_viewer_browser_rechecks_live_database_policy(change: str) -> None:
+    rig = viewer_rig()
+    assert admin_login(rig).status_code == 303
+    original = rig.identities.user
+    rig.identities.user = {
+        "role": replace(original, roles=(RoleAssignment("staff", "user"),)),
+        "suspend": replace(original, status=UserStatus.SUSPENDED),
+        "type": replace(original, user_type="CUSTOMER"),
+        "email": replace(original, email_verified=False),
+        "version": replace(original, session_version=original.session_version + 1),
+    }[change]
+    response = rig.client.get("/oauth2/admin/api/users")
+    assert response.status_code in (401, 403)
+    assert not rig.portal.calls
+
+
+def test_admin_downgrade_to_viewer_takes_effect_without_new_login() -> None:
+    rig = admin_rig()
+    assert admin_login(rig).status_code == 303
+    csrf = admin_csrf(rig)
+    rig.identities.user = replace(
+        rig.identities.user,
+        roles=(RoleAssignment("staff", "user"), RoleAssignment("sso", "viewer")),
+    )
+    response = rig.client.post(
+        "/oauth2/admin/api/users/customer/unlock",
+        headers={"origin": ORIGIN, "x-admin-csrf": csrf},
+        json={"reasonCode": "권한 변경 검증"},
+    )
+    assert response.status_code == 403
+    assert not rig.portal.calls
+    assert rig.client.get("/oauth2/admin/api/users").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/oauth2/admin/dashboard",
+        "/oauth2/admin/users/user-1",
+    ],
+)
+def test_viewer_pages_receive_read_only_access_and_hide_restricted_navigation(
+    path: str,
+) -> None:
+    rig = viewer_rig()
+    assert admin_login(rig).status_code == 303
+    response = rig.client.get(path)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert '<meta name="admin-access" content="viewer">' in response.text
+    for forbidden in (
+        'data-nav="invites"',
+        'data-nav="external"',
+        'data-nav="security"',
+        'href="/oauth2/admin/dashboard#invites"',
+        'href="/oauth2/admin/dashboard#external"',
+        "data-employee-invite",
+        "data-external-create",
+    ):
+        assert forbidden not in response.text
+
+
+def test_admin_and_viewer_roles_together_keep_admin_access() -> None:
+    rig = admin_rig()
+    rig.identities.user = replace(
+        rig.identities.user,
+        roles=(*rig.identities.user.roles, RoleAssignment("sso", "viewer")),
+    )
+    assert admin_login(rig).status_code == 303
+    response = rig.client.get("/oauth2/admin/dashboard")
+    assert response.status_code == 200
+    assert '<meta name="admin-access" content="admin">' in response.text
+    assert 'data-nav="external"' in response.text

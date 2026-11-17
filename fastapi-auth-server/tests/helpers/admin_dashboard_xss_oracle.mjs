@@ -60,6 +60,8 @@ const elements = new Map([
   ["[data-summary]", summary]
 ]);
 
+const viewerMode = process.argv.includes("--viewer");
+
 const document = {
   createElement(tagName) {
     if (tagName === "button") return new HTMLButtonElement(tagName);
@@ -69,6 +71,12 @@ const document = {
     return new Element(tagName);
   },
   querySelector(selector) {
+    if (viewerMode && selector === "meta[name='admin-access']") {
+      return { getAttribute: () => "viewer" };
+    }
+    if (viewerMode && selector === "meta[name='admin-auth-mode']") {
+      return { getAttribute: () => "session" };
+    }
     if (selector === "meta[name='admin-api-base']") {
       return { getAttribute: () => "/manage-api" };
     }

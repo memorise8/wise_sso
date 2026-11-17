@@ -13,6 +13,12 @@ const auditList = document.querySelector("[data-audit]");
 const adminApiBase = document.querySelector("meta[name='admin-api-base']")?.getAttribute("content") ?? "/admin";
 
 const sessionAuth = document.querySelector("meta[name='admin-auth-mode']")?.getAttribute("content") === "session";
+const readOnly = document.querySelector("meta[name='admin-access']")?.getAttribute("content") === "viewer";
+if (readOnly) {
+  for (const control of document.querySelectorAll(
+    "[data-bulk-type-form], [data-select-all], [data-audit-export], [data-admin-operations], [data-view='security']"
+  )) control.remove();
+}
 const adminCsrf = document.querySelector("meta[name='admin-session-csrf']")?.getAttribute("content") ?? "";
 if (sessionAuth) window.sessionStorage.removeItem(tokenStorageKey);
 
@@ -96,6 +102,9 @@ const setBusy = (busy) => {
 const apiPath = (path) => `${adminApiBase}${path}`;
 
 const apiFetch = async (path, options = {}) => {
+  if (readOnly && !["GET", "HEAD"].includes((options.method ?? "GET").toUpperCase())) {
+    throw new Error("읽기 전용 계정으로는 변경할 수 없습니다.");
+  }
   const token = authToken();
   if (!sessionAuth && !token) {
     throw new Error("관리자 Access Token을 먼저 저장하세요.");
@@ -219,6 +228,10 @@ const statusSelect = (user) => {
 };
 
 const userTypeSelect = (user) => {
+  if (readOnly) {
+    const labels = { EMPLOYEE: "직원", CUSTOMER: "고객", EXTERNAL: "외부" };
+    return element("span", { text: labels[user.userType] ?? "미분류" });
+  }
   if (user.userType === "EXTERNAL") {
     return element("span", { text: "외부" });
   }
@@ -297,7 +310,7 @@ const renderUsers = (page) => {
       checkbox.title = "외부 계정은 유형을 변경할 수 없습니다.";
     }
     checkbox.setAttribute("aria-label", `${user.email ?? user.id} 선택`);
-    selectionCell.append(checkbox);
+    if (!readOnly) selectionCell.append(checkbox);
 
     const identityCell = element("td");
     const identity = element("div", { className: "user-main" });
@@ -325,6 +338,10 @@ const renderUsers = (page) => {
     const roles = element("div", { className: "role-list" });
     if (user.roles.length) {
       for (const role of user.roles) {
+        if (readOnly) {
+          roles.append(element("span", { className: "role-chip", text: roleLabel(role) }));
+          continue;
+        }
         const button = actionButton("role-chip", `${roleLabel(role)} ×`, "removeRole", user.id);
         button.dataset.roleId = String(role.id);
         button.title = "누르면 이 역할을 뺍니다";
@@ -354,7 +371,7 @@ const renderUsers = (page) => {
       actionButton("danger-button", "로그인 세션 끊기", "revoke", user.id)
     );
     menu.append(trigger, actions);
-    actionCell.append(menu);
+    if (!readOnly) actionCell.append(menu);
 
     const typeCell = element("td");
     typeCell.append(typeCellContent(user));
@@ -812,8 +829,8 @@ const loadAdminOverview = async () => {
     const expiryLinks = element("p", { className: "summary-row" });
     expiryLinks.append(element("span", { text: "만료 예정 외부 계정" }));
     for (const [days, count] of [[7, expiring.within7Days], [30, expiring.within30Days]]) {
-      const link = element("a", { text: `${days}일 이내 ${number.format(count)}명` });
-      link.href = `${window.location.pathname}#external-expiry-${days}`;
+      const link = element(readOnly ? "span" : "a", { text: `${days}일 이내 ${number.format(count)}명` });
+      if (!readOnly) link.href = `${window.location.pathname}#external-expiry-${days}`;
       expiryLinks.append(link);
     }
     content.replaceChildren(grid, expiryLinks, line);
@@ -873,7 +890,7 @@ auditFilterForm?.addEventListener("submit", (event) => {
 
 
 const auditExportButton = document.querySelector("[data-audit-export]");
-if (sessionAuth && auditExportButton) {
+if (sessionAuth && !readOnly && auditExportButton) {
   auditExportButton.hidden = false;
   auditExportButton.addEventListener("click", async () => {
     if (adminBusy) return;
@@ -908,7 +925,7 @@ if (sessionAuth && auditExportButton) {
 
 
 const initSecurityPanel = () => {
-  if (!sessionAuth) return;
+  if (!sessionAuth || readOnly) return;
   const nav = document.querySelector('[data-nav="security"]');
   const panel = document.querySelector('[data-view="security"]');
   if (!nav || !panel) return;
@@ -1027,7 +1044,7 @@ initSecurityPanel();
 
 
 const loadAdminOperations = async () => {
-  if (!sessionAuth) return;
+  if (!sessionAuth || readOnly) return;
   const panel = document.querySelector("[data-admin-operations]");
   if (!panel) return;
   const version = panel.querySelector("[data-operations-version]");

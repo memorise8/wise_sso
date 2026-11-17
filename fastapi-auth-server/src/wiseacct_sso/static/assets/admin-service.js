@@ -1,6 +1,7 @@
 (() => {
   const panel = document.querySelector("[data-service-panel]");
   if (!panel || document.querySelector("meta[name='admin-auth-mode']")?.getAttribute("content") !== "session") return;
+  const readOnly = document.querySelector("meta[name='admin-access']")?.getAttribute("content") === "viewer";
   const base = document.querySelector("meta[name='admin-api-base']").getAttribute("content");
   const csrf = document.querySelector("meta[name='admin-session-csrf']").getAttribute("content");
   const tabs = panel.querySelector("[data-service-tabs]");
@@ -11,6 +12,7 @@
   const pager = panel.querySelector("[data-service-pager]");
   const form = panel.querySelector("[data-service-add]");
   const roleSelect = form.querySelector("select[name='role']");
+  if (readOnly) form.hidden = true;
   const pageSize = 25;
   const labels = { "gitlab-temis": "GitLab", "agent-hub-dash": "에이전트 허브", "fantra-oidc": "Fantra" };
   const notes = {
@@ -34,6 +36,9 @@
   const askReason = () => window.prompt("변경 사유를 입력하세요. (감사 기록에 남습니다)")?.trim();
 
   async function api(path, method = "GET", body) {
+    if (readOnly && !["GET", "HEAD"].includes(method.toUpperCase())) {
+      throw new Error("읽기 전용 계정으로는 변경할 수 없습니다.");
+    }
     const response = await fetch(base + path, {
       method,
       credentials: "same-origin",
@@ -110,7 +115,7 @@
         ? element("span", "access-chip", "역할 있음")
         : element("span", "access-none", "역할 없음 · 서비스 초대 필요"));
       const actions = element("div", "member-actions");
-      for (const role of member.matchedRoles) {
+      for (const role of (readOnly ? [] : member.matchedRoles)) {
         const remove = element("button", "danger-button", `${roleName(role)} 빼기`);
         remove.type = "button";
         remove.addEventListener("click", () => run(async () => {
@@ -170,6 +175,7 @@
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (readOnly) return;
     void run(async () => {
       const email = String(new FormData(form).get("email") ?? "").trim().toLowerCase();
       const role = current.requiredRoles[Number(roleSelect.value)];
