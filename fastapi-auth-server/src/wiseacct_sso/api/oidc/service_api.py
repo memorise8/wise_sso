@@ -16,9 +16,15 @@ from wiseacct_sso.application.service_invitations import (
     ServiceInvitationResult,
     ServiceInvitationService,
 )
+from wiseacct_sso.application.service_password_change import (
+    ServicePasswordChangeRequest,
+    ServicePasswordChangeService,
+)
 from wiseacct_sso.domain.users import DomainError
 
 EXTERNAL_INVITE_SCOPE = "external-invite"
+PASSWORD_CHANGE_SCOPE = "password-change"  # noqa: S105 - an OAuth scope name
+MAX_PASSWORD_LENGTH = 1024
 MAX_BODY_BYTES = 8_192
 
 
@@ -31,6 +37,14 @@ class ExternalInvitationBody(BaseModel):
     return_to: str = Field(max_length=2048)
     invited_by: str = Field(max_length=200)
     note: str | None = Field(default=None, max_length=500)
+
+
+class PasswordChangeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, hide_input_in_errors=True)
+
+    email: str = Field(min_length=1, max_length=320)
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH, repr=False)
+    new_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH, repr=False)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -48,7 +62,7 @@ def _payload(result: ServiceInvitationResult) -> dict[str, str]:
     return {key: value for key, value in values.items() if value is not None}
 
 
-def _auth_error(error: ServiceAuthError) -> Response:
+def _auth_error(error: ServiceAuthError, scope: str = EXTERNAL_INVITE_SCOPE) -> Response:
     messages = {
         "invalid_token": "A valid service access token is required",
         "insufficient_scope": "The token does not allow this operation",
@@ -56,13 +70,29 @@ def _auth_error(error: ServiceAuthError) -> Response:
     }
     response = error_response(error.status_code, error.code, messages.get(error.code, error.code))
     if error.status_code in {401, 403}:
-        response.headers["www-authenticate"] = (
-            f'Bearer error="{error.code}", scope="{EXTERNAL_INVITE_SCOPE}"'
-        )
+        response.headers["www-authenticate"] = f'Bearer error="{error.code}", scope="{scope}"'
     return response
 
 
+def _json_body(request: Request) -> bool:
+    return not request.scope.get("query_string") and request.headers.get(
+        "content-type", ""
+    ).startswith("application/json")
+
+
 def register_service_routes(
+    app: FastAPI,
+    auth: ServiceClientAuth,
+    invitations: ServiceInvitationService | None,
+    password_change: ServicePasswordChangeService | None = None,
+) -> None:
+    if invitations is not None:
+        _register_invitations(app, auth, invitations)
+    if password_change is not None:
+        _register_password_change(app, auth, password_change)
+
+
+def _register_invitations(
     app: FastAPI, auth: ServiceClientAuth, invitations: ServiceInvitationService
 ) -> None:
     @app.post("/oauth2/service/external-invitations", include_in_schema=False)
@@ -104,3 +134,43 @@ def register_service_routes(
             )
             return error_response(error.status_code, code, error.message)
         return JSONResponse(_payload(result), headers={"cache-control": "no-store"})
+
+
+def _register_password_change(
+    app: FastAPI, auth: ServiceClientAuth, password_change: ServicePasswordChangeService
+) -> None:
+    no_store = {"cache-control": "no-store"}
+
+    @app.post("/oauth2/service/password-change", include_in_schema=False)
+    async def service_password_change(request: Request) -> Response:
+        try:
+            caller = await auth.authenticate(
+                request.headers.get("authorization"), PASSWORD_CHANGE_SCOPE
+            )
+        except ServiceAuthError as error:
+            return _auth_error(error, PASSWORD_CHANGE_SCOPE)
+        if not _json_body(request):
+            return error_response(400, "INVALID_REQUEST", "Send a JSON body without a query")
+        raw = await request.body()
+        try:
+            if len(raw) > MAX_BODY_BYTES:
+                raise ValueError("body too large")
+            body = PasswordChangeBody.model_validate(json.loads(raw))
+        except (ValueError, ValidationError):
+            response = error_response(400, "INVALID_REQUEST", "Invalid password change request")
+            response.headers.update(no_store)
+            return response
+        try:
+            await password_change.change(
+                caller.client_id,
+                ServicePasswordChangeRequest(
+                    email=body.email,
+                    current_password=body.current_password,
+                    new_password=body.new_password,
+                ),
+            )
+        except DomainError as error:
+            response = error_response(error.status_code, error.code, error.message)
+            response.headers.update(no_store)
+            return response
+        return Response(status_code=204, headers=no_store)
