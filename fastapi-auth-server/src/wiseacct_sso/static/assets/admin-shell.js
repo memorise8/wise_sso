@@ -28,6 +28,8 @@
   }
   show(window.location.hash.slice(1));
 
+
+
   const filter = document.querySelector("[data-filter-form]");
   const typeSelect = filter?.querySelector("select[name='userType']");
   const tabs = [...document.querySelectorAll("[data-type-tab]")];

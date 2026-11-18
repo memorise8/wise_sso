@@ -1,5 +1,48 @@
 "use strict";
 
+const detailAuditEventLabels = new Map([
+  ["admin_oidc_policy_initialized", "서비스 접근 정책 초기 등록"],
+  ["admin_oidc_policy_requested", "서비스 접근 정책 변경 요청"],
+  ["admin_oidc_policy_approved", "서비스 접근 정책 변경 승인"],
+  ["admin_oidc_policy_rejected", "서비스 접근 정책 변경 거절"],
+  ["employee_invitation_created", "직원 초대 생성"],
+  ["employee_invitation_resent", "직원 초대 재발송"],
+  ["employee_invitation_cancelled", "직원 초대 취소"],
+  ["employee_invitation_accepted", "직원 초대 수락"],
+  ["employee_invitation_delivery_failed", "직원 초대 전달 실패"],
+  ["oidc_authorize", "서비스 로그인 권한 확인"],
+  ["admin_user_status_changed", "사용자 상태 변경"],
+  ["admin_user_type_changed", "사용자 유형 변경"],
+  ["admin_user_role_assigned", "역할 부여"],
+  ["admin_user_role_removed", "역할 회수"],
+  ["admin_user_sessions_revoked", "사용자 세션 끊기"],
+  ["admin_user_unlocked", "사용자 잠금 해제"],
+  ["external_account_cleanup_completed", "외부 계정 만료 정리 완료"],
+  ["admin_browser_login", "관리자 로그인"],
+  ["admin_authorization_failure", "관리자 권한 확인 실패"],
+  ["admin_access_review_started", "권한 점검 시작"],
+  ["admin_access_review_item_decided", "권한 점검 항목 결정"],
+  ["admin_access_review_completed", "권한 점검 완료"],
+  ["admin_audit_logs_exported", "감사 로그 CSV 내보내기"],
+  ["external_account_extended", "외부 계정 연장"],
+  ["external_account_memo_updated", "외부 계정 메모 변경"],
+  ["external_account_expired", "외부 계정 만료"],
+  ["external_invitation_created", "외부 계정 초대 생성"],
+  ["external_invitation_resent", "외부 계정 초대 재발송"],
+  ["external_invitation_cancelled", "외부 계정 초대 취소"],
+  ["external_invitation_accepted", "외부 계정 초대 수락"],
+  ["external_invitation_delivery_failed", "외부 계정 초대 전달 실패"],
+  ["login_success", "로그인 성공"],
+  ["login_failure", "로그인 실패"],
+  ["lockout", "계정 잠금"],
+  ["oidc_token", "OIDC 토큰 요청"],
+]);
+const detailAuditOutcomeLabels = new Map([
+  ["success", "성공"], ["failure", "실패"],
+  ["SUCCESS", "성공"], ["FAILURE", "실패"],
+]);
+
+
 const detailReadOnly = document.querySelector("meta[name='admin-access']")?.getAttribute("content") === "viewer";
 
 const userId = decodeURIComponent(location.pathname.split("/").at(-1));
@@ -276,7 +319,10 @@ async function load(message = "") {
     );
     section("audit", "대상 사용자 감사 기록",
       table(["시각 (KST)", "이벤트", "결과", "사유"], audit.items.map((item) => [
-        formatDate(item.createdAt), item.eventType, item.outcome, item.reasonCode,
+        formatDate(item.createdAt),
+        detailAuditEventLabels.get(item.eventType) ?? item.eventType,
+        detailAuditOutcomeLabels.get(item.outcome) ?? item.outcome,
+        item.reasonCode,
       ])),
       pager("audit", audit)
     );

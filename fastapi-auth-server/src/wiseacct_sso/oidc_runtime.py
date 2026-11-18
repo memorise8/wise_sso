@@ -50,6 +50,12 @@ class RuntimeOidcRedis:
         count = await self.increment_with_ttl(f"wiseacct:oidc:rate:ip:{digest}", 60)
         return count <= 60
 
+    async def admin_read_rate_check(self, _path: str, address: str) -> bool:
+        # 개별 URL 대신 관리자 조회 전체에 고정된 버킷을 사용합니다.
+        digest = sha256(f"/oauth2/admin/read\0{address}".encode()).hexdigest()
+        count = await self.increment_with_ttl(f"wiseacct:oidc:rate:ip:{digest}", 60)
+        return count <= 300
+
 
 def oidc_provider_config_for(settings: Settings, provider: OAuthProvider) -> OAuthProviderConfig:
     callback: str | None = getattr(settings, f"oidc_{provider}_redirect_uri")
