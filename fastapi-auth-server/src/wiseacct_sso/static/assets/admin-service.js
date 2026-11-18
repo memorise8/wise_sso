@@ -15,15 +15,12 @@
   if (readOnly) form.hidden = true;
   const pageSize = 25;
   const labels = { "gitlab-temis": "GitLab", "agent-hub-dash": "에이전트 허브", "fantra-oidc": "Fantra" };
-  const notes = {
-    "gitlab-temis": "gitlab:user가 있어야 GitLab에 로그인할 수 있습니다. 외부 계정도 받을 수 있는 유일한 권한입니다.",
-    "agent-hub-dash": "SSO 로그인은 누구나 통과하고, 허브가 자체 명단·초대로 입장을 정합니다. agent-hub:user가 있으면 초대 없이 들어갑니다."
-  };
   const typeLabels = { EMPLOYEE: "직원", CUSTOMER: "고객", EXTERNAL: "외부", UNCLASSIFIED: "미분류" };
   let clients = [];
   let current = null;
   let page = 1;
   let busy = false;
+  let memberSequence = 0;
 
   const element = (tag, className, text) => {
     const node = document.createElement(tag);
@@ -75,7 +72,7 @@
       [current.allowWithoutRequiredRole ? "SSO 로그인 통과" : "이용 가능", `${current.eligibleCount}명`],
       ["필요 역할", current.requiredRoles.map(roleName).join(", ") || "없음"],
       ["허용 유형", types],
-      ["역할 없이 로그인", current.allowWithoutRequiredRole ? "가능 (서비스가 초대로 거름)" : "불가"],
+      ["역할 없이 로그인", current.allowWithoutRequiredRole ? "허용" : "불가"],
       ["자동 로그인", current.ssoAutoLogin ? "켜짐" : "꺼짐"]
     ]) {
       const item = element("div");
@@ -88,7 +85,10 @@
         detail: { clientId: current.clientId }
       }));
     }
-    note.textContent = notes[current.clientId] ?? "";
+    const roleRule = current.allowWithoutRequiredRole
+      ? "필요 역할이 없어도 SSO 로그인을 허용합니다."
+      : "필요 역할 조건을 충족해야 SSO 로그인이 가능합니다.";
+    note.textContent = `허용 유형: ${types}. ${roleRule} 그 밖의 SSO 로그인 조건도 적용됩니다. 서비스 내부 권한과 초대 여부는 해당 서비스에서 별도로 확인합니다.`;
     roleSelect.replaceChildren(...current.requiredRoles.map((role, index) => {
       const option = element("option", "", roleName(role));
       option.value = String(index);
@@ -97,15 +97,30 @@
   }
 
   async function load() {
+    if (!current) return;
+    const selected = current;
+    const requestedPage = page;
+    const requestId = ++memberSequence;
+    const isCurrent = () => requestId === memberSequence
+      && current?.clientId === selected.clientId && page === requestedPage;
     members.replaceChildren(element("p", "type-fixed", "불러오는 중…"));
-    const result = await api(`/clients/${encodeURIComponent(current.clientId)}/members?page=${page}&pageSize=${pageSize}`);
+    pager.replaceChildren();
+    status(`${label(selected)} 구성원을 불러오는 중…`);
+    let result;
+    try {
+      result = await api(`/clients/${encodeURIComponent(selected.clientId)}/members?page=${requestedPage}&pageSize=${pageSize}`);
+    } catch (error) {
+      if (!isCurrent()) return;
+      members.replaceChildren(element("p", "type-fixed", "구성원 목록을 불러오지 못했습니다."));
+      status(error.message || "구성원 조회 실패", "error");
+      return;
+    }
+    if (!isCurrent()) return;
     if (!result.items.length && result.page > 1) {
       page = Math.max(1, Math.ceil(result.total / result.pageSize));
       return load();
     }
-    status(current.allowWithoutRequiredRole
-      ? `SSO 로그인을 통과하는 사람 ${result.total}명 · 실제 입장은 '역할 있음'이거나 ${label(current)}에서 초대받은 사람만`
-      : `${label(current)}에 로그인할 수 있는 사람 ${result.total}명`);
+    status(`${label(selected)}의 SSO 로그인 조건을 충족하는 사람 ${result.total}명`);
     members.replaceChildren();
     if (!result.items.length) members.append(element("p", "type-fixed", "아직 이용할 수 있는 사람이 없습니다."));
     for (const member of result.items) {
@@ -118,7 +133,7 @@
       if (member.userType === "EXTERNAL") tags.append(element("span", "type-tag", "외부"));
       tags.append(member.requiredRoleMatched
         ? element("span", "access-chip", "역할 있음")
-        : element("span", "access-none", "역할 없음 · 서비스 초대 필요"));
+        : element("span", "access-none", "역할 없음 · SSO 로그인 허용"));
       const actions = element("div", "member-actions");
       for (const role of (readOnly ? [] : member.matchedRoles)) {
         const remove = element("button", "danger-button", `${roleName(role)} 빼기`);
@@ -138,7 +153,11 @@
     pager.replaceChildren();
     const last = Math.ceil(result.total / result.pageSize);
     if (last > 1) {
-      const move = (next) => run(async () => { page = next; await load(); });
+      const move = (next) => {
+        if (current?.clientId !== selected.clientId) return;
+        page = next;
+        void load();
+      };
       if (result.page > 1) pager.append(button("이전", () => move(result.page - 1)));
       pager.append(element("span", "type-fixed", `${result.page} / ${last}`));
       if (result.page < last) pager.append(button("다음", () => move(result.page + 1)));
@@ -175,7 +194,7 @@
     page = 1;
     for (const tab of tabs.children) tab.setAttribute("aria-selected", String(tab.dataset.clientId === client.clientId));
     renderPolicy();
-    void run(load);
+    void load();
   }
 
   form.addEventListener("submit", (event) => {
@@ -315,10 +334,16 @@
     const id = ++sequence;
     const selected = clientId;
     const path = endpoint();
-    const [policy, history] = await Promise.all([
-      api(path + "/policy"),
-      api(path + `/policy-changes?page=${page}&pageSize=25`)
-    ]);
+    let policy, history;
+    try {
+      [policy, history] = await Promise.all([
+        api(path + "/policy"),
+        api(path + `/policy-changes?page=${page}&pageSize=25`)
+      ]);
+    } catch (error) {
+      if (id !== sequence || selected !== clientId) return;
+      throw error;
+    }
     if (id !== sequence || selected !== clientId) return;
     current = policy;
     render(history);

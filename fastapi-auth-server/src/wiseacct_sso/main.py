@@ -122,6 +122,7 @@ def create_app(
     phase6_services: Phase6Services | None = None,
     oidc_app: ASGIApp | None = None,
     oidc_rate_check: OidcRateCheck | None = None,
+    oidc_admin_read_rate_check: OidcRateCheck | None = None,
 ) -> FastAPI:
     if settings.oidc_enabled and oidc_app is None:
         raise ValueError("Enabled OIDC requires an initialized OIDC application")
@@ -186,7 +187,10 @@ def create_app(
     application.add_middleware(ExpressCorsMiddleware, allowed_origins=settings.cors_allowed_origins)
     if settings.oidc_enabled and oidc_app is not None:
         application.add_middleware(
-            OidcDispatchMiddleware, oidc_app=oidc_app, rate_check=oidc_rate_check
+            OidcDispatchMiddleware,
+            oidc_app=oidc_app,
+            rate_check=oidc_rate_check,
+            admin_read_rate_check=oidc_admin_read_rate_check,
         )
     application.add_middleware(
         SecurityHeadersMiddleware,
@@ -376,6 +380,9 @@ def create_runtime_app() -> FastAPI:
         phase6_services=phase6_services,
         oidc_app=oidc_app,
         oidc_rate_check=oidc_redis.rate_check if settings.oidc_enabled else None,
+        oidc_admin_read_rate_check=(
+            oidc_redis.admin_read_rate_check if settings.oidc_enabled else None
+        ),
     )
     application.state.database = None
     application.state.redis_store = None
