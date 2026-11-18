@@ -8,6 +8,7 @@ from typing import Annotated, Never, Protocol, cast, overload
 
 from fastapi import Depends, Request
 
+from wiseacct_sso.application.access_reviews import AccessReviewService
 from wiseacct_sso.application.admin import (
     AssignRoleResult,
     RemoveRoleResult,
@@ -24,6 +25,7 @@ from wiseacct_sso.application.auth import (
     RequestAuditContext,
     TokenPair,
 )
+from wiseacct_sso.application.oidc_policy_changes import OidcPolicyChangeService
 from wiseacct_sso.domain.admin import (
     AdminAuditLogPage,
     AdminRoleProfile,
@@ -148,6 +150,12 @@ InjectedPhase5Services = Annotated[Phase5Services, Depends(phase5_services)]
 
 class Phase6Services(Protocol):
     """Administrator HTTP boundary backed by the Phase 6 application service."""
+
+    def access_review_service(self) -> AccessReviewService: ...
+
+    def oidc_policy_change_service(
+        self, *, client_ids: tuple[str, ...]
+    ) -> OidcPolicyChangeService: ...
 
     async def last_expiry_cleanup(self) -> dict[str, object] | None: ...
 

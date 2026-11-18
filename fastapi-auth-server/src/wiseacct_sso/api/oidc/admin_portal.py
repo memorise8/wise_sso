@@ -16,6 +16,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from wiseacct_sso.api.dependencies import Phase6Services
 from wiseacct_sso.api.errors import error_response, install_error_handlers
+from wiseacct_sso.api.oidc.oidc_policy_changes import register_oidc_policy_routes
 from wiseacct_sso.api.routes.admin import build_admin_router
 from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import AdminBrowserIdentity, OidcService, OidcServiceError
@@ -23,6 +24,7 @@ from wiseacct_sso.domain.admin_permissions import viewer_read_allowed
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.persistence.admin_security import SecurityView
 
+from .access_reviews import register_access_review_routes
 from .app import (
     _bounded,
     _clear_session_cookie,
@@ -67,7 +69,7 @@ def _admin_access_document(document: str, identity: AdminBrowserIdentity) -> str
     )
     if not identity.can_manage:
         document = re.sub(
-            r'<button\b[^>]*data-nav="(?:invites|external|security)"[^>]*>'
+            r'<button\b[^>]*data-nav="(?:invites|external|security|reviews)"[^>]*>'
             r".*?</button>",
             "",
             document,
@@ -75,7 +77,7 @@ def _admin_access_document(document: str, identity: AdminBrowserIdentity) -> str
         )
         document = re.sub(
             r'<a\b[^>]*href="/oauth2/admin/dashboard#'
-            r'(?:invites|external|security)"[^>]*>.*?</a>',
+            r'(?:invites|external|security|reviews)"[^>]*>.*?</a>',
             "",
             document,
             flags=re.DOTALL,
@@ -215,6 +217,13 @@ def register_admin_portal(
     api.state.admin_browser_actor = browser_actor
     install_error_handlers(api)
     api.include_router(build_admin_router(prefix=""))
+    register_access_review_routes(api, services=admin_services, actor=browser_actor)
+    register_oidc_policy_routes(
+        api,
+        services=admin_services,
+        actor=browser_actor,
+        client_ids=tuple(client.client_id for client in service._clients.clients),
+    )
     if invitation_service is not None:
         from .invitations import register_invitation_routes
 

@@ -132,6 +132,7 @@ context.payload = {
         outcome: '<svg onload="globalThis.outcomeXss=1">',
         reasonCode: '<script>globalThis.reasonXss=1</script>',
         userId: '<iframe src="javascript:globalThis.auditUserXss=1">',
+        userEmail: '<iframe src="javascript:globalThis.auditUserXss=1">',
         targetUserId: null,
         createdAt: "2026-07-29T00:00:00.000Z"
       },
@@ -141,6 +142,7 @@ context.payload = {
         reasonCode: null,
         userId: null,
         targetUserId: '<img src=x onerror="globalThis.targetXss=1">',
+        targetUserEmail: '<img src=x onerror="globalThis.targetXss=1">',
         createdAt: "2026-07-29T00:00:00.000Z"
       }
     ]

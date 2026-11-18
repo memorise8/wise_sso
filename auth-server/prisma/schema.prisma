@@ -213,3 +213,100 @@ model EmployeeInvitation {
   @@index([email])
   @@index([status, expiresAt])
 }
+
+
+model AccessReview {
+  id              String   @id @default(uuid())
+  title           String
+  status          String   @default("OPEN")
+  serviceKeys     Json     @db.JsonB
+  reasonCode      String
+  startedById     String
+  startedAt       DateTime @default(now())
+  completedById   String?
+  completedAt     DateTime?
+
+  items AccessReviewItem[]
+
+  @@index([startedAt, id])
+  @@index([status, startedAt, id])
+}
+
+model AccessReviewItem {
+  id               String   @id @default(uuid())
+  reviewId         String
+  userRoleId       String
+  userId           String
+  roleId           String
+  serviceKey       String
+  roleName         String
+  userEmail        String?
+  userName         String?
+  userStatus       String
+  userType         String?
+  accountExpiresAt DateTime?
+  decision         String   @default("PENDING")
+  decidedById      String?
+  decidedAt        DateTime?
+  reasonCode       String?
+  createdAt        DateTime @default(now())
+
+  review AccessReview @relation(fields: [reviewId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([reviewId, userRoleId])
+  @@index([reviewId, decision, id])
+  @@index([userId])
+}
+
+
+model OidcAccessPolicy {
+  clientId       String   @id
+  version        Int      @default(1)
+  policy         Json     @db.JsonB
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime
+  updatedById    String?
+  updatedByEmail String?
+
+  changes OidcPolicyChange[]
+}
+
+model OidcPolicyChange {
+  id                String   @id @default(uuid())
+  clientId          String
+  baseVersion       Int
+  appliedVersion    Int?
+  status            String   @default("PENDING")
+  beforePolicy      Json     @db.JsonB
+  proposedPolicy    Json     @db.JsonB
+  requestedById     String
+  requestedByEmail  String?
+  requestedAt       DateTime @default(now())
+  reasonCode        String
+  rollbackToVersion Int?
+  resolvedAt        DateTime?
+
+  client   OidcAccessPolicy   @relation(fields: [clientId], references: [clientId], onDelete: Restrict, onUpdate: Cascade)
+  decision OidcPolicyDecision?
+
+  @@unique([id, requestedById])
+  @@unique([clientId, appliedVersion])
+  @@index([clientId, requestedAt, id])
+  @@index([status, requestedAt, id])
+}
+
+model OidcPolicyDecision {
+  id             String   @id @default(uuid())
+  requestId      String   @unique
+  requestedById  String
+  decision       String
+  decidedById    String
+  decidedByEmail String?
+  decidedAt      DateTime @default(now())
+  reasonCode     String
+
+  request OidcPolicyChange @relation(fields: [requestId, requestedById], references: [id, requestedById], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([requestId, requestedById])
+  @@index([decidedById, decidedAt])
+}

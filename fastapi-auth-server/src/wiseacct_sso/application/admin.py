@@ -7,9 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import update
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from wiseacct_sso.application.access_reviews import AccessReviewService
+from wiseacct_sso.application.oidc_policy_changes import OidcPolicyChangeService
 from wiseacct_sso.domain.admin import (
     DEFAULT_AUDIT_RETENTION_DAYS,
     AdminAuditEventType,
@@ -40,7 +42,12 @@ from wiseacct_sso.persistence.admin_operations import read_last_expiry_cleanup
 from wiseacct_sso.persistence.admin_security import SecurityView, read_admin_security
 from wiseacct_sso.persistence.admin_summary import read_admin_summary
 from wiseacct_sso.persistence.database import Database, database_only_transaction
-from wiseacct_sso.persistence.models import PasswordCredential, application_uuid, utc_now_ms
+from wiseacct_sso.persistence.models import (
+    PasswordCredential,
+    UserRole,
+    application_uuid,
+    utc_now_ms,
+)
 from wiseacct_sso.persistence.stores import (
     AdminAuditQueryStore,
     AdminDirectoryStore,
@@ -88,6 +95,12 @@ class Phase6AdminService:
         self._mutations = AdminMutationStore()
         self._audit = AuditStore()
         self._retention = AuditRetentionStore()
+
+    def access_review_service(self) -> AccessReviewService:
+        return AccessReviewService(admin=self)
+
+    def oidc_policy_change_service(self, *, client_ids: tuple[str, ...]) -> OidcPolicyChangeService:
+        return OidcPolicyChangeService(admin=self, client_ids=client_ids)
 
     async def authenticate_admin(self, access_token: str, *, route: str, method: str) -> str:
         """Validate access-token kind/signature, then authorize its subject from the DB."""
@@ -499,40 +512,86 @@ class Phase6AdminService:
         removed_at = now or utc_now_ms()
 
         async def mutate(connection: AsyncConnection) -> RemoveRoleResult:
-            await self._authorize_mutation(connection, actor_user_id, target_user_id)
-            if service_key == "sso" and name == "admin":
-                await self._protect_last_admin(connection, target_user_id)
-            role = await self._mutations.find_role(connection, service_key=service_key, name=name)
-            if role is None:
-                return RemoveRoleResult(False, None, 0)
+            return await self.remove_role_in_transaction(
+                connection,
+                actor_user_id=actor_user_id,
+                target_user_id=target_user_id,
+                service_key=service_key,
+                name=name,
+                reason_code=reason_code,
+                details=details,
+                now=removed_at,
+            )
+
+        return await self._database().transaction(database_only_transaction(mutate))
+
+    async def remove_role_in_transaction(
+        self,
+        connection: AsyncConnection,
+        *,
+        actor_user_id: str,
+        target_user_id: str,
+        service_key: str,
+        name: str,
+        reason_code: str,
+        details: Mapping[str, object] | None = None,
+        now: datetime | None = None,
+        expected_user_role_id: str | None = None,
+    ) -> RemoveRoleResult:
+        """기존 보호 규칙을 유지하며 호출자가 소유한 트랜잭션에서 회수합니다."""
+        assert_user_id(target_user_id)
+        assert_role_input(service_key, name)
+        assert_self_admin_role_removal_allowed(
+            actor_user_id,
+            target_user_id,
+            AdminRoleProfile(id="", service_key=service_key, name=name),
+        )
+        removed_at = now or utc_now_ms()
+
+        await self._authorize_mutation(connection, actor_user_id, target_user_id)
+        if service_key == "sso" and name == "admin":
+            await self._protect_last_admin(connection, target_user_id)
+        role = await self._mutations.find_role(connection, service_key=service_key, name=name)
+        if role is None:
+            return RemoveRoleResult(False, None, 0)
+        if expected_user_role_id is None:
             removed = await self._mutations.remove_role_from_user(
                 connection, user_id=target_user_id, role_id=role.id
             )
-            revoked = (
-                await self._mutations.revoke_all_refresh_tokens_for_user(
-                    connection, user_id=target_user_id, revoked_at=removed_at
+        else:
+            result = await connection.execute(
+                delete(UserRole)
+                .where(
+                    UserRole.c.id == expected_user_role_id,
+                    UserRole.c.userId == target_user_id,
+                    UserRole.c.roleId == role.id,
                 )
-                if removed
-                else 0
+                .returning(UserRole.c.id)
             )
-            if removed:
-                audit_details = self._details(
-                    details
-                    if details is not None
-                    else {"serviceKey": role.service_key, "roleName": role.name}
-                )
-                await self._record_mutation_audit(
-                    connection,
-                    event_type="admin_user_role_removed",
-                    actor_user_id=actor_user_id,
-                    target_user_id=target_user_id,
-                    reason_code=reason_code,
-                    details=audit_details,
-                    created_at=removed_at,
-                )
-            return RemoveRoleResult(removed, role.id, revoked)
-
-        return await self._database().transaction(database_only_transaction(mutate))
+            removed = result.scalar_one_or_none() is not None
+        revoked = (
+            await self._mutations.revoke_all_refresh_tokens_for_user(
+                connection, user_id=target_user_id, revoked_at=removed_at
+            )
+            if removed
+            else 0
+        )
+        if removed:
+            audit_details = self._details(
+                details
+                if details is not None
+                else {"serviceKey": role.service_key, "roleName": role.name}
+            )
+            await self._record_mutation_audit(
+                connection,
+                event_type="admin_user_role_removed",
+                actor_user_id=actor_user_id,
+                target_user_id=target_user_id,
+                reason_code=reason_code,
+                details=audit_details,
+                created_at=removed_at,
+            )
+        return RemoveRoleResult(removed, role.id, revoked)
 
     async def revoke_sessions(
         self,

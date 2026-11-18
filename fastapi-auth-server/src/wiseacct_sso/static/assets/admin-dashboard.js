@@ -533,6 +533,16 @@ const runUserAction = async (task, successMessage) => {
 };
 
 const auditEventLabels = new Map([
+  ["admin_oidc_policy_initialized", "서비스 접근 정책 초기 등록"],
+  ["admin_oidc_policy_requested", "서비스 접근 정책 변경 요청"],
+  ["admin_oidc_policy_approved", "서비스 접근 정책 변경 승인"],
+  ["admin_oidc_policy_rejected", "서비스 접근 정책 변경 거절"],
+  ["employee_invitation_created", "직원 초대 생성"],
+  ["employee_invitation_resent", "직원 초대 재발송"],
+  ["employee_invitation_cancelled", "직원 초대 취소"],
+  ["employee_invitation_accepted", "직원 초대 수락"],
+  ["employee_invitation_delivery_failed", "직원 초대 전달 실패"],
+  ["oidc_authorize", "서비스 로그인 권한 확인"],
   ["admin_user_status_changed", "사용자 상태 변경"],
   ["admin_user_type_changed", "사용자 유형 변경"],
   ["admin_user_role_assigned", "역할 부여"],
@@ -542,6 +552,9 @@ const auditEventLabels = new Map([
   ["external_account_cleanup_completed", "외부 계정 만료 정리 완료"],
   ["admin_browser_login", "관리자 로그인"],
   ["admin_authorization_failure", "관리자 권한 확인 실패"],
+  ["admin_access_review_started", "권한 점검 시작"],
+  ["admin_access_review_item_decided", "권한 점검 항목 결정"],
+  ["admin_access_review_completed", "권한 점검 완료"],
   ["admin_audit_logs_exported", "감사 로그 CSV 내보내기"],
   ["external_account_extended", "외부 계정 연장"],
   ["external_account_memo_updated", "외부 계정 메모 변경"],
@@ -580,12 +593,12 @@ const renderAudit = (page) => {
     article.append(
       element("strong", { text: (auditEventLabels.get(item.eventType) ?? item.eventType) }),
       element("span", { text: `${item.outcome}${item.reasonCode ? ` / ${item.reasonCode}` : ""}` }),
-      element("span", { text: item.userId ?? item.targetUserId ?? "사용자 없음" }),
+      element("span", { text: item.userEmail ?? item.targetUserEmail ?? "사용자 정보 없음" }),
       element("time", { text: formatDate(item.createdAt) })
     );
     article.append(
-      element("p", { text: `처리 관리자 ID: ${item.actorUserId ?? "—"}` }),
-      element("p", { text: `대상 사용자 ID: ${item.targetUserId ?? "—"}` }),
+      element("p", { text: `처리한 관리자: ${item.actorUserEmail ?? (item.actorUserId ? "이메일 정보 없음" : "시스템 또는 삭제된 계정")}` }),
+      element("p", { text: `대상 사용자: ${item.targetUserEmail ?? item.userEmail ?? "대상 없음 또는 삭제된 계정"}` }),
     );
     return article;
   });

@@ -11,15 +11,18 @@ from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
     PrimaryKeyConstraint,
     Table,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
@@ -334,4 +337,224 @@ EmployeeInvitation = Table(
     Column("updatedAt", timestamp_ms, nullable=False),
     Index("EmployeeInvitation_email_idx", "email"),
     Index("EmployeeInvitation_status_expiresAt_idx", "status", "expiresAt"),
+)
+
+
+AccessReview = Table(
+    "AccessReview",
+    metadata,
+    Column("id", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default=text("'OPEN'")),
+    Column("serviceKeys", JSONB, nullable=False),
+    Column("reasonCode", Text, nullable=False),
+    Column("startedById", Text, nullable=False),
+    Column("startedAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("completedById", Text),
+    Column("completedAt", timestamp_ms),
+    PrimaryKeyConstraint("id", name="AccessReview_pkey"),
+    CheckConstraint(
+        """status IN ('OPEN', 'COMPLETED')""",
+        name="AccessReview_status_check",
+    ),
+    CheckConstraint(
+        """jsonb_typeof("serviceKeys") = 'array'""",
+        name="AccessReview_serviceKeys_check",
+    ),
+    CheckConstraint(
+        """(status = 'OPEN' AND "completedById" IS NULL AND "completedAt" IS NULL)
+        OR (status = 'COMPLETED'
+            AND "completedById" IS NOT NULL AND "completedAt" IS NOT NULL)""",
+        name="AccessReview_completion_check",
+    ),
+    Index("AccessReview_startedAt_id_idx", "startedAt", "id"),
+    Index("AccessReview_status_startedAt_id_idx", "status", "startedAt", "id"),
+)
+
+AccessReviewItem = Table(
+    "AccessReviewItem",
+    metadata,
+    Column("id", Text, nullable=False),
+    Column(
+        "reviewId",
+        Text,
+        ForeignKey(
+            "AccessReview.id",
+            name="AccessReviewItem_reviewId_fkey",
+            ondelete="RESTRICT",
+            onupdate="CASCADE",
+        ),
+        nullable=False,
+    ),
+    Column("userRoleId", Text, nullable=False),
+    Column("userId", Text, nullable=False),
+    Column("roleId", Text, nullable=False),
+    Column("serviceKey", Text, nullable=False),
+    Column("roleName", Text, nullable=False),
+    Column("userEmail", Text),
+    Column("userName", Text),
+    Column("userStatus", Text, nullable=False),
+    Column("userType", Text),
+    Column("accountExpiresAt", timestamp_ms),
+    Column("decision", Text, nullable=False, server_default=text("'PENDING'")),
+    Column("decidedById", Text),
+    Column("decidedAt", timestamp_ms),
+    Column("reasonCode", Text),
+    Column("createdAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    PrimaryKeyConstraint("id", name="AccessReviewItem_pkey"),
+    UniqueConstraint("reviewId", "userRoleId", name="AccessReviewItem_reviewId_userRoleId_key"),
+    CheckConstraint(
+        """decision IN ('PENDING', 'KEEP', 'REVOKE', 'ALREADY_REMOVED')""",
+        name="AccessReviewItem_decision_check",
+    ),
+    CheckConstraint(
+        """(decision = 'PENDING'
+            AND "decidedById" IS NULL AND "decidedAt" IS NULL AND "reasonCode" IS NULL)
+        OR (decision <> 'PENDING'
+            AND "decidedById" IS NOT NULL AND "decidedAt" IS NOT NULL
+            AND "reasonCode" IS NOT NULL)""",
+        name="AccessReviewItem_decision_fields_check",
+    ),
+    Index("AccessReviewItem_reviewId_decision_id_idx", "reviewId", "decision", "id"),
+    Index("AccessReviewItem_userId_idx", "userId"),
+)
+
+
+OidcAccessPolicy = Table(
+    "OidcAccessPolicy",
+    metadata,
+    Column("clientId", Text, nullable=False),
+    Column("version", Integer, nullable=False, server_default=text("1")),
+    Column("policy", JSONB, nullable=False),
+    Column("createdAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("updatedAt", timestamp_ms, nullable=False),
+    Column("updatedById", Text, nullable=True),
+    Column("updatedByEmail", Text, nullable=True),
+    PrimaryKeyConstraint("clientId", name="OidcAccessPolicy_pkey"),
+    CheckConstraint(
+        ('"version" >= 1'),
+        name="OidcAccessPolicy_version_check",
+    ),
+    CheckConstraint(
+        (
+            'jsonb_typeof("policy") = \'object\' AND "policy" ?& ARRAY[\'all'
+            "owedUserTypes', 'requiredRoles', 'allowWithoutRequiredRole',"
+            " 'groupsServiceKeys', 'ssoAutoLogin'] AND (\"policy\" - ARRAY["
+            "'allowedUserTypes', 'requiredRoles', 'allowWithoutRequiredRo"
+            "le', 'groupsServiceKeys', 'ssoAutoLogin']) = '{}'::jsonb"
+        ),
+        name="OidcAccessPolicy_policy_check",
+    ),
+)
+
+
+OidcPolicyChange = Table(
+    "OidcPolicyChange",
+    metadata,
+    Column("id", Text, nullable=False),
+    Column("clientId", Text, nullable=False),
+    Column("baseVersion", Integer, nullable=False),
+    Column("appliedVersion", Integer, nullable=True),
+    Column("status", Text, nullable=False, server_default=text("'PENDING'")),
+    Column("beforePolicy", JSONB, nullable=False),
+    Column("proposedPolicy", JSONB, nullable=False),
+    Column("requestedById", Text, nullable=False),
+    Column("requestedByEmail", Text, nullable=True),
+    Column("requestedAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("reasonCode", Text, nullable=False),
+    Column("rollbackToVersion", Integer, nullable=True),
+    Column("resolvedAt", timestamp_ms, nullable=True),
+    PrimaryKeyConstraint("id", name="OidcPolicyChange_pkey"),
+    CheckConstraint(
+        ('"baseVersion" >= 1'),
+        name="OidcPolicyChange_baseVersion_check",
+    ),
+    CheckConstraint(
+        (
+            'jsonb_typeof("beforePolicy") = \'object\' AND "beforePolicy" ?'
+            "& ARRAY['allowedUserTypes', 'requiredRoles', 'allowWithoutRe"
+            "quiredRole', 'groupsServiceKeys', 'ssoAutoLogin'] AND (\"befo"
+            "rePolicy\" - ARRAY['allowedUserTypes', 'requiredRoles', 'allo"
+            "wWithoutRequiredRole', 'groupsServiceKeys', 'ssoAutoLogin'])"
+            " = '{}'::jsonb"
+        ),
+        name="OidcPolicyChange_beforePolicy_check",
+    ),
+    CheckConstraint(
+        (
+            'jsonb_typeof("proposedPolicy") = \'object\' AND "proposedPolic'
+            "y\" ?& ARRAY['allowedUserTypes', 'requiredRoles', 'allowWitho"
+            "utRequiredRole', 'groupsServiceKeys', 'ssoAutoLogin'] AND (\""
+            "proposedPolicy\" - ARRAY['allowedUserTypes', 'requiredRoles',"
+            " 'allowWithoutRequiredRole', 'groupsServiceKeys', 'ssoAutoLo"
+            "gin']) = '{}'::jsonb"
+        ),
+        name="OidcPolicyChange_proposedPolicy_check",
+    ),
+    CheckConstraint(
+        (
+            '("status" = \'PENDING\' AND "appliedVersion" IS NULL AND "reso'
+            'lvedAt" IS NULL)\n            OR ("status" = \'APPLIED\' AND "a'
+            'ppliedVersion" IS NOT NULL AND "appliedVersion" = "baseVersi'
+            'on" + 1\n                AND "resolvedAt" IS NOT NULL)\n      '
+            '      OR ("status" = \'REJECTED\' AND "appliedVersion" IS NULL'
+            '\n                AND "resolvedAt" IS NOT NULL)'
+        ),
+        name="OidcPolicyChange_state_check",
+    ),
+    CheckConstraint(
+        (
+            '"rollbackToVersion" IS NULL OR ("rollbackToVersion" >= 1 AND'
+            ' "rollbackToVersion" < "baseVersion")'
+        ),
+        name="OidcPolicyChange_rollback_check",
+    ),
+    ForeignKeyConstraint(
+        ["clientId"],
+        ["OidcAccessPolicy.clientId"],
+        name="OidcPolicyChange_clientId_fkey",
+        ondelete="RESTRICT",
+        onupdate="CASCADE",
+    ),
+    UniqueConstraint("id", "requestedById", name="OidcPolicyChange_id_requestedById_key"),
+    UniqueConstraint(
+        "clientId", "appliedVersion", name="OidcPolicyChange_clientId_appliedVersion_key"
+    ),
+    Index("OidcPolicyChange_clientId_requestedAt_id_idx", "clientId", "requestedAt", "id"),
+    Index("OidcPolicyChange_status_requestedAt_id_idx", "status", "requestedAt", "id"),
+)
+
+
+OidcPolicyDecision = Table(
+    "OidcPolicyDecision",
+    metadata,
+    Column("id", Text, nullable=False),
+    Column("requestId", Text, nullable=False),
+    Column("requestedById", Text, nullable=False),
+    Column("decision", Text, nullable=False),
+    Column("decidedById", Text, nullable=False),
+    Column("decidedByEmail", Text, nullable=True),
+    Column("decidedAt", timestamp_ms, nullable=False, server_default=text("CURRENT_TIMESTAMP")),
+    Column("reasonCode", Text, nullable=False),
+    PrimaryKeyConstraint("id", name="OidcPolicyDecision_pkey"),
+    CheckConstraint(
+        ("\"decision\" IN ('APPROVE', 'REJECT')"),
+        name="OidcPolicyDecision_decision_check",
+    ),
+    CheckConstraint(
+        ('"requestedById" <> "decidedById"'),
+        name="OidcPolicyDecision_two_person_check",
+    ),
+    ForeignKeyConstraint(
+        ["requestId", "requestedById"],
+        ["OidcPolicyChange.id", "OidcPolicyChange.requestedById"],
+        name="OidcPolicyDecision_requestId_requestedById_fkey",
+        ondelete="RESTRICT",
+        onupdate="CASCADE",
+    ),
+    UniqueConstraint("requestId", name="OidcPolicyDecision_requestId_key"),
+    UniqueConstraint(
+        "requestId", "requestedById", name="OidcPolicyDecision_requestId_requestedById_key"
+    ),
+    Index("OidcPolicyDecision_decidedById_decidedAt_idx", "decidedById", "decidedAt"),
 )

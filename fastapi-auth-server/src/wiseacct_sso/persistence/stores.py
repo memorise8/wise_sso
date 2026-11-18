@@ -1502,6 +1502,9 @@ class AdminAuditQueryStore:
         self, connection: AsyncConnection, *, input: AuditLogListInput
     ) -> AdminAuditLogPage:
         conditions = self._conditions(input)
+        audit_user = User.alias("audit_user")
+        audit_actor = User.alias("audit_actor")
+        audit_target = User.alias("audit_target")
 
         rows = (
             await connection.execute(
@@ -1515,6 +1518,14 @@ class AdminAuditQueryStore:
                     AuditLog.c.reasonCode,
                     AuditLog.c.detailsJson,
                     AuditLog.c.createdAt,
+                    audit_user.c.email.label("userEmail"),
+                    audit_actor.c.email.label("actorUserEmail"),
+                    audit_target.c.email.label("targetUserEmail"),
+                )
+                .select_from(
+                    AuditLog.outerjoin(audit_user, audit_user.c.id == AuditLog.c.userId)
+                    .outerjoin(audit_actor, audit_actor.c.id == AuditLog.c.actorUserId)
+                    .outerjoin(audit_target, audit_target.c.id == AuditLog.c.targetUserId)
                 )
                 .where(*conditions)
                 .order_by(AuditLog.c.createdAt.desc())
@@ -1538,6 +1549,11 @@ class AdminAuditQueryStore:
                 actor_user_id=(None if row.actorUserId is None else str(row.actorUserId)),
                 target_user_id=(None if row.targetUserId is None else str(row.targetUserId)),
                 reason_code=None if row.reasonCode is None else str(row.reasonCode),
+                user_email=None if row.userEmail is None else str(row.userEmail),
+                actor_user_email=(None if row.actorUserEmail is None else str(row.actorUserEmail)),
+                target_user_email=(
+                    None if row.targetUserEmail is None else str(row.targetUserEmail)
+                ),
                 details_json=row.detailsJson,
                 created_at=row.createdAt,
             )

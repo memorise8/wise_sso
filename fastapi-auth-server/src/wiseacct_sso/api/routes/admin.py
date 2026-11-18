@@ -391,6 +391,13 @@ def _audit_page(page: AdminAuditLogPage) -> ExpressJsonResponse:
             "reasonCode": item.reason_code,
             "createdAt": _iso(item.created_at),
         }
+        for key, value in (
+            ("userEmail", item.user_email),
+            ("actorUserEmail", item.actor_user_email),
+            ("targetUserEmail", item.target_user_email),
+        ):
+            if value is not None:
+                serialized[key] = value
         if item.details_json is not None:
             serialized["detailsJson"] = dict(item.details_json)
         items.append(serialized)

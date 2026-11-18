@@ -15,6 +15,7 @@ from uuid import uuid4
 import structlog
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from wiseacct_sso.application.oidc_policy_resolver import OidcPolicyResolver
 from wiseacct_sso.domain.auth import PasswordAuthFailure, PasswordAuthReason, normalize_email
 from wiseacct_sso.domain.external_accounts import is_expired
 from wiseacct_sso.domain.oauth import OAuthProvider
@@ -199,6 +200,7 @@ class OidcService:
         database: DatabaseProvider,
         passwords: AsyncPasswordHasher,
         clients: OidcClientRegistry,
+        policy_resolver: OidcPolicyResolver | None = None,
         transactions: OidcAuthorizationTransactionStore,
         provider_states: OidcProviderStateStore,
         codes: OidcAuthorizationCodeStore,
@@ -222,6 +224,7 @@ class OidcService:
         self._database = database
         self._passwords = passwords
         self._clients = clients
+        self._policy_resolver = policy_resolver
         self._transactions = transactions
         self._provider_states = provider_states
         self._codes = codes
@@ -243,7 +246,7 @@ class OidcService:
     async def begin_authorization(
         self, request: AuthorizationRequest, context: OidcRequestContext
     ) -> AuthorizationStart | AuthorizationResult:
-        client = self._client(request.client_id)
+        client = await self._client(request.client_id)
         redirect_uri = self._validated_redirect(client, request.redirect_uri)
         if request.response_type != "code":
             self._raise_authorization_error(
@@ -737,7 +740,7 @@ class OidcService:
         if input.grant_type != "authorization_code":
             raise OidcServiceError("unsupported_grant_type", "Unsupported grant type")
         await self._enforce_client_rate_limit(input.client_id)
-        client = self._clients.get(input.client_id)
+        client = await self._resolved_client_or_none(input.client_id)
         expected_hash = DUMMY_PASSWORD_HASH if client is None else client.client_secret_hash
         authenticated = await self._passwords.verify_password(expected_hash, input.client_secret)
         if client is None or not authenticated:
@@ -842,7 +845,7 @@ class OidcService:
             raise OidcServiceError(
                 "invalid_token", "Invalid access token", status_code=401, www_authenticate=True
             )
-        client = self._clients.get(stored.client_id)
+        client = await self._resolved_client_or_none(stored.client_id)
         if client is None:
             await self._best_effort_revoke_access(access_token)
             raise OidcServiceError(
@@ -887,7 +890,7 @@ class OidcService:
         existing_session: SsoSession | None = None,
         verified_password_hash: str | None = None,
     ) -> AuthorizationResult:
-        client = self._client(transaction.client_id)
+        client = await self._client(transaction.client_id)
         prepared_code: str | None = None
         prepared_session: str | None = None
         auth_time = (
@@ -1037,7 +1040,7 @@ class OidcService:
         return transaction
 
     async def admin_client_page(self, *, page: int, page_size: int) -> dict[str, object]:
-        clients = sorted(self._clients.clients, key=lambda client: client.client_id)
+        clients = sorted(await self._resolved_clients(), key=lambda client: client.client_id)
         start = (page - 1) * page_size
         selected = clients[start : start + page_size]
         counts = dict.fromkeys((client.client_id for client in selected), 0)
@@ -1069,7 +1072,7 @@ class OidcService:
     async def admin_client_member_page(
         self, client_id: str, *, page: int, page_size: int
     ) -> dict[str, object] | None:
-        client = self._clients.get(client_id)
+        client = await self._resolved_client_or_none(client_id)
         if client is None:
             return None
 
@@ -1128,7 +1131,7 @@ class OidcService:
         user, profile = record
         profile.update(activity)
         eligible = []
-        for client in sorted(self._clients.clients, key=lambda item: item.client_id):
+        for client in sorted(await self._resolved_clients(), key=lambda item: item.client_id):
             identity, _ = self._eligible_identity(user, client)
             if identity is not None:
                 eligible.append(
@@ -1165,7 +1168,7 @@ class OidcService:
             async for record, _ in iter_admin_access_users(connection):
                 if record.id in wanted:
                     found[record.id] = record
-        clients = sorted(self._clients.clients, key=lambda item: item.client_id)
+        clients = sorted(await self._resolved_clients(), key=lambda item: item.client_id)
         result: dict[str, list[dict[str, object]]] = {}
         for user_id in user_ids:
             user = found.get(user_id)
@@ -1228,8 +1231,23 @@ class OidcService:
             return None, "OIDC_GROUPS_INVALID"
         return identity, None
 
-    def _client(self, client_id: str) -> OidcClientPolicy:
+    async def _resolved_client_or_none(self, client_id: str) -> OidcClientPolicy | None:
         client = self._clients.get(client_id)
+        if client is None:
+            return None
+        if self._policy_resolver is None:
+            return client
+        return await self._policy_resolver.resolve(client)
+
+    async def _resolved_clients(self) -> tuple[OidcClientPolicy, ...]:
+        if self._policy_resolver is None:
+            return self._clients.clients
+        return tuple(
+            [await self._policy_resolver.resolve(client) for client in self._clients.clients]
+        )
+
+    async def _client(self, client_id: str) -> OidcClientPolicy:
+        client = await self._resolved_client_or_none(client_id)
         if client is None:
             raise OidcServiceError("invalid_request", "Unknown client")
         return client

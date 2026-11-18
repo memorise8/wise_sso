@@ -109,11 +109,82 @@ EXPECTED_COLUMNS = {
     ),
     "Role": ("id", "serviceKey", "name"),
     "UserRole": ("id", "userId", "roleId"),
+    "AccessReview": (
+        "id",
+        "title",
+        "status",
+        "serviceKeys",
+        "reasonCode",
+        "startedById",
+        "startedAt",
+        "completedById",
+        "completedAt",
+    ),
+    "AccessReviewItem": (
+        "id",
+        "reviewId",
+        "userRoleId",
+        "userId",
+        "roleId",
+        "serviceKey",
+        "roleName",
+        "userEmail",
+        "userName",
+        "userStatus",
+        "userType",
+        "accountExpiresAt",
+        "decision",
+        "decidedById",
+        "decidedAt",
+        "reasonCode",
+        "createdAt",
+    ),
+    "OidcAccessPolicy": (
+        "clientId",
+        "version",
+        "policy",
+        "createdAt",
+        "updatedAt",
+        "updatedById",
+        "updatedByEmail",
+    ),
+    "OidcPolicyChange": (
+        "id",
+        "clientId",
+        "baseVersion",
+        "appliedVersion",
+        "status",
+        "beforePolicy",
+        "proposedPolicy",
+        "requestedById",
+        "requestedByEmail",
+        "requestedAt",
+        "reasonCode",
+        "rollbackToVersion",
+        "resolvedAt",
+    ),
+    "OidcPolicyDecision": (
+        "id",
+        "requestId",
+        "requestedById",
+        "decision",
+        "decidedById",
+        "decidedByEmail",
+        "decidedAt",
+        "reasonCode",
+    ),
 }
 
 
 def test_metadata_has_exact_prisma_owned_table_set() -> None:
-    assert set(metadata.tables) == EXPECTED_TABLES | {"EmployeeInvitation"}
+    assert set(metadata.tables) == EXPECTED_TABLES | {
+        "OidcPolicyChange",
+        "AccessReview",
+        "EmployeeInvitation",
+        "OidcAccessPolicy",
+        "OidcPolicyDecision",
+        "AccessReviewItem",
+    }
     assert all(table.schema is None for table in metadata.tables.values())
     assert {
         name: tuple(column.name for column in table.columns)

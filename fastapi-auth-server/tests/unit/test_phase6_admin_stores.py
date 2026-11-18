@@ -237,6 +237,9 @@ async def test_audit_query_filters_inclusively_and_redacts_details() -> None:
                         userId="target-1",
                         actorUserId="admin-1",
                         targetUserId="target-1",
+                        userEmail="target@example.invalid",
+                        actorUserEmail="admin@example.invalid",
+                        targetUserEmail="target@example.invalid",
                         reasonCode="ADMIN_REVOKE",
                         detailsJson={"resetCode": "raw-code", "route": "/admin/users"},
                         createdAt=NOW,
@@ -262,6 +265,10 @@ async def test_audit_query_filters_inclusively_and_redacts_details() -> None:
     assert '"AuditLog"."createdAt" >=' in query_sql
     assert '"AuditLog"."createdAt" <=' in query_sql
     assert 'ORDER BY "AuditLog"."createdAt" DESC' in query_sql
+    assert result.items[0].user_email == "target@example.invalid"
+    assert result.items[0].actor_user_email == "admin@example.invalid"
+    assert result.items[0].target_user_email == "target@example.invalid"
+    assert query_sql.count("LEFT OUTER JOIN") == 3
 
 
 @pytest.mark.anyio
