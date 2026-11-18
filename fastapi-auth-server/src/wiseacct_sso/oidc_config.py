@@ -46,7 +46,7 @@ def validate_argon2id_hash(value: str) -> str:
     return value
 
 
-ServiceScope = Literal["external-invite"]
+ServiceScope = Literal["external-invite", "password-change"]
 
 
 class ServiceClientPolicy(BaseModel):

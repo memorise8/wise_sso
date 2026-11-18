@@ -41,6 +41,7 @@ from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import OidcService
 from wiseacct_sso.application.service_clients import ServiceClientAuth
 from wiseacct_sso.application.service_invitations import ServiceInvitationService
+from wiseacct_sso.application.service_password_change import ServicePasswordChangeService
 from wiseacct_sso.config import Settings, get_settings
 from wiseacct_sso.domain.auth import PasswordPolicy
 from wiseacct_sso.domain.oauth import OAUTH_PROVIDERS
@@ -291,6 +292,14 @@ def create_runtime_app() -> FastAPI:
             service_auth=ServiceClientAuth(settings.service_clients, oidc_redis),
             service_invitations=ServiceInvitationService(
                 invitation_service, mail_service, settings.service_invite_return_to_prefixes
+            ),
+            service_password_change=ServicePasswordChangeService(
+                database=runtime_database,
+                redis=oidc_redis,
+                passwords=AsyncPasswordHasher(),
+                policy=PasswordPolicy(
+                    min_length=settings.password_min_length, allowed_email_domain=None
+                ),
             ),
             providers=tuple(
                 provider
