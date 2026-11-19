@@ -21,7 +21,7 @@
 - 진행 순서: Cloudflare 틀 → SSO(auth) 끝까지 → GitLab → 도트오피스·대시보드 분리 → 공유 페이지.
 - 서비스마다 (서비스 주소 설정 변경 + 터널 연결 + 확인)을 한 번에 한다. 준비가 안 된 서비스 주소는 터널에 미리 연결하지 않는다.
 
-## 0. 운영 구성
+## 운영 구성
 
 | 항목 | 값 |
 | --- | --- |
@@ -133,7 +133,7 @@ ALLOW_ENV_CHANGE=1 ~/cutover/swap-prod.sh wiseacct-sso-fastapi:cutover-<이전 c
 
 ## 2. 옛 주소 입구를 4번 서버로 (auth.financenow.kr, 주소 그대로)
 
-`auth.financenow.kr`은 기존 Cloudflare 계정 주소라 새 운영 터널에 넣을 수 없다. 4번 서버 기존 계정 터널을 쓴다.
+`auth.financenow.kr`은 financenow·temis Cloudflare 계정 주소라 새 운영 터널에 넣을 수 없다. 4번 서버의 financenow·temis 계정 터널(`cloudflared.service`)을 쓴다. wiseaccounting 계정 터널이 아니다.
 
 - `cloudflared.service`, `/etc/cloudflared/config.yml`에 추가한다.
   ```yaml
@@ -145,7 +145,7 @@ ALLOW_ENV_CHANGE=1 ~/cutover/swap-prod.sh wiseacct-sso-fastapi:cutover-<이전 c
   ```sh
   sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
   sudo systemctl restart cloudflared
-  cloudflared tunnel route dns -f <4번 기존 터널 이름> auth.financenow.kr
+  cloudflared tunnel route dns -f <financenow 계정 터널 이름> auth.financenow.kr
   ```
 - 확인: `/healthz`, `/.well-known/openid-configuration`(issuer 그대로), `/.well-known/jwks.json`, 각 서비스 로그인, Google 로그인
 - 하루 정도 지켜본 뒤 7번 터널 설정에서 해당 항목을 지운다. 그 전에는 DNS만 되돌리면 원래대로 돌아간다.
