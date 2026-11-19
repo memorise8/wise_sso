@@ -5,6 +5,22 @@
 운영 SSO(`wiseacct-sso-fastapi-prod`)를 배포하고 주소를 옮길 때 쓰는 기준 문서다.
 운영 DB, 운영 env, 컨테이너 교체, Cloudflare 설정 변경은 모두 ruci 승인 후 진행한다.
 
+## 주소 계획 (wiseaccounting.co.kr)
+
+| 새 주소 | 지금 주소 | 용도 | Cloudflare Access |
+| --- | --- | --- | --- |
+| `auth` | `auth.financenow.kr` | SSO 로그인 서버 | 없음 |
+| `auth-lab` | `auth.wiseaccounting.co.kr` | 실습 SSO | 있음 |
+| `git` | `git.temis.me` | 회사 GitLab | 없음 |
+| `office` | `dash.temis.me` 안 | 도트오피스 (직원, 손님) | 없음 |
+| `dash` | `dash.temis.me` | 직원용 대시보드 | 있음 (팀만) |
+| `dev` | - | 대시보드 시험용 | 있음 |
+| `share` | `share.temis.me` | 공유 페이지 | 없음 (페이지별 비밀번호) |
+
+- Access는 직원만 쓰는 화면에만 건다. SSO에 걸면 서비스 서버의 토큰 요청이 막히고, GitLab에 걸면 git·CI·API 토큰 호출이 막힌다.
+- 진행 순서: Cloudflare 틀 → SSO(auth) 끝까지 → GitLab → 도트오피스·대시보드 분리 → 공유 페이지.
+- 서비스마다 (서비스 주소 설정 변경 + 터널 연결 + 확인)을 한 번에 한다. 준비가 안 된 서비스 주소는 터널에 미리 연결하지 않는다.
+
 ## 0. 운영 구성
 
 | 항목 | 값 |
@@ -25,6 +41,26 @@
 
 - `cloudflared`가 서버에서 Cloudflare 쪽으로 먼저 연결을 여는 방식이라 외부 포트는 열지 않는다.
 - 확인: `docker port wiseacct-sso-fastapi-prod`, `curl http://192.168.0.4:4002/healthz`
+
+## 0. Cloudflare 정리 (사용자 영향 없음)
+
+### 운영 전용 터널
+
+- wiseaccounting Cloudflare 계정에 운영 전용 터널을 만든다.
+- 4번 서버에 이 터널용 cloudflared를 별도 systemd 서비스로 띄운다. 토큰 파일은 root 소유 0600.
+- 기존 `cloudflared-wise-sso-test` 터널은 실습용으로 둔다.
+
+### 실습 환경 이전 (`auth` → `auth-lab`)
+
+- `auth-lab.wiseaccounting.co.kr` Access 정책을 먼저 만든다.
+- test 터널에 `auth-lab.wiseaccounting.co.kr` → `http://127.0.0.1:4003` 추가
+- 실습 SSO(`wiseacct-sso-wiseacct-oauth-app-1`)의 `JWT_ISSUER`, `OIDC_PUBLIC_ORIGIN`, 콜백 주소를 새 실습 주소로 바꾸고 다시 띄운다. 실습 더미 서비스의 SSO 주소도 바꾼다.
+- 실습 로그인 확인 후 test 터널에서 `auth.wiseaccounting.co.kr` 항목을 지우고, 이 주소의 Access 정책을 해제한다.
+
+### Access 정책 미리 만들기
+
+- `dash`, `dev`에 팀 전용 Access 정책을 만든다. 터널 연결은 하지 않는다.
+- Access를 거는 주소는 항상 Access를 먼저 만들고 그다음 터널에 연결한다.
 
 ## 1. 기능 릴리즈 (주소 그대로)
 
@@ -95,9 +131,11 @@ ALLOW_ENV_CHANGE=1 ~/cutover/swap-prod.sh wiseacct-sso-fastapi:cutover-<이전 c
 
 - 이전 버전과 호환되는 마이그레이션은 되돌리지 않는다.
 
-## 2. 입구 이전 (7번 → 4번, 주소 그대로)
+## 2. 옛 주소 입구를 4번 서버로 (auth.financenow.kr, 주소 그대로)
 
-- 4번 서버 기존 계정 터널(`cloudflared.service`, `/etc/cloudflared/config.yml`)에 추가한다.
+`auth.financenow.kr`은 기존 Cloudflare 계정 주소라 새 운영 터널에 넣을 수 없다. 4번 서버 기존 계정 터널을 쓴다.
+
+- `cloudflared.service`, `/etc/cloudflared/config.yml`에 추가한다.
   ```yaml
   - hostname: auth.financenow.kr
     service: http://192.168.0.4:4002
@@ -107,23 +145,24 @@ ALLOW_ENV_CHANGE=1 ~/cutover/swap-prod.sh wiseacct-sso-fastapi:cutover-<이전 c
   ```sh
   sudo cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
   sudo systemctl restart cloudflared
-  cloudflared tunnel route dns -f <4번 터널 이름> auth.financenow.kr
+  cloudflared tunnel route dns -f <4번 기존 터널 이름> auth.financenow.kr
   ```
 - 확인: `/healthz`, `/.well-known/openid-configuration`(issuer 그대로), `/.well-known/jwks.json`, 각 서비스 로그인, Google 로그인
 - 하루 정도 지켜본 뒤 7번 터널 설정에서 해당 항목을 지운다. 그 전에는 DNS만 되돌리면 원래대로 돌아간다.
 
-## 3. 주소 변경 (auth.financenow.kr → auth.wiseaccounting.co.kr)
+## 3. 새 주소 연결 (발급자는 아직 옛 주소)
 
-SSO 주소는 토큰 발급자(`iss`)다. 주소를 바꾸면 SSO를 쓰는 모든 서비스가 같은 시점에 설정을 바꿔야 하고, 사용자는 한 번 다시 로그인한다.
+- 운영 터널에 `auth.wiseaccounting.co.kr` → `http://192.168.0.4:4002` 추가, DNS 연결. 외부에는 안내하지 않는다.
+- 확인
+  - `/healthz` 200, Access 화면이 뜨지 않음
+  - discovery 응답 (`issuer`는 아직 `https://auth.financenow.kr`가 정상)
+  - `curl -s -o /dev/null -w '%{http_code}\n' -X POST https://auth.wiseaccounting.co.kr/oauth2/token` → 400 또는 401 (302면 Access가 남아 있음)
 
-### 3-1. 사전 정리
+## 4. 주소 전환 (auth.financenow.kr → auth.wiseaccounting.co.kr)
 
-- 실습 환경을 다른 주소로 옮긴다. (예: `auth-lab.wiseaccounting.co.kr`) 실습 SSO 발급자도 같이 바꾼다.
-- `auth.wiseaccounting.co.kr`의 Cloudflare Access 정책을 해제한다. 남아 있으면 서비스 간 토큰 요청이 막힌다.
-- wiseaccounting Cloudflare 계정에 운영 전용 터널을 새로 만든다. (`auth.wiseaccounting.co.kr` → `http://192.168.0.4:4002`, 4번 서버 별도 systemd 서비스, 토큰 파일 root 0600)
-- 기존 `cloudflared-wise-sso-test` 터널은 실습용으로 둔다.
+SSO 주소는 토큰 발급자(`iss`)다. 주소를 바꾸면 SSO를 쓰는 모든 서비스가 같은 시점에 바라보는 SSO 주소를 바꿔야 하고, 사용자는 한 번 다시 로그인한다. 각 서비스 자기 주소는 이때 바꾸지 않는다.
 
-### 3-2. 바꿀 곳
+### 4-1. 바꿀 곳
 
 | 위치 | 항목 | 값 |
 | --- | --- | --- |
@@ -134,23 +173,28 @@ SSO 주소는 토큰 발급자(`iss`)다. 주소를 바꾸면 SSO를 쓰는 모�
 | 배포 키트 | `envcheck.py`의 `JWT_ISSUER` 기대값, `post-cutover-check.sh`의 `PUB` | 새 주소 |
 | Google Cloud 콘솔 | OAuth 승인된 리디렉션 URI | 새 주소 콜백 추가 (옛 주소 유지) |
 | GitLab | OIDC `issuer` | 새 주소 |
-| 허브 | 로그인 issuer, 서비스 토큰 주소 | 새 주소 |
+| 도트오피스(허브) | 로그인 issuer, 서비스 토큰 주소(`sso_service.url`) | 새 주소 |
 | FANTRA 운영 | 로그인·가입 주소, `/auth/exchange`·`/auth/refresh`, JWKS 주소, `iss` 검사값 | 새 주소 |
 | FANTRA dev | issuer, authorize·token·JWKS 주소 | 새 주소 |
 
 - 코드 수정은 없다. 서명 키도 그대로 둔다.
 
-### 3-3. 순서
+### 4-2. 순서
 
 - 미리보기 환경에서 새 발급자로 시험 로그인
 - Google 콘솔에 새 콜백 추가
-- GitLab, 허브, FANTRA 담당과 전환 시간 확정
+- GitLab, 도트오피스, FANTRA 담당과 전환 시간 확정
 - 전환: 운영 env 백업 → 수정 → 배포 키트로 검사·교체·점검 → 각 서비스 설정 변경
-- 확인: 새 주소 discovery의 `issuer`, 각 서비스 로그인, Google 로그인, 비밀번호 재설정 메일 링크
-- 옛 주소는 몇 주 동안 새 주소로 301 이동(경로·쿼리 유지) 후 정리
+- 확인: 새 주소 discovery의 `issuer`, 각 서비스 로그인, Google 로그인, 비밀번호 재설정 메일 링크, 도트오피스 손님 초대·비밀번호 변경, 관리 화면
 
-### 3-4. 되돌리기
+### 4-3. 되돌리기
 
 - 운영 env 백업본 복구 후 배포 키트로 교체
 - 각 서비스 설정을 옛 주소로 복구
-- 새 주소 터널은 지우지 않아도 된다.
+- 새 주소 연결은 지우지 않아도 된다.
+
+## 5. 마무리
+
+- 모든 서비스 전환 확인 후 `auth.financenow.kr`을 새 주소로 301 이동 (경로·쿼리 유지), 몇 주 뒤 정리
+- 7번 터널의 `auth.financenow.kr` 항목 삭제 확인
+- 완료 기준: 새 주소 `issuer`, 각 서비스 로그인 정상, 7번 서버 미경유, 실습은 `auth-lab`에서 정상
