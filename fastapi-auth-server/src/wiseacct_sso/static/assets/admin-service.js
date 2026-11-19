@@ -83,6 +83,11 @@
       list.append(item);
     }
     policy.replaceChildren(list);
+    if (typeof window.CustomEvent === "function" && typeof document.dispatchEvent === "function") {
+      document.dispatchEvent(new window.CustomEvent("admin-service-selected", {
+        detail: { clientId: current.clientId }
+      }));
+    }
     note.textContent = notes[current.clientId] ?? "";
     roleSelect.replaceChildren(...current.requiredRoles.map((role, index) => {
       const option = element("option", "", roleName(role));
@@ -193,6 +198,8 @@
     });
   });
 
+  document.addEventListener?.("admin-policy-applied", () => { void run(refresh); });
+
   void (async () => {
     try {
       await refresh();
@@ -211,4 +218,275 @@
     tabs.firstElementChild?.setAttribute("aria-selected", "true");
     panel.hidden = false;
   })();
+})();
+
+(() => {
+  if (document.querySelector("meta[name='admin-auth-mode']")?.getAttribute("content") !== "session") return;
+  if (document.querySelector("meta[name='admin-access']")?.getAttribute("content") === "viewer") return;
+  const panel = document.querySelector("[data-service-panel]");
+  if (!panel) return;
+  const base = document.querySelector("meta[name='admin-api-base']").getAttribute("content");
+  const csrf = document.querySelector("meta[name='admin-session-csrf']").getAttribute("content");
+  const root = document.createElement("section");
+  root.dataset.policyEditor = "";
+  root.hidden = true;
+  panel.append(root);
+  let sequence = 0;
+  let clientId = "";
+  let current = null;
+  let page = 1;
+  let busy = false;
+
+  const node = (tag, text) => {
+    const result = document.createElement(tag);
+    if (text !== undefined) result.textContent = String(text);
+    return result;
+  };
+  const kst = (value) => {
+    if (!value) return "기록 없음";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "시각 확인 불가";
+    const parts = Object.fromEntries(new Intl.DateTimeFormat("ko-KR", {
+      timeZone: "Asia/Seoul", calendar: "gregory", numberingSystem: "latn",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+    }).formatToParts(date).map((part) => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second} (KST)`;
+  };
+  async function api(path, method = "GET", body) {
+    const response = await fetch(base + path, {
+      method, credentials: "same-origin",
+      headers: {
+        "content-type": "application/json",
+        ...(method === "GET" ? {} : { "x-admin-csrf": csrf })
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    });
+    if (response.status === 401) window.location.assign("/oauth2/admin/login?reauth=1");
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error?.message || "정책 요청을 처리하지 못했습니다.");
+    return payload;
+  }
+  const endpoint = () => `/clients/${encodeURIComponent(clientId)}`;
+  const message = node("p");
+  message.setAttribute("role", "status");
+  const reason = () => window.prompt("변경 또는 결정 사유를 입력하세요. (최대 128자)")?.trim();
+
+  async function run(work) {
+    if (busy) return;
+    busy = true;
+    const buttons = [...root.querySelectorAll("button")].map((button) => [button, button.disabled]);
+    for (const [button] of buttons) button.disabled = true;
+    try { await work(); }
+    catch (error) { message.textContent = error.message || "처리하지 못했습니다."; }
+    finally {
+      busy = false;
+      for (const [button, disabled] of buttons) button.disabled = disabled;
+    }
+  }
+  function button(text, action) {
+    const control = node("button", text);
+    control.type = "button";
+    control.className = "secondary-button";
+    control.addEventListener("click", () => { void run(action); });
+    return control;
+  }
+  function input(label, value, type = "text") {
+    const wrapper = node("label", label + " ");
+    const control = node("input");
+    control.type = type;
+    if (type === "checkbox") control.checked = Boolean(value);
+    else control.value = value;
+    wrapper.append(control);
+    return { wrapper, control };
+  }
+  const typeNames = {
+    EMPLOYEE: "직원", CUSTOMER: "고객", EXTERNAL: "외부", UNCLASSIFIED: "미분류"
+  };
+  const describe = (policy) => [
+    `허용 유형: ${policy.allowedUserTypes?.map((type) => typeNames[type] ?? type).join(", ") || "전체"}`,
+    `필요 역할: ${policy.requiredRoles.map((role) => `${role.serviceKey}:${role.name}`).join(", ")}`,
+    `역할 없이 로그인: ${policy.allowWithoutRequiredRole ? "허용" : "불가"}`,
+    `그룹으로 전달할 서비스: ${policy.groupsServiceKeys.join(", ")}`,
+    `자동 로그인: ${policy.ssoAutoLogin ? "켜짐" : "꺼짐"}`
+  ].join("\n");
+
+  async function load() {
+    const id = ++sequence;
+    const selected = clientId;
+    const path = endpoint();
+    const [policy, history] = await Promise.all([
+      api(path + "/policy"),
+      api(path + `/policy-changes?page=${page}&pageSize=25`)
+    ]);
+    if (id !== sequence || selected !== clientId) return;
+    current = policy;
+    render(history);
+  }
+
+  function render(history) {
+    root.hidden = false;
+    root.replaceChildren(node("h3", "접근 정책 변경"), message);
+    message.textContent = "";
+    root.append(
+      node("p", `현재 버전 ${current.version} · 마지막 변경 ${kst(current.updatedAt)}`),
+      node("p", "요청한 관리자와 다른 관리자 한 명의 승인이 필요합니다.")
+    );
+    const form = node("form");
+    form.className = "form-grid";
+    const allTypes = input("모든 사용자 유형 허용", current.policy.allowedUserTypes === null, "checkbox");
+    form.append(allTypes.wrapper);
+    const types = Object.entries(typeNames).map(([key, label]) => {
+      const field = input(label, current.policy.allowedUserTypes?.includes(key), "checkbox");
+      form.append(field.wrapper);
+      return { key, ...field };
+    });
+    const syncTypes = () => {
+      for (const field of types) field.control.disabled = allTypes.control.checked;
+    };
+    allTypes.control.addEventListener("change", syncTypes);
+    syncTypes();
+    const roles = input("필요 역할 (쉼표로 구분)", current.policy.requiredRoles.map(
+      (role) => `${role.serviceKey}:${role.name}`
+    ).join(", "));
+    const groups = input("그룹으로 전달할 서비스 (쉼표로 구분)", current.policy.groupsServiceKeys.join(", "));
+    const withoutRole = input("필요 역할 없이 로그인 허용", current.policy.allowWithoutRequiredRole, "checkbox");
+    const auto = input("자동 로그인 허용", current.policy.ssoAutoLogin, "checkbox");
+    form.append(roles.wrapper, groups.wrapper, withoutRole.wrapper, auto.wrapper);
+    const submit = node("button", "변경 요청");
+    submit.type = "submit";
+    submit.className = "primary-button";
+    form.append(submit);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      let requiredRoles;
+      try {
+        requiredRoles = roles.control.value.split(",").map((value) => {
+          const parts = value.trim().split(":");
+          if (parts.length !== 2 || !parts[0] || !parts[1]) {
+            throw new Error("필요 역할을 서비스:역할 형식으로 입력하세요.");
+          }
+          return { serviceKey: parts[0], name: parts[1] };
+        });
+      } catch (error) {
+        message.textContent = error.message;
+        return;
+      }
+      const proposed = {
+        allowedUserTypes: allTypes.control.checked ? null : types.filter(
+          (field) => field.control.checked
+        ).map((field) => field.key),
+        requiredRoles,
+        groupsServiceKeys: groups.control.value.split(",").map((value) => value.trim()),
+        allowWithoutRequiredRole: withoutRole.control.checked,
+        ssoAutoLogin: auto.control.checked
+      };
+      const path = endpoint();
+      const expectedVersion = current.version;
+      void run(async () => {
+        const reasonCode = reason();
+        if (!reasonCode) return;
+        await api(path + "/policy-changes", "POST", { expectedVersion, proposed, reasonCode });
+        page = 1;
+        await load();
+        message.textContent = "변경을 요청했습니다. 다른 관리자의 승인을 기다립니다.";
+      });
+    });
+    root.append(form);
+
+    if (current.version > 1) {
+      const target = input("되돌릴 버전", String(current.version - 1), "number");
+      target.control.min = "1";
+      target.control.max = String(current.version - 1);
+      target.control.step = "1";
+      root.append(target.wrapper, button("이전 버전 복원 요청", async () => {
+        const rollbackToVersion = Number(target.control.value);
+        if (!Number.isInteger(rollbackToVersion) || rollbackToVersion < 1 || rollbackToVersion >= current.version) {
+          throw new Error("현재보다 작은 이전 버전을 입력하세요.");
+        }
+        const reasonCode = reason();
+        if (!reasonCode) return;
+        await api(endpoint() + "/policy-changes", "POST", {
+          expectedVersion: current.version, rollbackToVersion, reasonCode
+        });
+        page = 1;
+        await load();
+        message.textContent = "복원을 요청했습니다. 다른 관리자의 승인이 필요합니다.";
+      }));
+    }
+
+    root.append(node("h3", "정책 변경 요청 이력"));
+    if (!history.items.length) root.append(node("p", "변경 요청이 없습니다."));
+    const statuses = { PENDING: "승인 대기", APPLIED: "적용 완료", REJECTED: "거절" };
+    for (const change of history.items) {
+      const card = node("article");
+      card.className = "panel";
+      card.append(
+        node("h4", `${statuses[change.status] ?? change.status} · 기준 버전 ${change.baseVersion}`),
+        node("p", `요청자: ${change.requestedByEmail || "이메일 기록 없음"} · ${kst(change.requestedAt)}`),
+        node("p", `요청 사유: ${change.reasonCode}`),
+        node("p", `처리 시각: ${kst(change.resolvedAt)}`)
+      );
+      const before = node("pre", describe(change.beforePolicy));
+      const after = node("pre", describe(change.proposedPolicy));
+      before.style.whiteSpace = "pre-wrap";
+      after.style.whiteSpace = "pre-wrap";
+      card.append(node("h4", "변경 전"), before, node("h4", "요청 정책"), after);
+      const decisionInfo = node("p");
+      decisionInfo.dataset.policyDecision = "";
+      decisionInfo.setAttribute("role", "status");
+      decisionInfo.hidden = true;
+      const decisionPath = endpoint() + `/policy-changes/${encodeURIComponent(change.id)}`;
+      card.append(button("승인·거절 기록 보기", async () => {
+        decisionInfo.hidden = false;
+        decisionInfo.textContent = "결정 기록을 불러오는 중…";
+        try {
+          const detail = await api(decisionPath);
+          const decision = detail.decision;
+          decisionInfo.textContent = decision
+            ? `${decision.decision === "APPROVE" ? "승인" : "거절"} · ${decision.decidedByEmail || "이메일 기록 없음"} · ${kst(decision.decidedAt)} · ${decision.reasonCode}`
+            : "아직 결정되지 않은 요청입니다.";
+        } catch (error) {
+          decisionInfo.textContent = error.message || "결정 기록을 불러오지 못했습니다.";
+        }
+      }), decisionInfo);
+      if (change.status === "PENDING") {
+        for (const [decision, label] of [["APPROVE", "승인"], ["REJECT", "거절"]]) {
+          const control = button(label, async () => {
+            const reasonCode = reason();
+            if (!reasonCode) return;
+            await api(endpoint() + `/policy-changes/${encodeURIComponent(change.id)}/decision`, "POST", {
+              decision, reasonCode
+            });
+            await load();
+            if (decision === "APPROVE") document.dispatchEvent(new CustomEvent("admin-policy-applied"));
+            message.textContent = `${label} 처리를 완료했습니다.`;
+          });
+          control.disabled = change.requestedById === current.actorUserId
+            || (decision === "APPROVE" && change.baseVersion !== current.version);
+          card.append(control);
+        }
+        if (change.requestedById === current.actorUserId) {
+          card.append(node("p", "본인이 요청한 정책은 다른 관리자가 결정해야 합니다."));
+        }
+      }
+      root.append(card);
+    }
+    const pager = node("div");
+    if (page > 1) pager.append(button("이전", async () => { page -= 1; await load(); }));
+    pager.append(node("span", ` ${page}페이지 `));
+    if (history.hasMore) pager.append(button("다음", async () => { page += 1; await load(); }));
+    root.append(pager);
+  }
+
+  document.addEventListener("admin-service-selected", (event) => {
+    clientId = event.detail.clientId;
+    page = 1;
+    root.hidden = true;
+    void load().catch((error) => {
+      root.hidden = false;
+      root.replaceChildren(message);
+      message.textContent = error.message || "정책을 불러오지 못했습니다.";
+    });
+  });
 })();

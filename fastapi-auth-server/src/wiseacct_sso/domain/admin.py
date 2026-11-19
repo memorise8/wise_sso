@@ -30,6 +30,13 @@ type AdminAuditEventType = Literal[
     "admin_user_role_removed",
     "admin_user_sessions_revoked",
     "admin_user_unlocked",
+    "admin_access_review_started",
+    "admin_access_review_item_decided",
+    "admin_access_review_completed",
+    "admin_oidc_policy_initialized",
+    "admin_oidc_policy_requested",
+    "admin_oidc_policy_approved",
+    "admin_oidc_policy_rejected",
     "external_account_cleanup_completed",
     "admin_audit_logs_exported",
 ]
@@ -134,6 +141,9 @@ class StoredAuditLogRecord:
     reason_code: str | None
     details_json: object
     created_at: datetime
+    user_email: str | None = None
+    actor_user_email: str | None = None
+    target_user_email: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +157,9 @@ class AdminAuditLogListItem:
     reason_code: str | None
     created_at: datetime
     details_json: AuditDetails | None = None
+    user_email: str | None = None
+    actor_user_email: str | None = None
+    target_user_email: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +303,9 @@ def audit_log_page(
                 user_id=record.user_id,
                 actor_user_id=record.actor_user_id,
                 target_user_id=record.target_user_id,
+                user_email=record.user_email,
+                actor_user_email=record.actor_user_email,
+                target_user_email=record.target_user_email,
                 reason_code=record.reason_code,
                 details_json=sanitize_audit_details_for_read(record.details_json),
                 created_at=record.created_at,

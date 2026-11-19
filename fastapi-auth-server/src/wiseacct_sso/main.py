@@ -39,6 +39,7 @@ from wiseacct_sso.application.admin import Phase6AdminService
 from wiseacct_sso.application.auth import Phase5AuthService
 from wiseacct_sso.application.invitations import EmployeeInvitationService
 from wiseacct_sso.application.oidc import OidcService
+from wiseacct_sso.application.oidc_policy_resolver import OidcPolicyResolver
 from wiseacct_sso.application.service_clients import ServiceClientAuth
 from wiseacct_sso.application.service_invitations import ServiceInvitationService
 from wiseacct_sso.application.service_password_change import ServicePasswordChangeService
@@ -263,6 +264,7 @@ def create_runtime_app() -> FastAPI:
             database=runtime_database,
             passwords=AsyncPasswordHasher(),
             clients=OidcClientRegistry(settings.oidc_clients),
+            policy_resolver=OidcPolicyResolver(database=runtime_database),
             transactions=OidcAuthorizationTransactionStore(oidc_redis),
             provider_states=OidcProviderStateStore(oidc_redis),
             codes=OidcAuthorizationCodeStore(oidc_redis),

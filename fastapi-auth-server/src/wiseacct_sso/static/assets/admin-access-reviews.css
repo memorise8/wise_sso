@@ -1,0 +1,20 @@
+.admin-shell [data-view="reviews"] {
+  display: none;
+}
+.admin-shell[data-current-view="reviews"] [data-view="reviews"] {
+  display: block;
+}
+[data-review-list] {
+  display: grid;
+  gap: 0.75rem;
+  padding-inline-start: 1.25rem;
+}
+[data-review-metadata], [data-review-counts] {
+  overflow-wrap: anywhere;
+}
+[data-review-items] td {
+  vertical-align: top;
+}
+[data-review-items] td:last-child button {
+  margin: 0.2rem;
+}
