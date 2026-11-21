@@ -32,6 +32,7 @@ from wiseacct_sso.domain.admin import (
 )
 from wiseacct_sso.domain.audit_csv import write_audit_csv
 from wiseacct_sso.domain.external_accounts import EXTERNAL_ALLOWED_ROLES, assert_external_roles
+from wiseacct_sso.domain.fantra_roles import twin_role
 from wiseacct_sso.domain.tokens import TokenValidationError
 from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
 from wiseacct_sso.infrastructure.security import JwtTokenCodec
@@ -446,9 +447,10 @@ class Phase6AdminService:
             )
             if target_type == UserType.EXTERNAL:
                 assert_external_roles([{"serviceKey": service_key, "name": name}])
-            elif (
+            elif target_type != UserType.EMPLOYEE and (
                 service_key not in {"temis", "fantra", "lab-customer"}
-                and target_type != UserType.EMPLOYEE
+                # Customers may hold Fantra service roles, never its admin role.
+                or (service_key == "fantra" and name == "admin")
             ):
                 raise DomainError(
                     403,
@@ -459,6 +461,15 @@ class Phase6AdminService:
             assigned = await self._mutations.assign_role_to_user(
                 connection, user_id=target_user_id, role_id=role.id
             )
+            twin = twin_role(service_key, name)
+            if twin is not None:
+                # Keep the legacy/new Fantra keys in step (domain.fantra_roles).
+                twin_role_row = await self._mutations.upsert_role(
+                    connection, service_key=twin[0], name=twin[1]
+                )
+                await self._mutations.assign_role_to_user(
+                    connection, user_id=target_user_id, role_id=twin_role_row.id
+                )
             if assigned:
                 audit_details = self._details(
                     details
@@ -508,6 +519,15 @@ class Phase6AdminService:
             removed = await self._mutations.remove_role_from_user(
                 connection, user_id=target_user_id, role_id=role.id
             )
+            twin = twin_role(service_key, name)
+            if removed and twin is not None:
+                twin_role_row = await self._mutations.find_role(
+                    connection, service_key=twin[0], name=twin[1]
+                )
+                if twin_role_row is not None:
+                    await self._mutations.remove_role_from_user(
+                        connection, user_id=target_user_id, role_id=twin_role_row.id
+                    )
             revoked = (
                 await self._mutations.revoke_all_refresh_tokens_for_user(
                     connection, user_id=target_user_id, revoked_at=removed_at

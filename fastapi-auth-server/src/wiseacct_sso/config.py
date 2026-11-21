@@ -19,6 +19,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from wiseacct_sso.domain.fantra_roles import FANTRA_DEFAULT_ROLE_NAMES, is_fantra_service
 from wiseacct_sso.oidc_config import OidcClientPolicy, OidcClientRegistry, ServiceClientPolicy
 
 NonEmptyString = Annotated[str, StringConstraints(min_length=1)]
@@ -671,16 +672,16 @@ class Settings(BaseSettings):
             or first.allow_localhost_in_production is not None
         ):
             raise ValueError("AUTH_CLIENTS_JSON first client must be the required TEMIS policy")
-        if first.default_role.service_key != "temis" or first.default_role.name not in {
-            "pending",
-            "user",
-        }:
+        if (
+            not is_fantra_service(first.default_role.service_key)
+            or first.default_role.name not in FANTRA_DEFAULT_ROLE_NAMES
+        ):
             raise ValueError("AUTH_CLIENTS_JSON first TEMIS defaultRole is invalid")
         client_ids: set[str] = set()
         for client in clients:
             temis_user = (
                 client.client_id == "temis"
-                and client.default_role.service_key == "temis"
+                and is_fantra_service(client.default_role.service_key)
                 and client.default_role.name == "user"
             )
             if client.default_role.name != "pending" and not temis_user:

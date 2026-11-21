@@ -34,6 +34,38 @@ def test_production_policy_examples_enforce_internal_and_customer_boundaries(
         validate_policy(settings.model_copy(update={"oidc_clients": clients[1:]}))
 
 
+@pytest.mark.parametrize(
+    ("required", "groups", "accepted"),
+    [
+        ("temis", ("temis",), True),
+        ("fantra", ("fantra",), True),
+        ("fantra", ("temis", "fantra"), True),
+        # Projecting the new key while still requiring the old one is not a valid step.
+        ("temis", ("temis", "fantra"), False),
+    ],
+)
+def test_fantra_client_may_require_the_legacy_or_new_role_key(
+    synthetic_settings: Settings, required: str, groups: tuple[str, ...], accepted: bool
+) -> None:
+    examples = json.loads(
+        (ROOT / "ops/deployment/oidc-clients.production.example.json").read_text()
+    )
+    for item in examples:
+        item["clientSecretHash"] = DUMMY_PASSWORD_HASH
+        if item["clientId"] == "fantra-oidc":
+            item["requiredRoles"] = [{"serviceKey": required, "name": "user"}]
+            item["groupsServiceKeys"] = list(groups)
+    clients = tuple(OidcClientPolicy.model_validate(x) for x in examples)
+    settings = synthetic_settings.model_copy(
+        update={"node_env": "production", "oidc_enabled": True, "oidc_clients": clients}
+    )
+    if accepted:
+        validate_policy(settings)
+    else:
+        with pytest.raises(ValueError):
+            validate_policy(settings)
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_legacy_social_buttons_are_rendered_only_for_configured_providers(
     synthetic_settings: Settings, enabled: bool

@@ -103,6 +103,7 @@ class FakeMutations:
         self.revoked = 2
         self.fail_audit = False
         self.audits: list[object] = []
+        self.role_keys: list[tuple[object, object]] = []
 
     async def lock_policy(self, connection: object) -> None:
         self.events.append("policy-lock")
@@ -133,6 +134,7 @@ class FakeMutations:
 
     async def upsert_role(self, connection: object, **values: object) -> AdminRoleProfile:
         self.events.append("upsert-role")
+        self.role_keys.append((values["service_key"], values["name"]))
         assert self.role is not None
         return self.role
 
@@ -142,6 +144,7 @@ class FakeMutations:
 
     async def find_role(self, connection: object, **values: object) -> AdminRoleProfile | None:
         self.events.append("find-role")
+        self.role_keys.append((values["service_key"], values["name"]))
         return self.role
 
     async def remove_role_from_user(self, connection: object, **values: object) -> bool:
@@ -360,6 +363,7 @@ async def test_assign_role_duplicate_skips_audit() -> None:
     )
 
     assert (result.role_assigned, result.role_id) == (False, "role-1")
+    # temis:user is kept in step with its fantra:user twin.
     assert events == [
         "begin",
         "policy-lock",
@@ -367,8 +371,58 @@ async def test_assign_role_duplicate_skips_audit() -> None:
         "target:user",
         "upsert-role",
         "assign-role",
+        "upsert-role",
+        "assign-role",
         "commit",
     ]
+    assert cast(FakeMutations, subject._mutations).role_keys == [
+        ("temis", "user"),
+        ("fantra", "user"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_assign_non_fantra_role_has_no_twin() -> None:
+    events: list[str] = []
+    subject = service(events)
+
+    await subject.assign_role(
+        actor_user_id="admin",
+        target_user_id="user",
+        service_key="gitlab",
+        name="user",
+        reason_code="ADMIN_ROLE_ASSIGN",
+    )
+
+    assert events.count("assign-role") == 1
+    assert cast(FakeMutations, subject._mutations).role_keys == [("gitlab", "user")]
+
+
+@pytest.mark.anyio
+async def test_assign_fantra_admin_has_no_twin_and_needs_employee() -> None:
+    events: list[str] = []
+    subject = service(events)
+
+    await subject.assign_role(
+        actor_user_id="admin",
+        target_user_id="user",
+        service_key="fantra",
+        name="admin",
+        reason_code="ADMIN_ROLE_ASSIGN",
+    )
+    assert cast(FakeMutations, subject._mutations).role_keys == [("fantra", "admin")]
+
+    customer = service([])
+    cast(FakeMutations, customer._mutations).user_type = "CUSTOMER"
+    with pytest.raises(DomainError) as error:
+        await customer.assign_role(
+            actor_user_id="admin",
+            target_user_id="user",
+            service_key="fantra",
+            name="admin",
+            reason_code="ADMIN_ROLE_ASSIGN",
+        )
+    assert error.value.code == "EMPLOYEE_REQUIRED"
 
 
 @pytest.mark.anyio
@@ -393,6 +447,8 @@ async def test_remove_role_revokes_then_audits_only_when_removed() -> None:
         "policy-lock",
         "authorize:admin",
         "target:user",
+        "find-role",
+        "remove-role",
         "find-role",
         "remove-role",
         "revoke",

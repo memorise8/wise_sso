@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy import delete, insert, select, text
 
 from wiseacct_sso.application.admin import Phase6AdminService
-from wiseacct_sso.application.invitations import EmployeeInvitationService
+from wiseacct_sso.application.invitations import EmployeeInvitationService, token_hash
 from wiseacct_sso.application.service_invitations import (
     ServiceInvitationRequest,
     ServiceInvitationService,
@@ -29,6 +29,7 @@ from wiseacct_sso.persistence.database import Database
 from wiseacct_sso.persistence.models import (
     AuditLog,
     EmployeeInvitation,
+    Role,
     User,
     UserRole,
 )
@@ -36,6 +37,7 @@ from wiseacct_sso.persistence.models import (
 URL = os.getenv("WISEACCT_SERVICE_INVITE_DATABASE_URL", "")
 RETURN = "https://dash.temis.me/invite/abc"
 NOW = datetime(2026, 11, 11, 1, 0)
+FANTRA_TOKEN = "f" * 43
 
 
 def _disposable(raw: str) -> bool:
@@ -241,3 +243,38 @@ async def test_requests_are_validated(
     with pytest.raises(DomainError) as caught:
         await service.invite("agent-hub-service", request(**overrides))
     assert caught.value.code == code
+
+
+async def test_employee_invitation_grants_fantra_roles_under_both_keys(
+    database: Database,
+) -> None:
+    clock = [NOW]
+    _, invitations, _ = services(database, clock)
+    async with database.engine.begin() as conn:
+        await conn.execute(
+            insert(EmployeeInvitation).values(
+                id="fantra-invite",
+                email="qa1@fantra.test",
+                name="QA",
+                roles=[
+                    {"serviceKey": "fantra", "name": "user"},
+                    {"serviceKey": "gitlab", "name": "user"},
+                ],
+                tokenHash=token_hash(FANTRA_TOKEN),
+                expiresAt=NOW + timedelta(days=1),
+                deliveredAt=NOW,
+                updatedAt=NOW,
+            )
+        )
+
+    await invitations.accept(FANTRA_TOKEN, "a-strong-password")
+
+    async with database.connection() as conn:
+        rows = await conn.execute(
+            select(Role.c.serviceKey, Role.c.name)
+            .select_from(UserRole.join(Role, Role.c.id == UserRole.c.roleId))
+            .join(User, User.c.id == UserRole.c.userId)
+            .where(User.c.email == "qa1@fantra.test")
+        )
+        roles = {(row.serviceKey, row.name) for row in rows}
+    assert roles == {("fantra", "user"), ("temis", "user"), ("gitlab", "user")}

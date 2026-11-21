@@ -136,7 +136,10 @@ async def test_email_verification_confirm_consumes_then_activates_and_assigns_de
             FakeResult(rowcount=0),
             FakeResult(rowcount=0),
             FakeResult(rowcount=0),
-            FakeResult(SimpleNamespace(id="role-user")),
+            FakeResult(rowcount=0),
+            FakeResult(SimpleNamespace(id="role-temis-user")),
+            FakeResult(rowcount=1),
+            FakeResult(SimpleNamespace(id="role-fantra-user")),
             FakeResult(rowcount=1),
         ]
     )
@@ -156,13 +159,23 @@ async def test_email_verification_confirm_consumes_then_activates_and_assigns_de
     assert rendered[5].startswith('UPDATE "User"')
     assert params(connection.statements[5])["id"] == "stable-user"
     assert params(connection.statements[5])["updatedAt"] == NOW
-    assert [params(statement)["name"] for statement in connection.statements[6:10]] == [
-        "pending",
-        "user",
-        "admin",
-        "user",
+    assert [
+        (params(statement)["serviceKey"], params(statement)["name"])
+        for statement in connection.statements[6:11]
+    ] == [
+        ("temis", "pending"),
+        ("temis", "user"),
+        ("fantra", "pending"),
+        ("fantra", "user"),
+        ("sso", "admin"),
     ]
-    assert rendered[11].startswith('INSERT INTO "UserRole"')
+    # The Fantra default role is granted under both the legacy and the new key.
+    assert [params(connection.statements[i])["roleId"] for i in (12, 14)] == [
+        "role-temis-user",
+        "role-fantra-user",
+    ]
+    assert rendered[12].startswith('INSERT INTO "UserRole"')
+    assert rendered[14].startswith('INSERT INTO "UserRole"')
 
 
 @pytest.mark.anyio
@@ -284,7 +297,10 @@ async def test_verified_social_email_never_attaches_or_deletes_existing_identity
             FakeResult(rowcount=1),
             FakeResult(rowcount=1),
             FakeResult(rowcount=1),
-            FakeResult(SimpleNamespace(id="role-pending")),
+            FakeResult(rowcount=1),
+            FakeResult(SimpleNamespace(id="role-temis-user")),
+            FakeResult(rowcount=1),
+            FakeResult(SimpleNamespace(id="role-fantra-user")),
             FakeResult(rowcount=1),
         ]
     )
@@ -328,6 +344,8 @@ async def test_oauth_new_user_reuses_reservation_and_seeds_then_assigns_default_
             FakeResult(rowcount=0),
             FakeResult(rowcount=0),
             FakeResult(rowcount=0),
+            FakeResult(rowcount=0),
+            FakeResult(rowcount=0),
             FakeResult(SimpleNamespace(id="role-payroll-pending")),
             FakeResult(rowcount=1),
         ]
@@ -346,13 +364,21 @@ async def test_oauth_new_user_reuses_reservation_and_seeds_then_assigns_default_
     assert rendered[1].startswith('SELECT "SubjectReservation"."subjectId"')
     assert rendered[2].startswith('INSERT INTO "User"')
     assert rendered[3].startswith('INSERT INTO "SocialAccount"')
-    assert [params(statement)["name"] for statement in connection.statements[4:8]] == [
-        "pending",
-        "user",
-        "admin",
-        "pending",
+    assert [
+        (params(statement)["serviceKey"], params(statement)["name"])
+        for statement in connection.statements[4:10]
+    ] == [
+        ("temis", "pending"),
+        ("temis", "user"),
+        ("fantra", "pending"),
+        ("fantra", "user"),
+        ("sso", "admin"),
+        ("payroll", "pending"),
     ]
-    assert rendered[9].startswith('INSERT INTO "UserRole"')
+    # A non-Fantra default role has no twin: one lookup, one assignment.
+    assert rendered[10].startswith('SELECT "Role".id')
+    assert rendered[11].startswith('INSERT INTO "UserRole"')
+    assert len(rendered) == 12
 
 
 @pytest.mark.anyio

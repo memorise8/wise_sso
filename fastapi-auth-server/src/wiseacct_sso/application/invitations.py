@@ -26,6 +26,7 @@ from wiseacct_sso.domain.external_accounts import (
     initial_expiry,
     is_expired,
 )
+from wiseacct_sso.domain.fantra_roles import with_twins
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.infrastructure.security import AsyncPasswordHasher
 from wiseacct_sso.persistence.database import Database
@@ -420,18 +421,18 @@ class EmployeeInvitationService:
                     )
                 )
                 roles = validate_roles(cast(list[dict[str, str]], row["roles"]), kind)
-                for role in roles:
+                for service_key, role_name in with_twins(
+                    [(role["serviceKey"], role["name"]) for role in roles]
+                ):
                     await conn.execute(
                         pg_insert(Role)
-                        .values(
-                            id=application_uuid(), serviceKey=role["serviceKey"], name=role["name"]
-                        )
+                        .values(id=application_uuid(), serviceKey=service_key, name=role_name)
                         .on_conflict_do_nothing(index_elements=[Role.c.serviceKey, Role.c.name])
                     )
                     role_id = (
                         await conn.execute(
                             select(Role.c.id).where(
-                                Role.c.serviceKey == role["serviceKey"], Role.c.name == role["name"]
+                                Role.c.serviceKey == service_key, Role.c.name == role_name
                             )
                         )
                     ).scalar_one()
