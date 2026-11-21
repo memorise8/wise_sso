@@ -25,6 +25,7 @@ from wiseacct_sso.domain.admin import (
     parse_role_filter,
 )
 from wiseacct_sso.domain.external_accounts import is_expired
+from wiseacct_sso.domain.fantra_roles import mirrored_roles
 from wiseacct_sso.domain.users import DomainError, UserType
 from wiseacct_sso.domain.users import UserStatus as DomainUserStatus
 from wiseacct_sso.persistence.models import (
@@ -574,37 +575,37 @@ async def _seed_temis_and_assign_default_role(
     user_id: str,
     default_role: DefaultRole,
 ) -> None:
-    """Mirror the four Prisma role upserts, then its skip-duplicates assignment."""
+    """Mirror the Prisma role upserts, then its skip-duplicates assignment.
 
-    for service_key, name in (
-        ("temis", "pending"),
-        ("temis", "user"),
-        ("sso", "admin"),
-        (default_role.service_key, default_role.name),
-    ):
+    A Fantra default role is granted under both the legacy ``temis`` key and the
+    ``fantra`` key while Fantra accepts either (see ``domain.fantra_roles``).
+    """
+
+    assigned = mirrored_roles(default_role.service_key, default_role.name)
+    seeds = [("temis", "pending"), ("temis", "user"), ("fantra", "pending"), ("fantra", "user")]
+    seeds += [("sso", "admin"), *(role for role in assigned if role not in seeds)]
+    for service_key, name in seeds:
         await connection.execute(
             postgresql_insert(Role)
             .values(id=application_uuid(), serviceKey=service_key, name=name)
             .on_conflict_do_nothing(index_elements=[Role.c.serviceKey, Role.c.name])
         )
 
-    assigned_role = (
-        await connection.execute(
-            select(Role.c.id)
-            .where(
-                Role.c.serviceKey == default_role.service_key,
-                Role.c.name == default_role.name,
+    for service_key, name in assigned:
+        assigned_role = (
+            await connection.execute(
+                select(Role.c.id)
+                .where(Role.c.serviceKey == service_key, Role.c.name == name)
+                .limit(1)
             )
-            .limit(1)
+        ).one_or_none()
+        if assigned_role is None:
+            raise RuntimeError("default role upsert did not resolve a role")
+        await connection.execute(
+            postgresql_insert(UserRole)
+            .values(id=application_uuid(), userId=user_id, roleId=assigned_role.id)
+            .on_conflict_do_nothing(index_elements=[UserRole.c.userId, UserRole.c.roleId])
         )
-    ).one_or_none()
-    if assigned_role is None:
-        raise RuntimeError("default role upsert did not resolve a role")
-    await connection.execute(
-        postgresql_insert(UserRole)
-        .values(id=application_uuid(), userId=user_id, roleId=assigned_role.id)
-        .on_conflict_do_nothing(index_elements=[UserRole.c.userId, UserRole.c.roleId])
-    )
 
 
 class EmailVerificationStore:

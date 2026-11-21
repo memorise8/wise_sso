@@ -82,7 +82,8 @@
       if (!response.ok) throw new Error();
       const items = (await response.json()).items
         .filter((role) => !(role.serviceKey === "sso" && role.name === "admin"))
-        .filter((role) => !(role.serviceKey === "temis" && role.name === "admin"));
+        // temis is the legacy name of fantra; accepting a fantra role grants the temis twin too.
+        .filter((role) => role.serviceKey !== "temis");
       const legend = choices.querySelector("legend");
       choices.replaceChildren(legend);
       for (const role of items) {

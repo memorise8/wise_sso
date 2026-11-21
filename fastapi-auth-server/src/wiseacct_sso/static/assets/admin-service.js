@@ -158,7 +158,7 @@
   async function refresh() {
     const result = await api("/clients?page=1&pageSize=100");
     clients = result.items.filter((client) =>
-      client.requiredRoles.length && !client.requiredRoles.some((role) => role.serviceKey === "temis"));
+      client.requiredRoles.length && !client.requiredRoles.some((role) => role.serviceKey === "temis" || role.serviceKey === "fantra"));
     current = clients.find((client) => client.clientId === current?.clientId) ?? clients[0] ?? null;
     if (!current) return;
     renderPolicy();

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.config import get_settings
 from wiseacct_sso.domain.admin import AuditRetentionCleanupConfigurationError
+from wiseacct_sso.domain.fantra_roles import FANTRA_DEFAULT_ROLE_NAMES, is_fantra_service
 from wiseacct_sso.ops.audit_cleanup import _async_postgres_url, _database_url
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import Role, User, UserRole, application_uuid
@@ -94,7 +95,10 @@ async def backfill_default_roles(
     store: DefaultRoleBackfillStore, default_role: DefaultRole
 ) -> DefaultRoleBackfillResult:
     # Settings permits only pending/user for the required first TEMIS client.
-    if default_role.service_key != "temis" or default_role.name not in {"pending", "user"}:
+    if (
+        not is_fantra_service(default_role.service_key)
+        or default_role.name not in FANTRA_DEFAULT_ROLE_NAMES
+    ):
         raise BackfillConfigurationError("Invalid TEMIS default role")
     count = await store.backfill(default_role)
     if type(count) is not int or count < 0:

@@ -4,11 +4,33 @@ import argparse
 
 from wiseacct_sso.config import Settings
 
-REQUIRED_POLICIES = {
-    "gitlab-temis": ({"EMPLOYEE", "EXTERNAL"}, {("gitlab", "user")}),
+Role = tuple[str, str]
+# Each accepted (requiredRoles, groupsServiceKeys) pair for a client.
+RolePolicy = tuple[frozenset[Role], frozenset[str]]
+
+
+def _single(role: Role) -> RolePolicy:
+    return frozenset({role}), frozenset({role[0]})
+
+
+# Fantra is moving from the legacy temis key to fantra (domain.fantra_roles); during
+# the transition fantra-oidc may require either, and may project both group keys.
+_FANTRA_POLICIES: frozenset[RolePolicy] = frozenset(
+    {
+        _single(("temis", "user")),
+        _single(("fantra", "user")),
+        (frozenset({("fantra", "user")}), frozenset({"temis", "fantra"})),
+    }
+)
+
+REQUIRED_POLICIES: dict[str, tuple[set[str], frozenset[RolePolicy]]] = {
+    "gitlab-temis": ({"EMPLOYEE", "EXTERNAL"}, frozenset({_single(("gitlab", "user"))})),
     # agent-hub grants guests per-project access itself, so it opts out of the role gate.
-    "agent-hub-dash": ({"EMPLOYEE", "CUSTOMER", "EXTERNAL"}, {("agent-hub", "user")}),
-    "fantra-oidc": ({"CUSTOMER", "EMPLOYEE"}, {("temis", "user")}),
+    "agent-hub-dash": (
+        {"EMPLOYEE", "CUSTOMER", "EXTERNAL"},
+        frozenset({_single(("agent-hub", "user"))}),
+    ),
+    "fantra-oidc": ({"CUSTOMER", "EMPLOYEE"}, _FANTRA_POLICIES),
 }
 
 
@@ -16,13 +38,16 @@ def validate_policy(settings: Settings) -> None:
     if settings.node_env != "production" or not settings.oidc_enabled:
         raise ValueError("Production OIDC must be enabled")
     clients = {c.client_id: c for c in settings.oidc_clients}
-    for identifier, (types, roles) in REQUIRED_POLICIES.items():
+    for identifier, (types, policies) in REQUIRED_POLICIES.items():
         client = clients.get(identifier)
         if (
             client is None
             or set(client.allowed_user_types or ()) != types
-            or {(r.service_key, r.name) for r in client.required_roles} != roles
-            or set(client.groups_service_keys) != {key for key, _ in roles}
+            or (
+                frozenset((r.service_key, r.name) for r in client.required_roles),
+                frozenset(client.groups_service_keys),
+            )
+            not in policies
             or client.allow_without_required_role != (identifier == "agent-hub-dash")
         ):
             raise ValueError("Production client authorization policy mismatch")

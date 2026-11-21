@@ -373,3 +373,29 @@ def test_settings_do_not_implicitly_read_dotenv(
 
     with pytest.raises(ValidationError):
         Settings()  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("service_key", "name", "accepted"),
+    [
+        ("temis", "user", True),
+        ("fantra", "user", True),
+        ("fantra", "pending", True),
+        ("fantra", "admin", False),
+        ("other", "user", False),
+    ],
+)
+def test_first_client_default_role_may_use_the_legacy_or_new_fantra_key(
+    service_key: str, name: str, accepted: bool
+) -> None:
+    values = example_values()
+    clients = values["auth_clients"]
+    first = clients[0]  # type: ignore[index]
+    first["default_role"] = {"service_key": service_key, "name": name}
+    values["auth_clients"] = (first, *clients[1:])  # type: ignore[index]
+    if accepted:
+        settings = Settings.model_validate(values)
+        assert settings.auth_clients[0].default_role.service_key == service_key
+    else:
+        with pytest.raises(ValidationError):
+            Settings.model_validate(values)

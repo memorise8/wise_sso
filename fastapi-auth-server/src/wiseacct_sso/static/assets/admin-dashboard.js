@@ -33,6 +33,7 @@ let adminBusy = false;
 
 // Token mode (legacy /manage-api) has no role catalogue endpoint; keep its two original grants.
 let roleCatalogue = [
+  { serviceKey: "fantra", name: "user", externalAllowed: false },
   { serviceKey: "temis", name: "user", externalAllowed: false },
   { serviceKey: "sso", name: "admin", externalAllowed: false }
 ];
@@ -436,9 +437,10 @@ const accessReasons = {
 };
 
 // Fantra·TEMIS and the SSO admin portal are not OIDC clients; their access follows the role alone.
+// temis is the legacy name of the fantra service key; either one grants Fantra access.
 const roleServices = [
-  ["temis", "user", "Fantra·TEMIS"],
-  ["sso", "admin", "SSO 관리자"]
+  [["fantra", "temis"], "user", "Fantra·TEMIS"],
+  [["sso"], "admin", "SSO 관리자"]
 ];
 
 const renderAccess = (cell, entries, user) => {
@@ -448,9 +450,9 @@ const renderAccess = (cell, entries, user) => {
     allowed: entry.allowed,
     reason: entry.allowed ? "로그인 가능" : accessReasons[entry.reason] ?? entry.reason
   }));
-  for (const [serviceKey, name, service] of roleServices) {
-    const held = user?.roles.some((role) => role.serviceKey === serviceKey && role.name === name);
-    named.push({ service, allowed: Boolean(active && held), reason: held ? (active ? "로그인 가능" : "계정 비활성") : `${serviceKey}:${name} 없음` });
+  for (const [serviceKeys, name, service] of roleServices) {
+    const held = user?.roles.some((role) => serviceKeys.includes(role.serviceKey) && role.name === name);
+    named.push({ service, allowed: Boolean(active && held), reason: held ? (active ? "로그인 가능" : "계정 비활성") : `${serviceKeys[0]}:${name} 없음` });
   }
   const allowed = named.filter((entry) => entry.allowed);
   const denied = named.filter((entry) => !entry.allowed);
