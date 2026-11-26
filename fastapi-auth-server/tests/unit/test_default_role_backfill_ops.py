@@ -44,7 +44,9 @@ async def test_backfill_is_idempotent_and_preserves_existing_roles() -> None:
     role = DefaultRole("temis", "pending")
     first = await backfill.backfill_default_roles(store, role)
     second = await backfill.backfill_default_roles(store, role)
-    assert first.default_role == role
+    # The legacy temis key is stored as fantra (domain.fantra_roles).
+    assert first.default_role == DefaultRole("fantra", "pending")
+    assert store.roles["active"] == ["fantra:pending"]
     assert first.roleless_user_count == first.assigned_user_role_count == 3
     assert second.roleless_user_count == second.assigned_user_role_count == 0
     assert store.roles["existing-other-service"] == ["other:pending"]
@@ -115,10 +117,10 @@ async def test_serializable_role_seed_and_assignment_share_one_retry_safe_transa
     assert str(statements[0]) == "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
     seeds = [statement.compile().params for statement in statements[1:5]]
     assert [(item["serviceKey"], item["name"]) for item in seeds] == [
-        ("temis", "pending"),
-        ("temis", "user"),
+        ("fantra", "pending"),
+        ("fantra", "user"),
         ("sso", "admin"),
-        ("temis", "user"),
+        ("fantra", "user"),
     ]
     assert all(
         'ON CONFLICT ("serviceKey", name) DO NOTHING' in str(item) for item in statements[1:5]

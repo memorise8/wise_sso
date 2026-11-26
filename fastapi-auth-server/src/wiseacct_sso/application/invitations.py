@@ -26,7 +26,7 @@ from wiseacct_sso.domain.external_accounts import (
     initial_expiry,
     is_expired,
 )
-from wiseacct_sso.domain.fantra_roles import with_twins
+from wiseacct_sso.domain.fantra_roles import canonical_roles
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.infrastructure.security import AsyncPasswordHasher
 from wiseacct_sso.persistence.database import Database
@@ -421,7 +421,7 @@ class EmployeeInvitationService:
                     )
                 )
                 roles = validate_roles(cast(list[dict[str, str]], row["roles"]), kind)
-                for service_key, role_name in with_twins(
+                for service_key, role_name in canonical_roles(
                     [(role["serviceKey"], role["name"]) for role in roles]
                 ):
                     await conn.execute(

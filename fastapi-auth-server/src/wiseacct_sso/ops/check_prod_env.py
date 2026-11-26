@@ -13,11 +13,10 @@ def _single(role: Role) -> RolePolicy:
     return frozenset({role}), frozenset({role[0]})
 
 
-# Fantra is moving from the legacy temis key to fantra (domain.fantra_roles); during
-# the transition fantra-oidc may require either, and may project both group keys.
+# temis is the retired name of fantra (domain.fantra_roles): fantra-oidc must require
+# fantra:user, and may still project the temis group key until the client drops it.
 _FANTRA_POLICIES: frozenset[RolePolicy] = frozenset(
     {
-        _single(("temis", "user")),
         _single(("fantra", "user")),
         (frozenset({("fantra", "user")}), frozenset({"temis", "fantra"})),
     }

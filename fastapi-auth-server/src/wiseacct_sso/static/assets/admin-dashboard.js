@@ -34,7 +34,6 @@ let adminBusy = false;
 // Token mode (legacy /manage-api) has no role catalogue endpoint; keep its two original grants.
 let roleCatalogue = [
   { serviceKey: "fantra", name: "user", externalAllowed: false },
-  { serviceKey: "temis", name: "user", externalAllowed: false },
   { serviceKey: "sso", name: "admin", externalAllowed: false }
 ];
 

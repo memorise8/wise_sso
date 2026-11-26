@@ -363,7 +363,7 @@ async def test_assign_role_duplicate_skips_audit() -> None:
     )
 
     assert (result.role_assigned, result.role_id) == (False, "role-1")
-    # temis:user is kept in step with its fantra:user twin.
+    # A legacy temis:user request is stored as fantra:user only.
     assert events == [
         "begin",
         "policy-lock",
@@ -371,14 +371,9 @@ async def test_assign_role_duplicate_skips_audit() -> None:
         "target:user",
         "upsert-role",
         "assign-role",
-        "upsert-role",
-        "assign-role",
         "commit",
     ]
-    assert cast(FakeMutations, subject._mutations).role_keys == [
-        ("temis", "user"),
-        ("fantra", "user"),
-    ]
+    assert cast(FakeMutations, subject._mutations).role_keys == [("fantra", "user")]
 
 
 @pytest.mark.anyio
