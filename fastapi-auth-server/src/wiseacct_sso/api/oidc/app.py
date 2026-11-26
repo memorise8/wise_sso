@@ -685,6 +685,23 @@ def _clear_transaction_cookies(response: Response, transaction: str) -> None:
         response.delete_cookie(name, path=_COOKIE_PATH, secure=True, httponly=True, samesite="lax")
 
 
+# 소셜 로그인 버튼: (로고 SVG, 문구). 포털 화면(static/auth-portal.html)과 같은 로고를 쓴다.
+_SOCIAL_BUTTONS: dict[str, tuple[str, str]] = {
+    "google": (
+        '<svg viewBox="0 0 48 48" focusable="false"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>',
+        "Google 계정으로 계속",
+    ),
+    "naver": (
+        '<svg viewBox="0 0 20 20" focusable="false"><path fill="#ffffff" d="M13.56 10.7 6.17 0H0v20h6.44V9.3L13.83 20H20V0h-6.44z"/></svg>',
+        "네이버 계정으로 계속",
+    ),
+    "kakao": (
+        '<svg viewBox="0 0 24 24" focusable="false"><path fill="#000000" d="M12 3C6.48 3 2 6.58 2 11c0 2.83 1.88 5.32 4.71 6.74l-.96 3.53c-.08.31.27.56.54.38l4.2-2.78c.5.06 1 .1 1.51.1 5.52 0 10-3.58 10-8S17.52 3 12 3z"/></svg>',
+        "카카오 계정으로 계속",
+    ),
+}
+
+
 def _render_login(
     template: str,
     transaction: str,
@@ -697,15 +714,16 @@ def _render_login(
     error_block = (
         "" if error is None else f'<p class="oidc-error" role="alert">{html.escape(error)}</p>'
     )
-    names = {"google": "Google", "naver": "Naver", "kakao": "Kakao"}
     provider_links = "".join(
-        f'<a href="/oauth2/providers/{provider}/start?transaction={quote(transaction, safe="")}">'
-        f"{names[provider]}</a>"
+        f'<a class="google-button social-{provider}" href="/oauth2/providers/{provider}/start'
+        f'?transaction={quote(transaction, safe="")}">'
+        f'<span class="social-icon" aria-hidden="true">{_SOCIAL_BUTTONS[provider][0]}</span>'
+        f"{_SOCIAL_BUTTONS[provider][1]}</a>"
         for provider in providers
     )
     provider_block = (
-        '<div class="oidc-divider"><span>또는</span></div>'
         f'<nav class="oidc-providers" aria-label="소셜 로그인">{provider_links}</nav>'
+        '<div class="oidc-divider"><span>또는 이메일로 로그인</span></div>'
         if provider_links
         else ""
     )
@@ -722,9 +740,13 @@ def _render_login(
 def _login_error_page(message: str, status_code: int) -> HTMLResponse:
     return HTMLResponse(
         '<!doctype html><html lang="ko"><meta charset="utf-8">'
-        "<title>로그인 오류</title><main><h1>로그인할 수 없습니다</h1>"
-        f"<p>{html.escape(message)}</p>"
-        "</main></html>",
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<link rel="stylesheet" href="/assets/auth.css?v=20261126a">'
+        '<title>로그인 오류</title><main class="auth-shell"><section class="auth-panel">'
+        '<div class="heading-group"><h1>로그인할 수 없습니다</h1>'
+        f"<p>{html.escape(message)}</p></div>"
+        "<p>로그인을 시작한 서비스로 돌아가 다시 시도해 주세요.</p>"
+        "</section></main></html>",
         status_code=status_code,
     )
 

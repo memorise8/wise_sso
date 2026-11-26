@@ -4,28 +4,36 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex,nofollow">
-    <title>WiseAcct SSO 로그인</title>
-    <link rel="stylesheet" href="/assets/auth.css">
-    <link rel="stylesheet" href="/oauth2/assets/login.css">
+    <meta name="theme-color" content="#f5f7fb" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0b1120" media="(prefers-color-scheme: dark)">
+    <title>Wise SSO 로그인</title>
+    <link rel="stylesheet" href="/assets/auth.css?v=20261126a">
+    <link rel="stylesheet" href="/oauth2/assets/login.css?v=20261126a">
   </head>
   <body>
-    <main class="oidc-shell">
-      <section class="oidc-panel" aria-labelledby="oidc-title">
-        <p class="oidc-kicker">WISEACCT SSO</p>
-        <h1 id="oidc-title">계속하려면 로그인하세요</h1>
-        <p class="oidc-summary">요청한 내부 서비스로 안전하게 돌아갑니다.</p>
+    <main class="auth-shell">
+      <section class="auth-panel" aria-labelledby="oidc-title">
+        <p class="brand"><span class="brand-badge">SSO</span></p>
+        <div class="heading-group">
+          <h1 id="oidc-title">로그인</h1>
+          <p>로그인하면 요청한 서비스로 돌아갑니다.</p>
+        </div>
         {{ERROR_BLOCK}}
-        <form method="post" action="/oauth2/login" autocomplete="on">
+        {{PROVIDER_BLOCK}}
+        <form class="auth-form" method="post" action="/oauth2/login" autocomplete="on">
           <input type="hidden" name="transaction" value="{{TRANSACTION}}">
           <input type="hidden" name="csrf_token" value="{{CSRF_TOKEN}}">
-          <label for="email">이메일</label>
-          <input id="email" name="email" type="email" autocomplete="username" required maxlength="320">
-          <label for="password">비밀번호</label>
-          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
-          <button type="submit">로그인</button>
+          <label for="email"><span>이메일</span>
+            <input id="email" name="email" type="email" autocomplete="username" required maxlength="320">
+          </label>
+          <label for="password"><span>비밀번호</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+          </label>
+          <button class="primary-button" type="submit">로그인</button>
         </form>
-        <p class="oidc-help"><a href="/password-reset" target="_blank" rel="noopener">비밀번호를 잊으셨나요?</a></p>
-        {{PROVIDER_BLOCK}}
+        <div class="link-row">
+          <a href="/password-reset" target="_blank" rel="noopener">비밀번호 재설정</a>
+        </div>
       </section>
     </main>
   </body>

@@ -1,19 +1,35 @@
 :root {
-  --surface-primary: #0f1622;
-  --surface-deeper: #080d17;
-  --surface-panel: #151b26;
-  --surface-panel-strong: #1d2533;
-  --surface-muted: #11161f;
-  --text-primary: #f1f5f9;
-  --text-secondary: #cbd5e1;
+  --surface-primary: #f5f7fb;
+  --surface-deeper: #eef2f8;
+  --surface-panel: #ffffff;
+  --surface-panel-strong: #f1f5f9;
+  --surface-muted: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
   --text-muted: #64748b;
-  --border-default: #232d3f;
-  --border-strong: #334155;
-  --accent-primary: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-soft: rgb(59 130 246 / 0.12);
-  --status-success: #34d399;
-  --status-error: #fb7185;
+  --border-default: #e2e8f0;
+  --border-strong: #cbd5e1;
+  --accent-primary: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-text: #2563eb;
+  --accent-text-hover: #1d4ed8;
+  --accent-soft: rgb(37 99 235 / 0.08);
+  --accent-ring: rgb(37 99 235 / 0.25);
+  --status-success: #047857;
+  --status-error: #be123c;
+  --status-success-soft: rgb(4 120 87 / 0.08);
+  --status-error-soft: rgb(190 18 60 / 0.07);
+  --glow: rgb(37 99 235 / 0.06);
+  --google-bg: #ffffff;
+  --google-border: #747775;
+  --google-text: #1f1f1f;
+  --google-hover: #f2f2f2;
+  --naver-bg: #03c75a;
+  --naver-hover: #02b351;
+  --naver-text: #ffffff;
+  --kakao-bg: #fee500;
+  --kakao-hover: #f2d900;
+  --kakao-text: rgb(0 0 0 / 0.85);
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
@@ -21,9 +37,41 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
-  --shadow-panel: 0 22px 60px rgb(0 0 0 / 0.35);
-  --focus-ring: 0 0 0 3px rgb(59 130 246 / 0.28);
-  color-scheme: dark;
+  --shadow-panel: 0 1px 2px rgb(15 23 42 / 0.04), 0 12px 32px rgb(15 23 42 / 0.06);
+  --focus-ring: 0 0 0 3px rgb(37 99 235 / 0.22);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-primary: #0b1120;
+    --surface-deeper: #060a14;
+    --surface-panel: #111827;
+    --surface-panel-strong: #1a2333;
+    --surface-muted: #0d1422;
+    --text-primary: #e5e9f0;
+    --text-secondary: #a3adbf;
+    --text-muted: #7f8a9e;
+    --border-default: #263042;
+    --border-strong: #3a465c;
+    --accent-primary: #2563eb;
+    --accent-hover: #3b74f0;
+    --accent-text: #7aa2ff;
+    --accent-text-hover: #9bb8ff;
+    --accent-soft: rgb(122 162 255 / 0.12);
+    --accent-ring: rgb(122 162 255 / 0.3);
+    --status-success: #34d399;
+    --status-error: #fb7185;
+    --status-success-soft: rgb(52 211 153 / 0.12);
+    --status-error-soft: rgb(251 113 133 / 0.12);
+    --glow: rgb(122 162 255 / 0.08);
+    --google-bg: #131314;
+    --google-border: #8e918f;
+    --google-text: #e3e3e3;
+    --google-hover: #1f1f20;
+    --shadow-panel: 0 1px 2px rgb(0 0 0 / 0.3), 0 16px 40px rgb(0 0 0 / 0.35);
+    --focus-ring: 0 0 0 3px rgb(122 162 255 / 0.35);
+  }
 }
 
 * {
@@ -37,6 +85,7 @@
 html {
   min-height: 100%;
   overflow-x: hidden;
+  background: var(--surface-deeper);
 }
 
 body {
@@ -44,33 +93,20 @@ body {
   min-height: 100dvh;
   margin: 0;
   background:
-    radial-gradient(circle at 14% 20%, rgb(59 130 246 / 0.16), transparent 28%),
-    radial-gradient(circle at 82% 10%, rgb(96 165 250 / 0.10), transparent 30%),
-    linear-gradient(180deg, #0d1727 0%, var(--surface-primary) 50%, var(--surface-deeper) 100%),
+    radial-gradient(circle at 14% 12%, var(--glow), transparent 34%),
+    linear-gradient(180deg, var(--surface-primary) 0%, var(--surface-deeper) 100%),
     var(--surface-primary);
   color: var(--text-primary);
   font-family: Inter, system-ui, "Apple SD Gothic Neo", "Segoe UI", sans-serif;
 }
 
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background-image:
-    linear-gradient(rgb(255 255 255 / 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgb(255 255 255 / 0.035) 1px, transparent 1px);
-  background-size: 304px 304px;
-  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.55), transparent 82%);
-}
-
 a {
-  color: var(--accent-primary);
+  color: var(--accent-text);
   text-decoration: none;
 }
 
 a:hover {
-  color: var(--accent-hover);
+  color: var(--accent-text-hover);
 }
 
 .auth-shell {
@@ -90,21 +126,11 @@ a:hover {
   max-width: 480px;
   border: 1px solid var(--border-default);
   border-radius: 16px;
-  background:
-    linear-gradient(180deg, rgb(255 255 255 / 0.035), transparent 42%),
-    var(--surface-panel);
+  background: var(--surface-panel);
   box-shadow: var(--shadow-panel);
   padding: var(--space-12);
   position: relative;
   overflow: hidden;
-}
-
-.auth-panel::before {
-  content: "";
-  position: absolute;
-  inset: 0 0 auto;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgb(96 165 250 / 0.45), transparent);
 }
 
 .brand {
@@ -123,11 +149,11 @@ a:hover {
 }
 
 .brand-badge {
-  border: 1px solid rgb(59 130 246 / 0.35);
+  border: 1px solid var(--accent-ring);
   border-radius: 999px;
   padding: 2px 7px;
-  background: rgb(59 130 246 / 0.10);
-  color: #93c5fd;
+  background: var(--accent-soft);
+  color: var(--accent-text);
   font-size: 10px;
   letter-spacing: 0.08em;
 }
@@ -198,7 +224,7 @@ input:hover {
 }
 
 input:focus {
-  border-color: var(--accent-primary);
+  border-color: var(--accent-text);
   box-shadow: var(--focus-ring);
 }
 
@@ -230,7 +256,7 @@ button:active,
   border: 1px solid var(--accent-primary);
   background: var(--accent-primary);
   color: #ffffff;
-  box-shadow: 0 12px 28px rgb(37 99 235 / 0.24);
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.2);
 }
 
 .primary-button:hover {
@@ -244,32 +270,85 @@ button:active,
 }
 
 .google-button {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: var(--space-3);
   width: 100%;
+  padding: 0 var(--space-12);
   border: 1px solid var(--border-default);
   background: var(--surface-muted);
   color: var(--text-primary);
 }
 
+.google-button + .google-button {
+  margin-top: var(--space-2);
+}
+
 .google-button:hover {
-  border-color: rgb(59 130 246 / 0.45);
+  border-color: var(--border-strong);
   background: var(--surface-panel-strong);
   color: var(--text-primary);
 }
 
-.google-icon {
-  width: 24px;
-  height: 24px;
+/* 소셜 버튼: 각 회사 로그인 버튼 안내의 색을 따른다. 아이콘은 왼쪽에 고정해 글자 줄이 맞게 한다. */
+.social-icon {
+  position: absolute;
+  left: var(--space-4);
+  top: 50%;
+  width: 20px;
+  height: 20px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--border-default);
-  border-radius: 50%;
-  background: #ffffff;
-  color: #0f172a;
-  font-weight: 800;
+  transform: translateY(-50%);
+}
+
+.social-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.social-google {
+  border-color: var(--google-border);
+  background: var(--google-bg);
+  color: var(--google-text);
+}
+
+.social-google:hover {
+  border-color: var(--google-border);
+  background: var(--google-hover);
+  color: var(--google-text);
+}
+
+.social-naver {
+  border-color: var(--naver-bg);
+  background: var(--naver-bg);
+  color: var(--naver-text);
+}
+
+.social-naver:hover {
+  border-color: var(--naver-hover);
+  background: var(--naver-hover);
+  color: var(--naver-text);
+}
+
+.social-naver .social-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.social-kakao {
+  border-color: var(--kakao-bg);
+  background: var(--kakao-bg);
+  color: var(--kakao-text);
+}
+
+.social-kakao:hover {
+  border-color: var(--kakao-hover);
+  background: var(--kakao-hover);
+  color: var(--kakao-text);
 }
 
 .divider {
@@ -309,11 +388,12 @@ button:active,
 }
 
 .notice[data-tone="success"] {
+  background: var(--status-success-soft);
   color: var(--status-success);
 }
 
 .notice[data-tone="error"] {
-  background: rgb(244 63 94 / 0.12);
+  background: var(--status-error-soft);
   color: var(--status-error);
 }
 

@@ -610,6 +610,7 @@ def admin_form(rig: Rig) -> dict[str, str]:
     assert page.status_code == 200
     assert page.headers["referrer-policy"] == "same-origin"
     assert 'action="/oauth2/admin/login"' in page.text
+    assert "관리자 로그인</h1>" in page.text
     tx = re.search(r'name="transaction" value="([^"]+)"', page.text)
     csrf = re.search(r'name="csrf_token" value="([^"]+)"', page.text)
     assert tx is not None and csrf is not None
