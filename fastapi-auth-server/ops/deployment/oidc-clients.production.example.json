@@ -21,7 +21,7 @@
     "clientSecretHash": "REPLACE_WITH_ARGON2ID_HASH",
     "redirectUris": ["https://fantra.example.invalid/auth/callback"],
     "allowedUserTypes": ["CUSTOMER","EMPLOYEE"],
-    "requiredRoles": [{"serviceKey":"temis","name":"user"}],
-    "groupsServiceKeys": ["temis"], "requirePkce": true, "ssoAutoLogin": true
+    "requiredRoles": [{"serviceKey":"fantra","name":"user"}],
+    "groupsServiceKeys": ["temis", "fantra"], "requirePkce": true, "ssoAutoLogin": true
   }
 ]

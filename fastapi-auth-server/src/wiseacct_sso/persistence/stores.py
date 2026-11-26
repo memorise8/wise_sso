@@ -25,7 +25,7 @@ from wiseacct_sso.domain.admin import (
     parse_role_filter,
 )
 from wiseacct_sso.domain.external_accounts import is_expired
-from wiseacct_sso.domain.fantra_roles import mirrored_roles
+from wiseacct_sso.domain.fantra_roles import canonical_role
 from wiseacct_sso.domain.users import DomainError, UserType
 from wiseacct_sso.domain.users import UserStatus as DomainUserStatus
 from wiseacct_sso.persistence.models import (
@@ -562,7 +562,7 @@ class EmailVerificationTokenRecord:
 
 @dataclass(frozen=True, slots=True)
 class DefaultRole:
-    service_key: str = "temis"
+    service_key: str = "fantra"
     name: str = "user"
 
 
@@ -577,12 +577,12 @@ async def _seed_temis_and_assign_default_role(
 ) -> None:
     """Mirror the Prisma role upserts, then its skip-duplicates assignment.
 
-    A Fantra default role is granted under both the legacy ``temis`` key and the
-    ``fantra`` key while Fantra accepts either (see ``domain.fantra_roles``).
+    A legacy ``temis`` default role is stored under the ``fantra`` key
+    (see ``domain.fantra_roles``).
     """
 
-    assigned = mirrored_roles(default_role.service_key, default_role.name)
-    seeds = [("temis", "pending"), ("temis", "user"), ("fantra", "pending"), ("fantra", "user")]
+    assigned = (canonical_role(default_role.service_key, default_role.name),)
+    seeds = [("fantra", "pending"), ("fantra", "user")]
     seeds += [("sso", "admin"), *(role for role in assigned if role not in seeds)]
     for service_key, name in seeds:
         await connection.execute(

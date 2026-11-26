@@ -37,14 +37,14 @@ def test_production_policy_examples_enforce_internal_and_customer_boundaries(
 @pytest.mark.parametrize(
     ("required", "groups", "accepted"),
     [
-        ("temis", ("temis",), True),
+        # temis:* is retired (domain.fantra_roles): fantra-oidc must require fantra:user.
+        ("temis", ("temis",), False),
         ("fantra", ("fantra",), True),
         ("fantra", ("temis", "fantra"), True),
-        # Projecting the new key while still requiring the old one is not a valid step.
         ("temis", ("temis", "fantra"), False),
     ],
 )
-def test_fantra_client_may_require_the_legacy_or_new_role_key(
+def test_fantra_client_must_require_the_fantra_role_key(
     synthetic_settings: Settings, required: str, groups: tuple[str, ...], accepted: bool
 ) -> None:
     examples = json.loads(

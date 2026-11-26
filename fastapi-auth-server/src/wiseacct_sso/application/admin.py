@@ -32,7 +32,7 @@ from wiseacct_sso.domain.admin import (
 )
 from wiseacct_sso.domain.audit_csv import write_audit_csv
 from wiseacct_sso.domain.external_accounts import EXTERNAL_ALLOWED_ROLES, assert_external_roles
-from wiseacct_sso.domain.fantra_roles import twin_role
+from wiseacct_sso.domain.fantra_roles import canonical_role, twin_role
 from wiseacct_sso.domain.tokens import TokenValidationError
 from wiseacct_sso.domain.users import DomainError, UserStatus, UserType
 from wiseacct_sso.infrastructure.security import JwtTokenCodec
@@ -439,6 +439,8 @@ class Phase6AdminService:
             raise DomainError(
                 403, "LEGACY_ADMIN_ROLE_DISABLED", "New temis:admin grants are disabled"
             )
+        # temis:pending/user are stored as fantra:* (domain.fantra_roles).
+        service_key, name = canonical_role(service_key, name)
         created_at = utc_now_ms()
 
         async def mutate(connection: AsyncConnection) -> AssignRoleResult:
@@ -461,15 +463,6 @@ class Phase6AdminService:
             assigned = await self._mutations.assign_role_to_user(
                 connection, user_id=target_user_id, role_id=role.id
             )
-            twin = twin_role(service_key, name)
-            if twin is not None:
-                # Keep the legacy/new Fantra keys in step (domain.fantra_roles).
-                twin_role_row = await self._mutations.upsert_role(
-                    connection, service_key=twin[0], name=twin[1]
-                )
-                await self._mutations.assign_role_to_user(
-                    connection, user_id=target_user_id, role_id=twin_role_row.id
-                )
             if assigned:
                 audit_details = self._details(
                     details

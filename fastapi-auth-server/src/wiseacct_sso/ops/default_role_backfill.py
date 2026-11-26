@@ -16,7 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from wiseacct_sso.config import get_settings
 from wiseacct_sso.domain.admin import AuditRetentionCleanupConfigurationError
-from wiseacct_sso.domain.fantra_roles import FANTRA_DEFAULT_ROLE_NAMES, is_fantra_service
+from wiseacct_sso.domain.fantra_roles import (
+    FANTRA_DEFAULT_ROLE_NAMES,
+    canonical_role,
+    is_fantra_service,
+)
 from wiseacct_sso.ops.audit_cleanup import _async_postgres_url, _database_url
 from wiseacct_sso.persistence.database import Database, database_only_transaction
 from wiseacct_sso.persistence.models import Role, User, UserRole, application_uuid
@@ -67,8 +71,8 @@ class SqlAlchemyDefaultRoleBackfillStore:
             # retry runner repeats this entire DB-only transaction at most 3 times.
             await connection.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
             for service_key, name in (
-                ("temis", "pending"),
-                ("temis", "user"),
+                ("fantra", "pending"),
+                ("fantra", "user"),
                 ("sso", "admin"),
                 (default_role.service_key, default_role.name),
             ):
@@ -100,6 +104,8 @@ async def backfill_default_roles(
         or default_role.name not in FANTRA_DEFAULT_ROLE_NAMES
     ):
         raise BackfillConfigurationError("Invalid TEMIS default role")
+    service_key, name = canonical_role(default_role.service_key, default_role.name)
+    default_role = DefaultRole(service_key=service_key, name=name)
     count = await store.backfill(default_role)
     if type(count) is not int or count < 0:
         raise RuntimeError("backfill returned an invalid assignment count")

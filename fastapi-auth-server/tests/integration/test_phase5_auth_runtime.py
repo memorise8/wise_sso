@@ -394,7 +394,8 @@ async def test_verification_twenty_way_has_one_activation_and_default_role(
     assert len(successes) == 1 and len(failures) == 19
     assert all(isinstance(value, InvalidVerificationTokenError) for value in failures)
     assert user.status == UserStatus.ACTIVE and user.emailVerified is True and used == 1
-    assert {(row.serviceKey, row.name) for row in roles} >= {("temis", "user")}
+    assert {(row.serviceKey, row.name) for row in roles} >= {("fantra", "user")}
+    assert ("temis", "user") not in {(row.serviceKey, row.name) for row in roles}
 
 
 async def test_verification_attaches_pending_password(runtime: Runtime) -> None:

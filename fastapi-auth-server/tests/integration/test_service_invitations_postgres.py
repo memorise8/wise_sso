@@ -245,7 +245,7 @@ async def test_requests_are_validated(
     assert caught.value.code == code
 
 
-async def test_employee_invitation_grants_fantra_roles_under_both_keys(
+async def test_employee_invitation_grants_fantra_roles_under_the_fantra_key_only(
     database: Database,
 ) -> None:
     clock = [NOW]
@@ -277,4 +277,4 @@ async def test_employee_invitation_grants_fantra_roles_under_both_keys(
             .where(User.c.email == "qa1@fantra.test")
         )
         roles = {(row.serviceKey, row.name) for row in rows}
-    assert roles == {("fantra", "user"), ("temis", "user"), ("gitlab", "user")}
+    assert roles == {("fantra", "user"), ("gitlab", "user")}
