@@ -195,13 +195,19 @@ def register_admin_portal(
     template = (static_root / "admin-dashboard.html").read_text()
     if template.count(_AUTH_MARKER) != 1 or template.count(_AUTH_END) != 1:
         raise ValueError("Administrator dashboard authentication markers are required")
-    admin_template = (
-        login_template.replace('action="/oauth2/login"', f'action="{ADMIN_LOGIN}"')
-        .replace("계속하려면 로그인하세요", "관리자 로그인")
-        .replace(
-            "요청한 내부 서비스로 안전하게 돌아갑니다.", "승인된 직원 관리자 계정으로 로그인하세요."
-        )
+    replacements = (
+        ('action="/oauth2/login"', f'action="{ADMIN_LOGIN}"'),
+        ('<h1 id="oidc-title">로그인</h1>', '<h1 id="oidc-title">관리자 로그인</h1>'),
+        (
+            "<p>로그인하면 요청한 서비스로 돌아갑니다.</p>",
+            "<p>승인된 직원 관리자 계정으로 로그인하세요.</p>",
+        ),
     )
+    admin_template = login_template
+    for old, new in replacements:
+        if admin_template.count(old) != 1:
+            raise ValueError("Administrator login template markers are required")
+        admin_template = admin_template.replace(old, new)
     destination = origin + ADMIN_DASHBOARD
     api = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, redirect_slashes=False)
     api.state.phase6_services = admin_services

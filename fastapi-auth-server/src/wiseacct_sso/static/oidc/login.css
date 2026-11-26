@@ -1,46 +1,36 @@
-:root {
-  color-scheme: light;
-  font-family: Inter, Pretendard, system-ui, sans-serif;
+/* OIDC 로그인 화면: 모양은 /assets/auth.css(포털과 같은 밝은 테마)를 그대로 쓰고, 여기엔 이 화면에만 있는 것만 둔다. */
+.oidc-error {
+  margin: 0 0 var(--space-4);
+  border-radius: 8px;
+  padding: var(--space-3) var(--space-4);
+  background: rgb(190 18 60 / 0.07);
+  color: var(--status-error);
+  font-size: 14px;
+  font-weight: 600;
 }
 
-body {
-  margin: 0;
-  background: #f5f6f8;
-  color: #16181d;
+.oidc-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-6) 0;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
-.oidc-shell {
+.oidc-divider::before,
+.oidc-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-default);
+}
+
+.oidc-providers {
   display: grid;
-  min-height: 100vh;
-  place-items: center;
-  padding: 24px;
+  gap: var(--space-2);
 }
 
-.oidc-panel {
-  box-sizing: border-box;
-  width: min(100%, 420px);
-  padding: 36px;
-  border: 1px solid #dfe2e8;
-  border-radius: 16px;
-  background: #fff;
+.oidc-providers .google-button + .google-button {
+  margin-top: 0;
 }
-
-.oidc-kicker {
-  margin: 0 0 12px;
-  color: #48536a;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: .12em;
-}
-
-.oidc-panel h1 { margin: 0; font-size: 26px; }
-.oidc-summary { margin: 10px 0 28px; color: #596174; }
-.oidc-error { margin: 0 0 18px; color: #a12222; font-weight: 600; }
-.oidc-panel form { display: grid; gap: 10px; }
-.oidc-panel input { box-sizing: border-box; width: 100%; }
-.oidc-panel button { margin-top: 8px; }
-.oidc-help { margin: 14px 0 0; font-size: 14px; text-align: right; }
-.oidc-help a { color: #3159c5; }
-.oidc-divider { margin: 24px 0 16px; text-align: center; color: #72798a; }
-.oidc-providers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.oidc-providers a { padding: 10px 6px; border: 1px solid #dfe2e8; border-radius: 8px; text-align: center; text-decoration: none; color: inherit; }

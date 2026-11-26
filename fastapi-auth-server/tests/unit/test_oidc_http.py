@@ -227,8 +227,8 @@ def test_password_login_requires_exact_origin_and_bound_cookies() -> None:
     page = client.get(f"/oauth2/login?transaction={TRANSACTION}")
     assert page.status_code == 200
     assert 'name="csrf_token" value="csrf-1"' in page.text
-    assert ">Google</a>" in page.text
-    assert ">Naver</a>" not in page.text
+    assert ">Google 계정으로 계속</a>" in page.text
+    assert "네이버 계정으로 계속" not in page.text
 
     rejected = client.post(
         "/oauth2/login",
