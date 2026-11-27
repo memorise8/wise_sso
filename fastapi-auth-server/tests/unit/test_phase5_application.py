@@ -21,7 +21,7 @@ from wiseacct_sso.application.auth import (
 )
 from wiseacct_sso.config import RelyingClientPolicy
 from wiseacct_sso.domain.auth import PasswordPolicy
-from wiseacct_sso.domain.oauth import ClientHandoff, OAuthProfile
+from wiseacct_sso.domain.oauth import ClientHandoff, OAuthProfile, OAuthProvider
 from wiseacct_sso.domain.users import DomainError
 from wiseacct_sso.domain.verification import VerificationTokenRecord
 from wiseacct_sso.infrastructure.auth_state import (
@@ -525,6 +525,22 @@ async def test_malformed_handoff_body_audits_without_client_before_generic_error
             "details_json": {"route": "/auth/exchange"},
         }
     ]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("provider", ["naver", "kakao"])
+async def test_oauth_start_rejects_fantra_social_providers(provider: OAuthProvider) -> None:
+    events: list[str] = []
+    auth = service(events)
+
+    with pytest.raises(DomainError, match="OAuth provider is not allowed") as raised:
+        await auth.oauth_start(
+            provider, OAuthStartInput("temis", REDIRECT, "caller", CHALLENGE, "S256")
+        )
+
+    assert raised.value.status_code == 403
+    assert raised.value.code == "OAUTH_PROVIDER_NOT_ALLOWED"
+    assert events == []
 
 
 @pytest.mark.anyio

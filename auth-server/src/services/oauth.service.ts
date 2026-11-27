@@ -147,6 +147,9 @@ export const getAuthorizationUrl = async (
   provider: Provider,
   input: OAuthLoginStartInput = { clientId: "temis" }
 ): Promise<string> => {
+  if (input.clientId === "temis" && (provider === "naver" || provider === "kakao")) {
+    throw new HttpError(403, "OAUTH_PROVIDER_NOT_ALLOWED", "OAuth provider is not allowed");
+  }
   const config = providerConfigFor(provider);
   const metadata = resolveOAuthStateMetadata(input);
   const state = await oauthStateStore.create(provider, metadata);

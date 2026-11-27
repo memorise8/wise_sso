@@ -737,6 +737,8 @@ class Phase5AuthService:
         raise DomainError(400, "INVALID_AUTH_HANDOFF_CODE", "Invalid authorization code")
 
     async def oauth_start(self, provider: OAuthProvider, input: OAuthStartInput) -> str:
+        if input.client_id == "temis" and provider in ("naver", "kakao"):
+            raise DomainError(403, "OAUTH_PROVIDER_NOT_ALLOWED", "OAuth provider is not allowed")
         config = self._resolve_provider_config(provider)
         client = self._auth_clients.get(input.client_id)
         if client is None:

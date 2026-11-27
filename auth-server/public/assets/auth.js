@@ -278,12 +278,19 @@ const startOAuthLogin = async (provider) => {
   window.location.assign(startUrl.toString());
 };
 
+rememberHandoff();
+const socialClientId = readSignupHandoff()?.clientId ?? relyingClient.clientId;
 for (const link of document.querySelectorAll(
   "a[href='/auth/google'], a[href='/auth/naver'], a[href='/auth/kakao']"
 )) {
+  const provider = link.getAttribute("href").split("/").pop();
+  if (socialClientId === "temis" && (provider === "naver" || provider === "kakao")) {
+    link.hidden = true;
+    continue;
+  }
+
   link.addEventListener("click", (event) => {
     event.preventDefault();
-    const provider = link.getAttribute("href").split("/").pop();
     void startOAuthLogin(provider).catch((error) => {
       setNotice("error", error instanceof Error ? error.message : "소셜 로그인을 시작하지 못했습니다.");
     });
@@ -450,7 +457,6 @@ const confirmEmail = async () => {
   }
 };
 
-rememberHandoff();
 preserveHandoffLinks();
 
 if (activePage === "callback") {
